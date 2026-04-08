@@ -160,7 +160,7 @@ ticketing:
     at_second: -60
 
 ops_dashboard:
-  pre_incident_seconds: 259200
+  pre_incident_seconds: 86400
   resolution_seconds: 60
   focal_service:
     name: payment-service
