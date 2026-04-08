@@ -286,6 +286,7 @@ async function transform(
       status:      t.status,
       description: await resolveContent(t.description, t.description_file, `ticketing[${i}].description_file`),
       createdBy:   t.created_by,
+      assignee:    t.assignee ?? 'trainee',
       atSecond:    t.at_second,
     }))
   )

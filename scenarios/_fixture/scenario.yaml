@@ -50,6 +50,7 @@ ticketing:
     status: open
     description: "fixture-service error rate is above threshold. Needs investigation."
     created_by: fixture-persona
+    assignee: trainee
     at_second: -1
 
 ops_dashboard:

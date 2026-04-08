@@ -177,6 +177,7 @@ export interface ScriptedTicket {
   status:      TicketStatus
   description: string        // resolved markdown content
   createdBy:   string
+  assignee:    string        // persona id or 'trainee'; defaults to 'trainee' if not set in scenario
   atSecond:    number
 }
 

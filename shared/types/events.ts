@@ -38,6 +38,7 @@ export interface Ticket {
   status: TicketStatus
   description: string                // markdown
   createdBy: string                  // persona id or 'pagerduty-bot'
+  assignee: string                   // persona id or 'trainee' — always set
   simTime: number
 }
 

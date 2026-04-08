@@ -100,6 +100,7 @@ function populateInitialState(
         status:      ticket.status,
         description: ticket.description,
         createdBy:   ticket.createdBy,
+        assignee:    ticket.assignee,
         simTime:     ticket.atSecond,
       })
     }

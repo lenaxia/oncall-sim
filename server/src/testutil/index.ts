@@ -165,6 +165,7 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
       status:      t.status as 'open'|'in_progress'|'resolved',
       description: (t.description ?? '') as string,
       createdBy:   t.created_by as string,
+      assignee:    (t.assignee ?? 'trainee') as string,
       atSecond:    t.at_second as number,
     })),
     opsDashboard: {
@@ -469,6 +470,7 @@ export function buildTicket(overrides: Partial<Ticket> = {}): Ticket {
     status:      'open',
     description: 'Test description.',
     createdBy:   'fixture-persona',
+    assignee:    'trainee',
     simTime:     0,
     ...overrides,
   }

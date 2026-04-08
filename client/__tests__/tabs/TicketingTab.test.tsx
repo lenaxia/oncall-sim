@@ -142,10 +142,108 @@ describe('TicketingTab', () => {
       act(() => {
         sse.emit({ type: 'ticket_updated', ticketId: 't1', changes: { status: 'in_progress' } })
       })
-      // Status should update — Mark In Progress should disappear
       await waitFor(() => {
         expect(screen.queryByRole('button', { name: /mark in progress/i })).toBeNull()
       })
+    })
+  })
+
+  describe('metadata panel', () => {
+    it('shows metadata panel when ticket selected', async () => {
+      const user = userEvent.setup()
+      renderTickets([buildTicket({ id: 't1', title: 'T1' })])
+      await user.click(screen.getByText('T1'))
+      expect(screen.getByTestId('ticket-metadata')).toBeInTheDocument()
+    })
+
+    it('shows status dropdown in metadata panel', async () => {
+      const user = userEvent.setup()
+      renderTickets([buildTicket({ id: 't1', title: 'T1', status: 'open' })])
+      await user.click(screen.getByText('T1'))
+      expect(screen.getByTestId('ticket-status-select')).toBeInTheDocument()
+    })
+
+    it('shows severity dropdown in metadata panel', async () => {
+      const user = userEvent.setup()
+      renderTickets([buildTicket({ id: 't1', title: 'T1', severity: 'SEV2' })])
+      await user.click(screen.getByText('T1'))
+      expect(screen.getByTestId('ticket-severity-select')).toBeInTheDocument()
+    })
+
+    it('changing status dispatches update_ticket', async () => {
+      const user = userEvent.setup()
+      let captured: unknown
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        captured = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderTickets([buildTicket({ id: 't1', title: 'T1', status: 'open' })])
+      await user.click(screen.getByText('T1'))
+      await user.selectOptions(screen.getByTestId('ticket-status-select'), 'in_progress')
+      await waitFor(() => {
+        expect((captured as { action: string })?.action).toBe('update_ticket')
+      })
+    })
+
+    it('changing severity dispatches update_ticket', async () => {
+      const user = userEvent.setup()
+      let captured: unknown
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        captured = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderTickets([buildTicket({ id: 't1', title: 'T1', severity: 'SEV2' })])
+      await user.click(screen.getByText('T1'))
+      await user.selectOptions(screen.getByTestId('ticket-severity-select'), 'SEV3')
+      await waitFor(() => {
+        expect((captured as { action: string })?.action).toBe('update_ticket')
+      })
+    })
+
+    it('shows assignee select with Unassigned option', async () => {
+      const user = userEvent.setup()
+      renderTickets([buildTicket({ id: 't1', title: 'T1' })])
+      await user.click(screen.getByText('T1'))
+      const assigneeSelect = screen.getByTestId('ticket-assignee-select')
+      expect(assigneeSelect).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: /unassigned/i })).toBeInTheDocument()
+    })
+
+    it('assigning to a persona dispatches update_ticket with assignee', async () => {
+      const user = userEvent.setup()
+      let captured: unknown
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        captured = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderTickets([buildTicket({ id: 't1', title: 'T1' })])
+      await user.click(screen.getByText('T1'))
+      await user.selectOptions(screen.getByTestId('ticket-assignee-select'), 'trainee')
+      await waitFor(() => {
+        const body = captured as { action: string; params: { changes: { assignee: string } } }
+        expect(body?.action).toBe('update_ticket')
+        expect(body?.params?.changes?.assignee).toBe('trainee')
+      })
+    })
+
+    it('shows created time', async () => {
+      const user = userEvent.setup()
+      renderTickets([buildTicket({ id: 't1', title: 'T1', simTime: 0 })])
+      await user.click(screen.getByText('T1'))
+      // Should show a wall-clock time for creation
+      expect(screen.getByTestId('ticket-created-time')).toBeInTheDocument()
+    })
+
+    it('shows elapsed time since ticket creation', async () => {
+      const user = userEvent.setup()
+      renderTickets([buildTicket({ id: 't1', title: 'T1', simTime: -120 })])
+      await user.click(screen.getByText('T1'))
+      expect(screen.getByTestId('ticket-elapsed')).toBeInTheDocument()
+    })
+
+    it('metadata panel not shown when no ticket selected', () => {
+      renderTickets([buildTicket({ id: 't1', title: 'T1' })])
+      expect(screen.queryByTestId('ticket-metadata')).toBeNull()
     })
   })
 })

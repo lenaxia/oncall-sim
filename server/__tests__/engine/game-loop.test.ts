@@ -184,7 +184,7 @@ describe('GameLoop — handleAction', () => {
     const loop   = createGameLoop(deps)
     const events: SimEvent[] = []
     loop.onEvent(e => events.push(e))
-    deps.store.addTicket({ id: 't1', title: 'T', severity: 'SEV2', status: 'open', description: '', createdBy: 'p', simTime: 0 })
+    deps.store.addTicket({ id: 't1', title: 'T', severity: 'SEV2', status: 'open', description: '', createdBy: 'p', assignee: 'trainee', simTime: 0 })
     loop.handleAction('update_ticket', { ticketId: 't1', changes: { status: 'resolved' } })
     expectEvent(events, 'ticket_updated')
   })
@@ -209,7 +209,7 @@ describe('GameLoop — handleAction', () => {
     const loop   = createGameLoop(deps)
     const events: SimEvent[] = []
     loop.onEvent(e => events.push(e))
-    deps.store.addTicket({ id: 't1', title: 'T', severity: 'SEV2', status: 'open', description: '', createdBy: 'persona', simTime: 0 })
+    deps.store.addTicket({ id: 't1', title: 'T', severity: 'SEV2', status: 'open', description: '', createdBy: 'persona', assignee: 'trainee', simTime: 0 })
     loop.handleAction('update_ticket', { ticketId: 't1', changes: { status: 'in_progress' } })
     expectEvent(events, 'ticket_updated')
   })
@@ -257,7 +257,7 @@ describe('GameLoop — getSnapshot', () => {
     // Add directly to store (simulating scheduler-fired events)
     deps.store.addChatMessage('#incidents', { id: 'c1', channel: '#incidents', persona: 'p', text: 'hi', simTime: 0 })
     deps.store.addEmail({ id: 'e1', threadId: 't1', from: 'p', to: 'trainee', subject: 's', body: 'b', simTime: 0 })
-    deps.store.addTicket({ id: 'tk1', title: 'T', severity: 'SEV2', status: 'open', description: '', createdBy: 'p', simTime: 0 })
+    deps.store.addTicket({ id: 'tk1', title: 'T', severity: 'SEV2', status: 'open', description: '', createdBy: 'p', assignee: 'trainee', simTime: 0 })
     const snap = loop.getSnapshot()
     expect(snap.chatChannels['#incidents']?.length).toBeGreaterThan(0)
     expect(snap.emails.length).toBe(1)

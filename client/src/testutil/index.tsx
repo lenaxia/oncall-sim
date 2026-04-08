@@ -119,6 +119,7 @@ export function buildTicket(overrides: Partial<Ticket> = {}): Ticket {
     status:      'open',
     description: 'Test description.',
     createdBy:   'fixture-persona',
+    assignee:    'trainee',
     simTime:     0,
     ...overrides,
   }

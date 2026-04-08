@@ -156,6 +156,7 @@ ticketing:
       3. Upstream traffic spike (RPS looks normal)
 
     created_by: sara-chen
+    assignee: trainee
     at_second: -60
 
 ops_dashboard:

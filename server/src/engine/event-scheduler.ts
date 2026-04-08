@@ -100,6 +100,7 @@ function buildPendingEvents(scenario: LoadedScenario): PendingEvent[] {
       status:      t.status,
       description: t.description,
       createdBy:   t.createdBy,
+      assignee:    t.assignee,
       simTime:     t.atSecond,
     }
     events.push({ simTime: t.atSecond, fired: false, expand: () => [{ kind: 'ticket', simTime: t.atSecond, ticket }] })

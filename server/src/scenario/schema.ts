@@ -153,6 +153,7 @@ const TicketSchema = z.object({
   description:  z.string().optional(),
   description_file: z.string().optional(),
   created_by:   z.string().min(1),
+  assignee:     z.string().optional(),   // persona id or 'trainee'; defaults to 'trainee'
   at_second:    z.number(),
 })
 
