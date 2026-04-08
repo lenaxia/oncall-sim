@@ -77,6 +77,7 @@ alarms:
     metric_id: error_rate
     condition: "error_rate > 5%"
     severity: SEV2
+    auto_fire: false
     onset_second: 0
     auto_page: true
     page_message: "fixture-service error rate 12% (threshold: 5%)"

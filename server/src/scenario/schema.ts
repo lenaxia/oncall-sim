@@ -20,8 +20,10 @@ const AlarmConfigSchema = z.object({
   metric_id:    z.string().min(1),
   condition:    z.string().min(1),
   severity:     z.enum(['SEV1', 'SEV2', 'SEV3', 'SEV4']),
-  onset_second: z.number(),
-  auto_page:    z.boolean(),
+  threshold:    z.number().optional(),            // value at which this alarm fires (computed mode)
+  auto_fire:    z.boolean().optional().default(true), // true = fire when metric crosses threshold
+  onset_second: z.number().optional(),            // override: fire at this simTime instead of threshold
+  auto_page:    z.boolean().optional().default(false),
   page_message: z.string().optional(),
 })
 

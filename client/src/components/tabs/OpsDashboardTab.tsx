@@ -89,17 +89,20 @@ export function OpsDashboardTab({ activeService, onServiceChange }: OpsDashboard
         {/* Metric charts */}
         <div className="grid grid-cols-2 gap-3">
           {Object.entries(serviceMetrics).map(([metricId, series]) => {
-            const key = `${activeService}:${metricId}`
+            const key  = `${activeService}:${metricId}`
+            const meta = scenario?.metricsMeta?.[activeService]?.[metricId]
             return (
               <MetricChart
                 key={metricId}
                 metricId={metricId}
                 service={activeService}
-                label={metricId}
-                unit=""
+                label={meta?.label ?? metricId}
+                unit={meta?.unit ?? ''}
                 series={series}
                 simTime={state.simTime}
                 clockAnchorMs={state.clockAnchorMs}
+                warningThreshold={meta?.warningThreshold}
+                criticalThreshold={meta?.criticalThreshold}
                 onFirstHover={() => {
                   if (!viewedMetrics.current.has(key)) {
                     viewedMetrics.current.add(key)

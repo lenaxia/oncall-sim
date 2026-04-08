@@ -106,19 +106,21 @@ function buildPendingEvents(scenario: LoadedScenario): PendingEvent[] {
     events.push({ simTime: t.atSecond, fired: false, expand: () => [{ kind: 'ticket', simTime: t.atSecond, ticket }] })
   }
 
-  // Alarms (with auto-page expansion)
+  // Alarms: only schedule scripted alarms (autoFire=false).
+  // Computed alarms (autoFire=true) are fired by the game loop when metrics breach thresholds.
   for (const a of scenario.alarms) {
+    if (a.autoFire) continue   // handled by threshold detection in game loop
+    const simTime = a.onsetSecond ?? 0
     const alarm: Alarm = {
       id:        a.id,
       service:   a.service,
       metricId:  a.metricId,
       condition: a.condition,
-      value:     0,                // runtime value — no static value available at schedule time
+      value:     0,
       severity:  a.severity,
       status:    'firing',
-      simTime:   a.onsetSecond,
+      simTime,
     }
-    const simTime = a.onsetSecond
     events.push({
       simTime,
       fired: false,
@@ -130,7 +132,6 @@ function buildPendingEvents(scenario: LoadedScenario): PendingEvent[] {
           const alarmId = a.id
           const svc     = a.service
 
-          // Auto-page: generate a PagerDuty-style email
           const pageEmail: EmailMessage = {
             id:       `auto-page-email-${alarmId}`,
             threadId: `page-${alarmId}`,
@@ -142,7 +143,6 @@ function buildPendingEvents(scenario: LoadedScenario): PendingEvent[] {
           }
           result.push({ kind: 'email', simTime, email: pageEmail })
 
-          // Auto-page: generate a bot chat message in #incidents
           const botMsg: ChatMessage = {
             id:      `auto-page-chat-${alarmId}`,
             channel: '#incidents',

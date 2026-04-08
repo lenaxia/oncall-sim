@@ -219,18 +219,77 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
 
     // Step 1: advance clock
     clock.tick(realElapsedMs)
+    const simTime = clock.getSimTime()
 
     // Step 2: fire due scripted events
-    const due = scheduler.tick(clock.getSimTime())
+    const due = scheduler.tick(simTime)
     for (const se of due) {
       handleScriptedEvent(se)
       _dirty = true
     }
 
-    // Step 3: broadcast sim_time
+    // Step 3: computed alarm threshold detection
+    // Check autoFire alarms — fire when metric value first crosses threshold
+    const firedAlarmIds = new Set(store.snapshot().alarms.map(a => a.id))
+    for (const alarmConfig of scenario.alarms) {
+      if (!alarmConfig.autoFire || firedAlarmIds.has(alarmConfig.id)) continue
+      const threshold = alarmConfig.threshold
+      if (threshold == null) continue
+
+      // Get current metric value: find last point at or before simTime
+      const series = metrics[alarmConfig.service]?.[alarmConfig.metricId]
+      if (!series || series.length === 0) continue
+      const point = [...series].reverse().find(p => p.t <= simTime)
+      if (!point) continue
+
+      if (point.v >= threshold) {
+        const alarm: import('@shared/types/events').Alarm = {
+          id:        alarmConfig.id,
+          service:   alarmConfig.service,
+          metricId:  alarmConfig.metricId,
+          condition: alarmConfig.condition,
+          value:     point.v,
+          severity:  alarmConfig.severity,
+          status:    'firing',
+          simTime,
+        }
+        applySimEventToStore({ type: 'alarm_fired', alarm })
+        emit({ type: 'alarm_fired', alarm })
+        _dirty = true
+
+        // Auto-page if configured
+        if (alarmConfig.autoPage && alarmConfig.pageMessage) {
+          const msg = alarmConfig.pageMessage
+          const svc = alarmConfig.service
+          const pageEmail: import('@shared/types/events').EmailMessage = {
+            id:       `auto-page-email-${alarmConfig.id}`,
+            threadId: `page-${alarmConfig.id}`,
+            from:     'pagerduty-bot',
+            to:       'trainee',
+            subject:  `[ALERT] ${svc}: ${msg}`,
+            body:     `**PagerDuty Alert**\n\nService: ${svc}\nSeverity: ${alarm.severity}\n\n${msg}\n\nAcknowledge this alert to stop further escalation.`,
+            simTime,
+          }
+          applySimEventToStore({ type: 'email_received', email: pageEmail })
+          emit({ type: 'email_received', email: pageEmail })
+
+          const botMsg: import('@shared/types/events').ChatMessage = {
+            id:      `auto-page-chat-${alarmConfig.id}`,
+            channel: '#incidents',
+            persona: 'pagerduty-bot',
+            text:    `🔔 **${alarm.severity}** | ${svc} | ${msg}`,
+            simTime,
+          }
+          applySimEventToStore({ type: 'chat_message', channel: '#incidents', message: botMsg })
+          emit({ type: 'chat_message', channel: '#incidents', message: botMsg })
+        }
+      }
+    }
+
+    // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent())
 
-    // Step 4: dirty tick
+    // Step 5: dirty tick
     if (_dirty) triggerDirtyTick()
   }
 

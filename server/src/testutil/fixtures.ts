@@ -24,6 +24,7 @@ export const FIXTURE_ALARM: AlarmConfig = {
   metricId:    'error_rate',
   condition:   'error_rate > 5%',
   severity:    'SEV2',
+  autoFire:    false,
   onsetSecond: 0,
   autoPage:    true,
   pageMessage: 'fixture-service error rate 12% (threshold: 5%)',

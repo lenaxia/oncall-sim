@@ -68,7 +68,9 @@ export interface AlarmConfig {
   metricId:     string
   condition:    string
   severity:     AlarmSeverity
-  onsetSecond:  number
+  threshold?:   number       // fires when metric >= threshold (auto_fire mode)
+  autoFire:     boolean      // true = computed from threshold; false = scripted at onsetSecond
+  onsetSecond?: number       // used when autoFire=false
   autoPage:     boolean
   pageMessage?: string
 }

@@ -298,8 +298,10 @@ async function transform(
     metricId:     a.metric_id,
     condition:    a.condition,
     severity:     a.severity,
+    threshold:    a.threshold,
+    autoFire:     a.auto_fire ?? true,
     onsetSecond:  a.onset_second,
-    autoPage:     a.auto_page,
+    autoPage:     a.auto_page  ?? false,
     pageMessage:  a.page_message,
   }))
 

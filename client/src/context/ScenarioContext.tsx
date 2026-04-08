@@ -11,6 +11,13 @@ export interface PersonaConfig {
   systemPrompt: string
 }
 
+export interface MetricMeta {
+  label:              string
+  unit:               string
+  warningThreshold?:  number
+  criticalThreshold?: number
+}
+
 export interface ScenarioConfig {
   id:          string
   title:       string
@@ -27,6 +34,8 @@ export interface ScenarioConfig {
   wikiPages:    Array<{ title: string; content: string }>
   featureFlags: Array<{ id: string; label: string }>
   cicd:         { pipelines: Array<{ service: string; steps: string[] }> }
+  /** Metric display metadata keyed by service → metricId */
+  metricsMeta:  Record<string, Record<string, MetricMeta>>
   evaluation: {
     rootCause:       string
     relevantActions: Array<{ action: string; why: string }>
@@ -82,10 +91,34 @@ export function ScenarioProvider({ scenarioId, children }: ScenarioProviderProps
 // ScenarioConfig shape the client expects.
 
 function normalise(raw: Record<string, unknown>): ScenarioConfig {
-  const wiki    = (raw.wiki as { pages?: Array<{ title: string; content: string }> } | undefined)
-  const engine  = (raw.engine as { defaultTab?: string; tickIntervalSeconds?: number } | undefined)
-  const cicd    = (raw.cicd as { pipelines?: Array<{ service: string }> } | undefined)
+  const wiki         = (raw.wiki as { pages?: Array<{ title: string; content: string }> } | undefined)
+  const engine       = (raw.engine as { defaultTab?: string; tickIntervalSeconds?: number } | undefined)
+  const cicd         = (raw.cicd as { pipelines?: Array<{ service: string }> } | undefined)
   const featureFlags = (raw.featureFlags as Array<{ id: string; label: string }> | undefined) ?? []
+
+  // Extract metric threshold/label metadata from opsDashboard
+  type RawMetric = { archetype: string; label?: string; unit?: string; warningThreshold?: number; criticalThreshold?: number }
+  type RawService = { name: string; metrics?: RawMetric[]; overrides?: RawMetric[] }
+  type RawOpsDashboard = { focalService?: RawService; correlatedServices?: RawService[] }
+  const ops = (raw.opsDashboard as RawOpsDashboard | undefined)
+  const metricsMeta: Record<string, Record<string, MetricMeta>> = {}
+
+  function addMetrics(svc: RawService) {
+    const metrics = [...(svc.metrics ?? []), ...(svc.overrides ?? [])]
+    if (metrics.length === 0) return
+    metricsMeta[svc.name] = metricsMeta[svc.name] ?? {}
+    for (const m of metrics) {
+      metricsMeta[svc.name][m.archetype] = {
+        label:             m.label ?? m.archetype,
+        unit:              m.unit  ?? '',
+        warningThreshold:  m.warningThreshold,
+        criticalThreshold: m.criticalThreshold,
+      }
+    }
+  }
+
+  if (ops?.focalService)       addMetrics(ops.focalService)
+  for (const cs of ops?.correlatedServices ?? []) addMetrics(cs)
 
   return {
     id:          raw.id as string,
@@ -98,6 +131,7 @@ function normalise(raw: Record<string, unknown>): ScenarioConfig {
     personas:    (raw.personas as PersonaConfig[]) ?? [],
     wikiPages:   wiki?.pages ?? [],
     featureFlags,
+    metricsMeta,
     cicd: {
       pipelines: (cicd?.pipelines ?? []).map(p => ({ service: p.service, steps: [] })),
     },

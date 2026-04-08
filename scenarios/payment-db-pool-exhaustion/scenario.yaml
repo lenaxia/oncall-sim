@@ -46,7 +46,7 @@ personas:
       deployed about 20 minutes ago — MAX_DB_CONNECTIONS was supposed to go from 20 to 50
       but I'm seeing 5 in the running config. Looks like a typo in the PR."
 
-      Keep responses concise (1-3 sentences). Use Slack-style casual tone.
+      Keep responses concise (1-3 sentences). Use Slack-style casual tone. 
 
   - id: david-park
     display_name: "David Park"
@@ -160,7 +160,7 @@ ticketing:
     at_second: -60
 
 ops_dashboard:
-  pre_incident_seconds: 86400
+  pre_incident_seconds: 43200
   resolution_seconds: 60
   focal_service:
     name: payment-service
@@ -220,17 +220,19 @@ alarms:
   - id: alarm-latency-001
     service: payment-service
     metric_id: p99_latency_ms
-    condition: "p99_latency > 2000ms"
+    condition: "p99 latency > 2000ms"
     severity: SEV2
-    onset_second: 0
+    threshold: 2000
+    auto_fire: true
     auto_page: true
-    page_message: "payment-service p99 latency 8.4s (threshold: 2s). Checkout degraded."
+    page_message: "payment-service p99 latency breached 2s threshold. Checkout degraded."
   - id: alarm-error-001
     service: payment-service
     metric_id: error_rate
-    condition: "error_rate > 5%"
+    condition: "error rate > 5%"
     severity: SEV2
-    onset_second: 15
+    threshold: 5
+    auto_fire: true
     auto_page: false
 
 logs:

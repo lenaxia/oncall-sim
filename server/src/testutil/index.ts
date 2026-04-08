@@ -105,8 +105,10 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
       metricId:    a.metric_id as string,
       condition:   a.condition as string,
       severity:    a.severity as AlarmConfig['severity'],
-      onsetSecond: a.onset_second as number,
-      autoPage:    a.auto_page as boolean,
+      threshold:   a.threshold as number | undefined,
+      autoFire:    (a.auto_fire ?? true) as boolean,
+      onsetSecond: a.onset_second as number | undefined,
+      autoPage:    (a.auto_page ?? false) as boolean,
       pageMessage: a.page_message as string | undefined,
     })),
     remediationActions: ((raw.remediation_actions ?? []) as Array<Record<string, unknown>>).map(r => ({
