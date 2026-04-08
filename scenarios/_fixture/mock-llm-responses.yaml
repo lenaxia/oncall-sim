@@ -1,0 +1,42 @@
+stakeholder_responses:
+  - trigger: tick_1
+    tool_calls:
+      - tool: send_message
+        params:
+          persona: fixture-persona
+          channel: "#incidents"
+          message: "Still seeing errors on fixture-service. Anyone investigating?"
+
+  - trigger: after_action:trigger_rollback:fixture-service
+    tool_calls:
+      - tool: send_message
+        params:
+          persona: fixture-persona
+          channel: "#incidents"
+          message: "Looks like things are recovering — error rate coming down."
+      - tool: inject_log_entry
+        params:
+          service: fixture-service
+          level: INFO
+          message: "Rollback to v1.0.0 complete — error rate recovering"
+
+coach_responses:
+  - trigger: proactive_tick_1
+    message: "You've been investigating for a while. Have you checked the CI/CD tab for recent deployments?"
+
+  - trigger: on_demand
+    message: "Look at the deployment timestamps relative to when the error rate started climbing."
+
+debrief_response:
+  narrative: |
+    The incident was caused by a bad deployment (v1.0.1) to fixture-service that introduced
+    a bug resulting in elevated error rates.
+
+    The trainee identified the deployment as the root cause by reviewing the CI/CD history
+    and correctly rolled back to the stable v1.0.0 version.
+
+    An experienced SRE would also have monitored the recovery metrics after the rollback
+    to confirm the fix was effective before marking the incident resolved.
+
+    Key things to watch for: always correlate deployment timing with incident onset,
+    and confirm metric recovery before declaring victory.

@@ -1,0 +1,151 @@
+id: _fixture
+title: Fixture Scenario
+description: Minimal scenario used by all automated tests. Not a real training scenario.
+service_type: api
+difficulty: easy
+tags: [fixture, test]
+
+timeline:
+  default_speed: 1
+  duration_minutes: 10
+
+topology:
+  focal_service: fixture-service
+  upstream: []
+  downstream: []
+
+engine:
+  tick_interval_seconds: 10
+  llm_event_tools:
+    - tool: fire_alarm
+      max_calls: 1
+    - tool: inject_log_entry
+      enabled: true
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-001
+    from: fixture-persona
+    to: trainee
+    subject: "fixture-service error rate elevated"
+    body: "fixture-service is reporting elevated error rates. Please investigate."
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: fixture-persona
+      text: "fixture-service error rate spiking — looking into it"
+
+ticketing:
+  - id: ticket-001
+    title: "fixture-service elevated error rate"
+    severity: SEV2
+    status: open
+    description: "fixture-service error rate is above threshold. Needs investigation."
+    created_by: fixture-persona
+    at_second: 0
+
+ops_dashboard:
+  pre_incident_seconds: 120
+  resolution_seconds: 15
+  focal_service:
+    name: fixture-service
+    scale:
+      typical_rps: 100
+      instance_count: 2
+      max_connections: 10
+    traffic_profile: always_on_api
+    health: healthy
+    incident_type: bad_deploy_latency
+    metrics:
+      - archetype: error_rate
+        critical_threshold: 5
+        incident_peak: 12.0
+        onset_second: 0
+
+alarms:
+  - id: fixture-alarm-001
+    service: fixture-service
+    metric_id: error_rate
+    condition: "error_rate > 5%"
+    severity: SEV2
+    onset_second: 0
+    auto_page: true
+    page_message: "fixture-service error rate 12% (threshold: 5%)"
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: fixture-service
+    message: "Error rate exceeded threshold: 12.0%"
+
+wiki:
+  pages:
+    - title: "fixture-service Runbook"
+      content: |
+        # fixture-service Runbook
+
+        ## Rollback procedure
+        1. Go to CI/CD tab
+        2. Trigger rollback to previous version
+
+cicd:
+  pipelines:
+    - id: pipeline-001
+      service: fixture-service
+      name: "fixture-service deploy"
+  deployments:
+    - service: fixture-service
+      version: v1.0.1
+      deployed_at_sec: -300
+      status: active
+      commit_message: "feat: add new feature (introduces bug)"
+      author: fixture-persona
+    - service: fixture-service
+      version: v1.0.0
+      deployed_at_sec: -86400
+      status: previous
+      commit_message: "chore: stable release"
+      author: fixture-persona
+
+personas:
+  - id: fixture-persona
+    display_name: "Test Persona"
+    avatar_color: "#4A90E2"
+    initiates_contact: true
+    cooldown_seconds: 60
+    silent_until_contacted: false
+    system_prompt: |
+      You are a test persona. You observe that fixture-service has elevated error rates.
+      When asked for updates, provide brief status messages.
+
+remediation_actions:
+  - id: rollback_fixture_service
+    type: rollback
+    service: fixture-service
+    is_correct_fix: true
+    target_version: v1.0.0
+
+evaluation:
+  root_cause: "A bad deployment (v1.0.1) introduced a bug causing elevated error rates in fixture-service."
+  relevant_actions:
+    - action: view_deployment_history
+      why: "Identifies the recent deployment as the likely cause."
+    - action: trigger_rollback
+      why: "Rolling back to v1.0.0 resolves the issue."
+      service: fixture-service
+    - action: monitor_recovery
+      why: "Confirms the rollback resolved the error rate spike."
+  red_herrings:
+    - action: restart_service
+      why: "Restarting does not fix a bad deployment — the bug is in the code."
+  debrief_context: |
+    This is a straightforward bad deployment scenario. The key skill being tested is
+    correlating deployment timing with incident onset, then executing a rollback.
