@@ -1,0 +1,464 @@
+id: payment-db-pool-exhaustion
+title: "Payment Service: Database Connection Pool Exhausted"
+description: >
+  The payment processing service is degrading. Customers are seeing slow checkouts
+  and intermittent failures. A recent config change may be involved.
+service_type: api
+difficulty: medium
+tags: [database, connection-pool, config-change, payments]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 15
+
+topology:
+  focal_service: payment-service
+  upstream: [api-gateway]
+  downstream: [postgres-primary, fraud-service]
+
+engine:
+  tick_interval_seconds: 15
+  default_tab: email
+  llm_event_tools:
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 2
+
+personas:
+  - id: sara-chen
+    display_name: "Sara Chen"
+    job_title: "Staff Software Engineer"
+    team: "Payments"
+    avatar_color: "#7C3AED"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Sara Chen, Staff SWE on the Payments team. You own the payment-service.
+      You noticed the latency spike and opened a ticket. You know there was a config
+      change deployed 20 minutes ago (MAX_DB_CONNECTIONS changed from 20 to 5 by mistake).
+      You suspect the DB pool but haven't confirmed it yet.
+
+      When the trainee contacts you, be helpful but let them lead the investigation.
+      Share the config change detail only if they ask about recent changes or deploys.
+      If they ask directly "what changed recently?" tell them: "We had a config update
+      deployed about 20 minutes ago — MAX_DB_CONNECTIONS was supposed to go from 20 to 50
+      but I'm seeing 5 in the running config. Looks like a typo in the PR."
+
+      Keep responses concise (1-3 sentences). Use Slack-style casual tone.
+
+  - id: david-park
+    display_name: "David Park"
+    job_title: "Database Reliability Engineer"
+    team: "Infrastructure"
+    avatar_color: "#059669"
+    initiates_contact: false
+    cooldown_seconds: 120
+    silent_until_contacted: true
+    system_prompt: |
+      You are David Park, DRE on the Infrastructure team. You manage the PostgreSQL
+      clusters. If paged or contacted, you can confirm that postgres-primary itself is
+      healthy — connection count to the DB is low, the DB is not the problem.
+      The issue is on the application side (connection pool config).
+
+      If asked about the DB: "postgres-primary looks completely fine from my end —
+      low connection count, no slow queries, no replication lag. The DB isn't the
+      problem here."
+
+      Keep responses concise. Be direct.
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-payment-alert
+    from: sara-chen
+    to: trainee
+    subject: "[ALERT] payment-service latency p99 > 8s — checkout degraded"
+    body: |
+      Hey,
+
+      Getting paged on payment-service. p99 latency is at 8+ seconds and climbing.
+      Error rate is ~15%. Customers are seeing slow checkouts and some failures.
+
+      I've opened a ticket (PAY-1042). Taking a look now but could use another set
+      of eyes — this is hitting checkout hard.
+
+      — Sara
+
+  - id: email-002
+    at_second: 120
+    thread_id: thread-payment-alert
+    from: sara-chen
+    to: trainee
+    subject: "[ALERT] payment-service latency p99 > 8s — checkout degraded"
+    body: |
+      Update: checked the DB — postgres-primary looks fine. Connection count is
+      actually lower than normal, which is weird. Starting to think this might be
+      on our side.
+
+      Looking at the connection pool logs now.
+
+      — Sara
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: payments-eng
+      name: "#payments-eng"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: sara-chen
+      text: "payment-service is degrading — p99 latency spiking, ~15% error rate. On it."
+    - id: chat-002
+      at_second: 30
+      channel: "#incidents"
+      persona: sara-chen
+      text: "Opened PAY-1042. Metrics look bad but DB seems ok from the outside."
+    - id: chat-003
+      at_second: 180
+      channel: "#payments-eng"
+      persona: sara-chen
+      text: "Anyone know if there was a config change deployed recently? Something feels off with the pool."
+
+ticketing:
+  - id: PAY-1042
+    title: "payment-service: elevated latency and error rate"
+    severity: SEV2
+    status: open
+    description: |
+      ## Summary
+
+      payment-service is experiencing elevated p99 latency (>8s) and ~15% error rate
+      starting at approximately T+0. Checkout flow is degraded for customers.
+
+      ## Symptoms
+
+      - p99 latency: **8.4s** (baseline: ~120ms)
+      - Error rate: **15.2%** (baseline: <0.5%)
+      - Affected: all payment processing endpoints
+      - DB health: postgres-primary appears healthy (low connection count)
+
+      ## Timeline
+
+      - T-0:20 — Config change deployed (payment-service v2.4.1)
+      - T+0:00 — Latency spike begins
+      - T+0:05 — PagerDuty alert fires
+      - T+0:08 — This ticket opened
+
+      ## Hypotheses
+
+      1. Config change (v2.4.1) introduced a regression
+      2. Database issue (DB appears healthy — lower priority)
+      3. Upstream traffic spike (RPS looks normal)
+
+    created_by: sara-chen
+    at_second: -60
+
+ops_dashboard:
+  pre_incident_seconds: 300
+  resolution_seconds: 30
+  focal_service:
+    name: payment-service
+    scale:
+      typical_rps: 200
+      instance_count: 4
+      max_connections: 5
+    traffic_profile: always_on_api
+    health: degraded
+    incident_type: connection_pool_exhaustion
+    metrics:
+      - archetype: p99_latency_ms
+        label: "p99 Latency"
+        unit: "ms"
+        critical_threshold: 2000
+        warning_threshold: 500
+        incident_peak: 8400
+        onset_second: 0
+        noise: low
+      - archetype: error_rate
+        label: "Error Rate"
+        unit: "%"
+        critical_threshold: 5
+        warning_threshold: 2
+        incident_peak: 15.2
+        onset_second: 0
+        noise: low
+      - archetype: request_rate
+        label: "Request Rate"
+        unit: "rps"
+        noise: low
+      - archetype: connection_pool_used
+        label: "DB Pool Wait"
+        unit: "ms"
+        critical_threshold: 1000
+        incident_peak: 7800
+        onset_second: 0
+        noise: low
+  correlated_services:
+    - name: postgres-primary
+      correlation: exonerated
+      health: healthy
+      overrides:
+        - archetype: connection_pool_used
+          label: "Active Connections"
+          unit: "conns"
+          baseline_value: 18
+          incident_response:
+            overlay: step_down
+            onset_second: 0
+            peak_value: 4
+    - name: api-gateway
+      correlation: independent
+      health: healthy
+
+alarms:
+  - id: alarm-latency-001
+    service: payment-service
+    metric_id: p99_latency_ms
+    condition: "p99_latency > 2000ms"
+    severity: SEV2
+    onset_second: 0
+    auto_page: true
+    page_message: "payment-service p99 latency 8.4s (threshold: 2s). Checkout degraded."
+  - id: alarm-error-001
+    service: payment-service
+    metric_id: error_rate
+    condition: "error_rate > 5%"
+    severity: SEV2
+    onset_second: 15
+    auto_page: false
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: payment-service
+    message: "HikariCP - Connection is not available, request timed out after 30000ms"
+  - id: log-002
+    at_second: 0
+    level: ERROR
+    service: payment-service
+    message: "HikariCP - Connection is not available, request timed out after 30000ms"
+  - id: log-003
+    at_second: 5
+    level: WARN
+    service: payment-service
+    message: "HikariPool-1 - Pool stats (total=5, active=5, idle=0, waiting=47)"
+  - id: log-004
+    at_second: 5
+    level: ERROR
+    service: payment-service
+    message: "Unable to acquire JDBC Connection; nested exception is com.zaxxer.hikari.pool.HikariPool$PoolInitializationException"
+  - id: log-005
+    at_second: 10
+    level: INFO
+    service: payment-service
+    message: "HikariPool-1 - Starting... (maxPoolSize=5, minIdle=5)"
+  - id: log-006
+    at_second: 30
+    level: WARN
+    service: payment-service
+    message: "HikariPool-1 - Thread starvation or clock leap detected (hint: increase maxPoolSize)"
+  - id: log-007
+    at_second: 60
+    level: ERROR
+    service: payment-service
+    message: "POST /v1/charges - 500 Internal Server Error - duration: 30041ms"
+  - id: log-008
+    at_second: 60
+    level: ERROR
+    service: payment-service
+    message: "POST /v1/charges - 500 Internal Server Error - duration: 30039ms"
+  - id: log-009
+    at_second: 90
+    level: INFO
+    service: payment-service
+    message: "health check: DB connectivity OK (acquired connection in 8234ms)"
+  - id: log-010
+    at_second: 120
+    level: DEBUG
+    service: payment-service
+    message: "Config loaded: MAX_DB_CONNECTIONS=5, MIN_IDLE=5, CONNECTION_TIMEOUT=30000"
+
+wiki:
+  pages:
+    - title: "payment-service Runbook"
+      content: |
+        # payment-service Runbook
+
+        ## Overview
+
+        payment-service handles all payment processing. It connects to `postgres-primary`
+        via HikariCP connection pool.
+
+        **Critical config values** (set via environment variables):
+        | Variable | Default | Notes |
+        |---|---|---|
+        | `MAX_DB_CONNECTIONS` | 20 | HikariCP maxPoolSize |
+        | `MIN_IDLE` | 5 | Minimum idle connections |
+        | `CONNECTION_TIMEOUT_MS` | 5000 | Max wait time for a connection |
+
+        ## Common Incidents
+
+        ### DB Connection Pool Exhaustion
+
+        **Symptoms:**
+        - HikariCP log: `Pool stats (total=N, active=N, idle=0, waiting=M)` where idle=0
+        - High p99 latency (connections queuing)
+        - Errors: "Connection is not available, request timed out"
+
+        **Diagnosis:**
+        1. Check logs for HikariCP pool stats — `idle=0` and `waiting>0` confirms exhaustion
+        2. Check `MAX_DB_CONNECTIONS` config value in running service
+        3. Compare against expected value (should be 20+)
+
+        **Resolution options (in order of preference):**
+        1. **Config fix deploy** — if pool size is misconfigured, deploy corrected config
+        2. **Emergency deploy** — if a hotfix is ready
+        3. **Rollback** — if the bad config was introduced in the most recent deploy
+
+        ### High Error Rate (not pool-related)
+
+        Separate playbook — see "payment-service Error Rate Runbook".
+
+    - title: "HikariCP Tuning Guide"
+      content: |
+        # HikariCP Connection Pool Tuning
+
+        ## Key Parameters
+
+        `maximumPoolSize` — maximum number of connections the pool will maintain.
+        Formula: `((core_count * 2) + effective_spindle_count)`. For our 4-core
+        instances connecting to a remote DB: **recommended value is 20–30**.
+
+        Setting this too low (e.g. 5) will cause pool exhaustion under any meaningful
+        load. Setting it too high wastes DB connections.
+
+        ## Reading Pool Stats in Logs
+
+        ```
+        HikariPool-1 - Pool stats (total=5, active=5, idle=0, waiting=47)
+        ```
+
+        - `total` — pool size (maxPoolSize)
+        - `active` — connections currently in use
+        - `idle` — connections available (0 = exhausted)
+        - `waiting` — threads waiting for a connection
+
+        A healthy pool should have `idle > 0` during normal operation.
+
+    - title: "On-Call Escalation Policy"
+      content: |
+        # On-Call Escalation Policy — Payments
+
+        ## Severity Definitions
+
+        | Severity | Customer Impact | Response Time |
+        |---|---|---|
+        | SEV1 | Complete outage | Immediate (< 5 min) |
+        | SEV2 | Degraded (>5% errors or >2s p99) | < 15 min |
+        | SEV3 | Minor degradation | < 1 hour |
+        | SEV4 | No customer impact | Next business day |
+
+        ## Escalation Path
+
+        1. **Primary on-call** (you) — first responder
+        2. **Service owner** (Sara Chen, Payments) — if unresolved in 15 min
+        3. **Infrastructure DRE** (David Park) — for DB/infra issues
+        4. **VP Engineering** — for SEV1 only
+
+        ## Runbooks
+
+        - payment-service: `wiki/payment-service-runbook`
+        - Database: `wiki/postgres-runbook`
+        - Networking: `wiki/network-runbook`
+
+cicd:
+  pipelines:
+    - id: pipeline-payment
+      service: payment-service
+      name: "payment-service deploy pipeline"
+  deployments:
+    - service: payment-service
+      version: v2.4.1
+      deployed_at_sec: -1200
+      status: active
+      commit_message: "config: increase DB pool size for high-traffic preparation"
+      author: sara-chen
+    - service: payment-service
+      version: v2.4.0
+      deployed_at_sec: -86400
+      status: previous
+      commit_message: "feat: add idempotency key support for charge retries"
+      author: sara-chen
+    - service: payment-service
+      version: v2.3.9
+      deployed_at_sec: -172800
+      status: previous
+      commit_message: "fix: handle 3DS authentication timeout edge case"
+      author: sara-chen
+
+remediation_actions:
+  - id: rollback_payment_v2_4_0
+    type: rollback
+    service: payment-service
+    is_correct_fix: true
+    target_version: v2.4.0
+    side_effect: "Reverts to v2.4.0 (MAX_DB_CONNECTIONS=20). Pool recovers within 30s."
+
+  - id: emergency_deploy_config_fix
+    type: emergency_deploy
+    service: payment-service
+    is_correct_fix: true
+    side_effect: "Deploys corrected config (MAX_DB_CONNECTIONS=50). Pool recovers within 30s."
+
+  - id: restart_service
+    type: restart_service
+    service: payment-service
+    is_correct_fix: false
+    side_effect: "Service restarts with same bad config — pool exhausts again immediately."
+
+evaluation:
+  root_cause: >
+    payment-service v2.4.1 was deployed 20 minutes before the incident with a typo in
+    the DB connection pool config: MAX_DB_CONNECTIONS was set to 5 instead of the intended 50.
+    With only 5 connections available and normal traffic (~200 rps), the pool exhausted
+    immediately, causing all requests to queue and time out at the 30s connection timeout.
+    The fix is to roll back to v2.4.0 or deploy a corrected config.
+
+  relevant_actions:
+    - action: view_deployment_history
+      why: "Reveals v2.4.1 deployed 20 minutes before incident onset — key diagnostic step."
+      service: payment-service
+    - action: search_logs
+      why: "HikariCP pool stats logs directly show pool exhaustion (idle=0, waiting=47)."
+    - action: read_wiki_page
+      why: "Payment-service runbook describes DB pool exhaustion and resolution steps."
+    - action: trigger_rollback
+      why: "Rolling back to v2.4.0 restores MAX_DB_CONNECTIONS=20 and resolves the incident."
+      service: payment-service
+      remediation_action_id: rollback_payment_v2_4_0
+    - action: mark_resolved
+      why: "Explicitly closing the incident confirms resolution and ends the simulation."
+
+  red_herrings:
+    - action: restart_service
+      why: "Restarting does not change config — the service comes back with the same pool size of 5 and exhausts immediately."
+    - action: suppress_alarm
+      why: "Silencing alarms without investigating delays diagnosis and leaves the incident unresolved."
+    - action: scale_cluster
+      why: "Adding more instances doesn't help — each instance has only 5 connections, so scaling 4x gives 20 total (vs the normal single-instance pool of 20)."
+
+  debrief_context: |
+    This scenario tests the ability to diagnose a config regression under time pressure.
+    The key diagnostic path is: check deployment history → see recent deploy → check logs
+    for HikariCP pool stats → confirm pool exhaustion → correlate with config change →
+    roll back or deploy fix.
+
+    The most common mistakes are: (1) focusing on the database (DB is healthy — the pool
+    stats log is the tell), (2) restarting the service (doesn't fix config), and (3) not
+    checking the wiki runbook which describes this exact failure mode.
