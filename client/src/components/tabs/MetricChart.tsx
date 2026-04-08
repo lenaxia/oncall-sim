@@ -13,8 +13,7 @@ interface MetricChartProps {
   series:             TimeSeriesPoint[]
   simTime:            number
   clockAnchorMs:      number
-  warningThreshold?:  number
-  criticalThreshold?: number
+  criticalThreshold?: number   // single alarm threshold — red line when breached
   onFirstHover?:      () => void
 }
 
@@ -23,7 +22,7 @@ const DEFAULT_WINDOW_SECONDS = 4 * 3600
 
 export function MetricChart({
   metricId: _metricId, service: _service, label, unit, series, simTime,
-  clockAnchorMs, warningThreshold, criticalThreshold, onFirstHover,
+  clockAnchorMs, criticalThreshold, onFirstHover,
 }: MetricChartProps) {
   // All points up to now
   const visible = series.filter(p => p.t <= simTime)
@@ -37,10 +36,8 @@ export function MetricChart({
   )
   const defaultEndIndex = visible.length > 0 ? visible.length - 1 : 0
 
-  const breachCrit = criticalThreshold != null && current != null && current >= criticalThreshold
-  const breachWarn = warningThreshold  != null && current != null && current >= warningThreshold
-
-  const lineColor = breachCrit ? '#f85149' : breachWarn ? '#d29922' : '#1f6feb'
+  const breaching = criticalThreshold != null && current != null && current >= criticalThreshold
+  const lineColor = breaching ? '#f85149' : '#1f6feb'
 
   const valueDisplay = current != null
     ? `${current.toFixed(current < 10 ? 2 : 1)} ${unit}`.trim()
@@ -66,11 +63,10 @@ export function MetricChart({
       <div className="px-3 py-1.5 border-b border-sim-border flex items-center justify-between">
         <span className="text-xs font-medium text-sim-text">{label}</span>
         <div className="flex items-center gap-2">
-          <span className={`text-sm font-semibold tabular-nums ${breachCrit ? 'text-sim-red' : breachWarn ? 'text-sim-yellow' : 'text-sim-text'}`}>
+          <span className={`text-sm font-semibold tabular-nums ${breaching ? 'text-sim-red' : 'text-sim-text'}`}>
             {valueDisplay}
           </span>
-          {breachCrit && <Badge label="CRITICAL" variant="sev1" />}
-          {!breachCrit && breachWarn && <Badge label="WARNING" variant="warning" />}
+          {breaching && <Badge label="ALARM" variant="sev1" />}
         </div>
       </div>
 
@@ -116,9 +112,6 @@ export function MetricChart({
             />
             {criticalThreshold != null && (
               <ReferenceLine y={criticalThreshold} stroke="#f85149" strokeDasharray="4 2" strokeWidth={1} />
-            )}
-            {warningThreshold != null && (
-              <ReferenceLine y={warningThreshold} stroke="#d29922" strokeDasharray="4 2" strokeWidth={1} />
             )}
             <Line
               type="monotone"

@@ -14,8 +14,7 @@ export interface PersonaConfig {
 export interface MetricMeta {
   label:              string
   unit:               string
-  warningThreshold?:  number
-  criticalThreshold?: number
+  criticalThreshold?: number   // alarm threshold — shown as red reference line
 }
 
 export interface ScenarioConfig {
@@ -111,7 +110,6 @@ function normalise(raw: Record<string, unknown>): ScenarioConfig {
       metricsMeta[svc.name][m.archetype] = {
         label:             m.label ?? m.archetype,
         unit:              m.unit  ?? '',
-        warningThreshold:  m.warningThreshold,
         criticalThreshold: m.criticalThreshold,
       }
     }

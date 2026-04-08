@@ -101,7 +101,6 @@ export function OpsDashboardTab({ activeService, onServiceChange }: OpsDashboard
                 series={series}
                 simTime={state.simTime}
                 clockAnchorMs={state.clockAnchorMs}
-                warningThreshold={meta?.warningThreshold}
                 criticalThreshold={meta?.criticalThreshold}
                 onFirstHover={() => {
                   if (!viewedMetrics.current.has(key)) {
