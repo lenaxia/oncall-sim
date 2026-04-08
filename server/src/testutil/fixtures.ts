@@ -9,6 +9,8 @@ export const FIXTURE_SESSION_ID  = 'test-session-id'
 export const FIXTURE_PERSONA: PersonaConfig = {
   id:                   'fixture-persona',
   displayName:          'Test Persona',
+  jobTitle:             'Senior SRE',
+  team:                 'Platform',
   avatarColor:          '#4A90E2',
   initiatesContact:     true,
   cooldownSeconds:      60,

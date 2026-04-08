@@ -79,6 +79,7 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
     },
     engine: {
       tickIntervalSeconds: engine.tick_interval_seconds as number,
+      defaultTab:          ((engine.default_tab as string | undefined) ?? 'email') as import('../scenario/types').TabId,
       llmEventTools:       ((engine.llm_event_tools ?? []) as Array<Record<string, unknown>>).map(t => ({
         tool:           t.tool as string,
         enabled:        t.enabled as boolean | undefined,
@@ -90,6 +91,8 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
     personas: ((raw.personas ?? []) as Array<Record<string, unknown>>).map(p => ({
       id:                   p.id as string,
       displayName:          p.display_name as string,
+      jobTitle:             (p.job_title ?? '') as string,
+      team:                 (p.team ?? '') as string,
       avatarColor:          p.avatar_color as string | undefined,
       initiatesContact:     p.initiates_contact as boolean,
       cooldownSeconds:      p.cooldown_seconds as number,
@@ -269,12 +272,13 @@ export function buildTestSession(overrides: Partial<Session> = {}): Session {
   const gameLoop  = overrides.gameLoop ?? createGameLoop({
     scenario,
     sessionId,
-    clock:     clock!,
-    scheduler:  createEventScheduler(scenario),
-    auditLog:   createAL(),
-    store:      createCS(),
-    evaluator:  createEV(),
-    metrics:    generateAllMetrics(scenario, sessionId),
+    clock:         clock!,
+    scheduler:     createEventScheduler(scenario),
+    auditLog:      createAL(),
+    store:         createCS(),
+    evaluator:     createEV(),
+    metrics:       generateAllMetrics(scenario, sessionId),
+    clockAnchorMs: 0,
   })
   return {
     id:         sessionId,
@@ -406,6 +410,7 @@ export function buildTestSnapshot(
     simTime:        0,
     speed:          1,
     paused:         false,
+    clockAnchorMs:  0,
     emails:         [],
     chatChannels:   {},
     tickets:        [],
@@ -414,6 +419,7 @@ export function buildTestSnapshot(
     metrics:        {},
     alarms:         [],
     deployments:    {},
+    pages:          [],
     auditLog:       [],
     coachMessages:  [],
     ...overrides,

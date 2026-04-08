@@ -3,25 +3,39 @@ import type { LoadedScenario } from '../scenario/types'
 import type {
   SessionSnapshot, SimEvent, TimeSeriesPoint, ActionType,
   ChatMessage, EmailMessage, CoachMessage, AuditEntry,
+  PageAlert, SimEventLogEntry,
 } from '@shared/types/events'
 import type { SimClock } from './sim-clock'
 import type { EventScheduler, ScriptedEvent } from './event-scheduler'
 import type { AuditLog } from './audit-log'
+import { logger } from '../logger'
+
+const log = logger.child({ component: 'game-loop' })
 import type { ConversationStore, ConversationStoreSnapshot } from './conversation-store'
 import type { Evaluator, EvaluationState } from './evaluator'
 
 // ── StakeholderContext (Phase 5 consumes this) ────────────────────────────────
 
 export interface StakeholderContext {
-  sessionId:        string
-  scenario:         LoadedScenario
-  simTime:          number
-  auditLog:         AuditEntry[]
-  conversations:    ConversationStoreSnapshot
-  personaCooldowns: Record<string, number>
+  sessionId:          string
+  scenario:           LoadedScenario
+  simTime:            number
+  auditLog:           AuditEntry[]
+  conversations:      ConversationStoreSnapshot
+  personaCooldowns:   Record<string, number>
+  directlyAddressed:  Set<string>   // persona IDs directly messaged since last LLM tick
 }
 
 // ── GameLoop ──────────────────────────────────────────────────────────────────
+
+// Event types recorded in the simulation event log.
+// sim_time (heartbeat) and session_snapshot are excluded — too frequent/large.
+const LOGGABLE_EVENT_TYPES = new Set<SimEvent['type']>([
+  'email_received', 'chat_message', 'ticket_created', 'ticket_updated',
+  'ticket_comment', 'log_entry', 'alarm_fired', 'alarm_silenced',
+  'deployment_update', 'page_sent', 'coach_message',
+])
+const EVENT_LOG_MAX_SIZE = 500
 
 export interface GameLoop {
   start(): void
@@ -36,25 +50,29 @@ export interface GameLoop {
   handleCoachMessage(message: CoachMessage): void
   getSnapshot(): SessionSnapshot
   getEvaluationState(): EvaluationState
+  /** Returns the simulation event log for use in the debrief. */
+  getEventLog(): SimEventLogEntry[]
   onEvent(handler: (event: SimEvent) => void): () => void
 }
 
 export interface GameLoopDependencies {
-  scenario:     LoadedScenario
-  sessionId:    string
-  clock:        SimClock
-  scheduler:    EventScheduler
-  auditLog:     AuditLog
-  store:        ConversationStore
-  evaluator:    Evaluator
-  metrics:      Record<string, Record<string, TimeSeriesPoint[]>>
-  onDirtyTick?: (context: StakeholderContext) => Promise<SimEvent[]>
-  onCoachTick?: (context: StakeholderContext) => Promise<CoachMessage | null>
+  scenario:       LoadedScenario
+  sessionId:      string
+  clock:          SimClock
+  scheduler:      EventScheduler
+  auditLog:       AuditLog
+  store:          ConversationStore
+  evaluator:      Evaluator
+  metrics:        Record<string, Record<string, TimeSeriesPoint[]>>
+  clockAnchorMs:  number
+  onDirtyTick?:   (context: StakeholderContext) => Promise<SimEvent[]>
+  onCoachTick?:   (context: StakeholderContext) => Promise<CoachMessage | null>
 }
 
 export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   const {
     scenario, sessionId, clock, scheduler, auditLog, store, evaluator, metrics,
+    clockAnchorMs,
   } = deps
 
   const onDirtyTick = deps.onDirtyTick ?? (() => Promise.resolve([]))
@@ -68,10 +86,17 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   let _coachTickCount = 0
   const _coachMessages: CoachMessage[] = []
   const _personaCooldowns: Record<string, number> = {}
+  const _eventLog: SimEventLogEntry[] = []
+  const _directlyAddressed = new Set<string>()  // cleared after each LLM tick
 
   const COACH_TICK_INTERVAL = 3   // call onCoachTick every 3 dirty ticks
 
   function emit(event: SimEvent): void {
+    // Record significant events in the simulation event log (for debrief)
+    if (LOGGABLE_EVENT_TYPES.has(event.type)) {
+      if (_eventLog.length >= EVENT_LOG_MAX_SIZE) _eventLog.shift()
+      _eventLog.push({ recordedAt: clock.getSimTime(), event })
+    }
     for (const h of _eventHandlers) h(event)
   }
 
@@ -79,10 +104,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     return {
       sessionId,
       scenario,
-      simTime:          clock.getSimTime(),
-      auditLog:         auditLog.getAll(),
-      conversations:    store.snapshot(),
-      personaCooldowns: { ..._personaCooldowns },
+      simTime:           clock.getSimTime(),
+      auditLog:          auditLog.getAll(),
+      conversations:     store.snapshot(),
+      personaCooldowns:  { ..._personaCooldowns },
+      directlyAddressed: new Set(_directlyAddressed),
     }
   }
 
@@ -141,6 +167,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       case 'ticket_created':
         store.addTicket(ev.ticket)
         break
+      case 'page_sent':
+        store.addPage(ev.alert)
+        break
       // All other event types (sim_time, coach_message, etc.) don't affect the store
     }
   }
@@ -152,20 +181,22 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     _coachTickCount++
 
     const ctx = buildStakeholderContext()
+    _directlyAddressed.clear()  // context captured; clear so next round starts fresh
 
     // Stakeholder tick
     onDirtyTick(ctx).then(events => {
       for (const ev of events) {
-        // Update conversation store for stakeholder-produced events,
-        // then broadcast to SSE clients via onEvent.
         applySimEventToStore(ev)
         emit(ev)
       }
-      if (events.length > 0) _dirty = true
+      // Do NOT set _dirty here — LLM output is already applied.
+      // _dirty is only set by external inputs (actions, chat, ticks with scripted events).
     }).catch(err => {
-      console.error('[game-loop] onDirtyTick error', err)
+      log.error({ err }, 'onDirtyTick error')
     }).finally(() => {
       _inFlight = false
+      // Re-trigger only if external input arrived while we were in-flight
+      if (_dirty) triggerDirtyTick()
     })
 
     // Coach tick (every N dirty ticks)
@@ -176,7 +207,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           emit({ type: 'coach_message', message: msg })
         }
       }).catch(err => {
-        console.error('[game-loop] onCoachTick error', err)
+        log.error({ err }, 'onCoachTick error')
       })
     }
   }
@@ -206,6 +237,8 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   return {
     start() {
       _lastRealMs = Date.now()
+      // Fire t=0 scripted events immediately on start (don't wait for first tick interval)
+      tick()
       const intervalMs = scenario.engine.tickIntervalSeconds * 1000
       _intervalId = setInterval(tick, intervalMs)
     },
@@ -238,8 +271,16 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         }
         case 'add_ticket_comment': {
           const ticketId = params['ticketId'] as string | undefined
-          const comment  = params['comment']  as import('@shared/types/events').TicketComment | undefined
-          if (ticketId && comment) {
+          // Client sends { ticketId, body } — server constructs the TicketComment
+          const body     = params['body'] as string | undefined
+          if (ticketId && body) {
+            const comment: import('@shared/types/events').TicketComment = {
+              id:       randomUUID(),
+              ticketId,
+              author:   'trainee',
+              body,
+              simTime:  clock.getSimTime(),
+            }
             store.addTicketComment(ticketId, comment)
             emit({ type: 'ticket_comment', ticketId, comment })
           }
@@ -260,9 +301,30 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           }
           break
         }
+        case 'page_user': {
+          // The trainee pages a persona. This sends a real page (not a chat message).
+          // The PageAlert is stored so it appears in the Ops dashboard page history.
+          // The paged persona is marked as engaged (for silentUntilContacted personas).
+          // A dirty tick is triggered so the persona's LLM can respond to being paged.
+          const personaId = params['personaId'] as string | undefined
+          const message   = params['message']   as string | undefined
+          if (personaId && message) {
+            const alert: PageAlert = {
+              id:        randomUUID(),
+              personaId,
+              message,
+              simTime:   clock.getSimTime(),
+            }
+            store.addPage(alert)
+            emit({ type: 'page_sent', alert })
+            // Mark persona as engaged regardless of silentUntilContacted
+            _personaCooldowns[personaId] = clock.getSimTime()
+          }
+          break
+        }
       }
 
-      // Emit a generic audit event for all actions
+      // Emit a sim_time event so the client clock stays in sync after any action
       emit({ type: 'sim_time', simTime: clock.getSimTime(), speed: clock.getSpeed(), paused: clock.isPaused() })
 
       _dirty = true
@@ -281,10 +343,25 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       store.addChatMessage(channel, msg)
       emit({ type: 'chat_message', channel, message: msg })
 
-      // If DM to a persona, mark them as engaged
+      // If DM to a persona, mark them as engaged and directly addressed
       if (channel.startsWith('dm:')) {
         const personaId = channel.slice(3)
         _personaCooldowns[personaId] = clock.getSimTime()
+        _directlyAddressed.add(personaId)
+      }
+
+      // @mention detection: find any persona whose displayName appears after @
+      // Also engages silent_until_contacted personas — being @mentioned counts as contact.
+      const lowerText = text.toLowerCase()
+      for (const persona of scenario.personas) {
+        if (lowerText.includes('@' + persona.displayName.toLowerCase()) ||
+            lowerText.includes('@' + persona.id.toLowerCase())) {
+          _directlyAddressed.add(persona.id)
+          // Engage silent_until_contacted personas so they stay eligible on future ticks
+          if (_personaCooldowns[persona.id] == null) {
+            _personaCooldowns[persona.id] = clock.getSimTime()
+          }
+        }
       }
 
       _dirty = true
@@ -328,6 +405,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         simTime:        clock.getSimTime(),
         speed:          clock.getSpeed(),
         paused:         clock.isPaused(),
+        clockAnchorMs,
         emails:         storeSnap.emails,
         chatChannels:   storeSnap.chatChannels,
         tickets:        storeSnap.tickets,
@@ -336,6 +414,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         metrics,
         alarms:         storeSnap.alarms,
         deployments:    storeSnap.deployments,
+        pages:          storeSnap.pages,
         auditLog:       auditLog.getAll(),
         coachMessages:  [..._coachMessages],
       }
@@ -343,6 +422,10 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
 
     getEvaluationState() {
       return evaluator.evaluate(auditLog, scenario)
+    },
+
+    getEventLog() {
+      return [..._eventLog]
     },
 
     onEvent(handler) {

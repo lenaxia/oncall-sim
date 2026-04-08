@@ -8,6 +8,9 @@ import type { StakeholderContext } from './game-loop'
 import type { LLMClient, LLMMessage } from '../llm/llm-client'
 import { LLMError } from '../llm/llm-client'
 import { getStakeholderTools, validateToolCall } from '../llm/tool-definitions'
+import { logger } from '../logger'
+
+const log = logger.child({ component: 'stakeholder-engine' })
 
 // ── Token budget ──────────────────────────────────────────────────────────────
 
@@ -44,7 +47,7 @@ export function createStakeholderEngine(
       try {
         return await _tick(context)
       } catch (err) {
-        console.error('[stakeholder-engine] Unexpected error in tick', err)
+        log.error({ err }, 'Unexpected error in tick')
         return []
       }
     },
@@ -53,13 +56,15 @@ export function createStakeholderEngine(
   async function _tick(context: StakeholderContext): Promise<SimEvent[]> {
     // Step 1: eligible personas
     const eligible = _eligiblePersonas(context)
+    log.debug({ simTime: context.simTime, eligible, directlyAddressed: [...context.directlyAddressed] }, 'Stakeholder tick')
     if (eligible.length === 0) return []
 
-    // Step 2: build prompt (with context window management)
+    // Step 2: build prompt
     const messages = _buildPrompt(context, eligible)
     const tools     = getStakeholderTools(scenario)
 
     // Step 3: call LLM
+    log.debug({ eligible, simTime: context.simTime }, 'Calling LLM')
     let response
     try {
       response = await llmClient.call({
@@ -68,9 +73,13 @@ export function createStakeholderEngine(
         tools,
         sessionId: context.sessionId,
       })
+      log.debug(
+        { tools: response.toolCalls.map(t => t.tool), simTime: context.simTime },
+        'LLM responded'
+      )
     } catch (err) {
       if (err instanceof LLMError) {
-        console.error('[stakeholder-engine] LLMError:', err.message, err.code)
+        log.error({ code: err.code, err: err.message }, 'LLM error')
         return []
       }
       throw err
@@ -86,7 +95,7 @@ export function createStakeholderEngine(
 
       const validation = validateToolCall(toolCall, scenario, callCounts, tools, activeAlarmIds)
       if (!validation.valid) {
-        console.warn('[stakeholder-engine] Invalid tool call skipped', {
+        log.warn({
           tool:   toolCall.tool,
           reason: validation.reason,
         })
@@ -110,13 +119,18 @@ export function createStakeholderEngine(
   function _eligiblePersonas(context: StakeholderContext): string[] {
     return scenario.personas
       .filter(persona => {
-        // silent_until_contacted: only eligible after the trainee has DMed them
+        // Direct address (@mention or DM) always makes a persona eligible,
+        // even if silent_until_contacted or in cooldown.
+        if (context.directlyAddressed.has(persona.id)) return true
+
+        // silent_until_contacted: only eligible after the trainee has explicitly
+        // reached out (DM, page_user, or prior @mention that set personaCooldowns).
         if (persona.silentUntilContacted) {
           const engaged = context.personaCooldowns[persona.id] != null
           if (!engaged) return false
         }
 
-        // Cooldown check
+        // Normal cooldown check
         const lastSpoke = _lastSpoke[persona.id] ?? -Infinity
         return lastSpoke + persona.cooldownSeconds <= context.simTime
       })
@@ -228,9 +242,9 @@ export function createStakeholderEngine(
     }
 
     // Truncation needed — keep as many recent messages as fit, summarise the rest
-    console.warn(
-      `[stakeholder-engine] Context window truncation triggered at t=${context.simTime} ` +
-      `(estimated ${estimateTokens(fullContent)} tokens > budget ${TOKEN_BUDGET})`
+    log.warn(
+      { simTime: context.simTime, estimatedTokens: estimateTokens(fullContent), budget: TOKEN_BUDGET },
+      'Context window truncation triggered'
     )
 
     // Binary-search for the maximum suffix of history lines that fits
@@ -271,6 +285,7 @@ export function createStakeholderEngine(
           text:    params['message'] as string,
           simTime: context.simTime,
         }
+        log.info({ persona: msg.persona, channel: msg.channel, simTime: context.simTime }, 'Persona sent chat message')
         return [{ type: 'chat_message', channel: msg.channel, message: msg }]
       }
 
@@ -284,6 +299,7 @@ export function createStakeholderEngine(
           body:     params['body'] as string,
           simTime:  context.simTime,
         }
+        log.info({ persona: email.from, subject: email.subject, simTime: context.simTime }, 'Persona sent email')
         return [{ type: 'email_received', email }]
       }
 
@@ -353,7 +369,7 @@ export function createStakeholderEngine(
       }
 
       default:
-        console.warn('[stakeholder-engine] Unknown tool call executed:', tool)
+        log.warn({ tool }, 'Unknown tool call')
         return []
     }
   }

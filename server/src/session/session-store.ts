@@ -1,6 +1,9 @@
 // session-store.ts — in-memory session registry with expiry.
 
 import type { Session } from './session'
+import { logger } from '../logger'
+
+const log = logger.child({ component: 'session-store' })
 
 export interface SessionStore {
   create(session: Session): void
@@ -39,7 +42,7 @@ export function createSessionStore(expiryMs = DEFAULT_EXPIRY_MS): SessionStore {
           session.gameLoop.stop()
           session.status = 'expired'
           _sessions.delete(id)
-          console.info(`[session-store] Evicted expired session ${id}`)
+          log.info({ sessionId: id }, 'Evicted expired session')
         }
       }
     },

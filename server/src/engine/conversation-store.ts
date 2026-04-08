@@ -1,6 +1,6 @@
 import type {
   ChatMessage, EmailMessage, Ticket, TicketComment, LogEntry,
-  Alarm, AlarmStatus, Deployment,
+  Alarm, AlarmStatus, Deployment, PageAlert,
 } from '@shared/types/events'
 
 export interface ConversationStoreSnapshot {
@@ -11,10 +11,12 @@ export interface ConversationStoreSnapshot {
   logs:           LogEntry[]
   alarms:         Alarm[]
   deployments:    Record<string, Deployment[]>
+  pages:          PageAlert[]
 }
 
 export interface ConversationStore {
   addChatMessage(channel: string, message: ChatMessage): void
+  ensureChannel(channel: string): void            // creates empty channel if not exists
   getChatChannel(channel: string): ChatMessage[]
   getAllChatChannels(): Record<string, ChatMessage[]>
 
@@ -40,6 +42,9 @@ export interface ConversationStore {
   getDeployments(service: string): Deployment[]
   getAllDeployments(): Record<string, Deployment[]>
 
+  addPage(page: PageAlert): void
+  getAllPages(): PageAlert[]
+
   snapshot(): ConversationStoreSnapshot
 }
 
@@ -51,6 +56,7 @@ export function createConversationStore(): ConversationStore {
   const _logs:           LogEntry[]                        = []
   const _alarms:         Map<string, Alarm>                = new Map()
   const _deployments:    Record<string, Deployment[]>      = {}
+  const _pages:          PageAlert[]                       = []
 
   function deepClone<T>(val: T): T {
     return JSON.parse(JSON.stringify(val)) as T
@@ -61,6 +67,9 @@ export function createConversationStore(): ConversationStore {
     addChatMessage(channel, message) {
       if (!_chat[channel]) _chat[channel] = []
       _chat[channel].push(message)
+    },
+    ensureChannel(channel) {
+      if (!_chat[channel]) _chat[channel] = []
     },
     getChatChannel(channel) {
       return deepClone(_chat[channel] ?? [])
@@ -135,6 +144,14 @@ export function createConversationStore(): ConversationStore {
       return deepClone(_deployments)
     },
 
+    // ── Pages ─────────────────────────────────────────────────────────────────
+    addPage(page) {
+      _pages.push(page)
+    },
+    getAllPages() {
+      return deepClone(_pages)
+    },
+
     // ── Snapshot ─────────────────────────────────────────────────────────────
     snapshot(): ConversationStoreSnapshot {
       const ticketComments: Record<string, TicketComment[]> = {}
@@ -149,6 +166,7 @@ export function createConversationStore(): ConversationStore {
         logs:           deepClone(_logs),
         alarms:         deepClone([..._alarms.values()]),
         deployments:    deepClone(_deployments),
+        pages:          deepClone(_pages),
       }
     },
   }

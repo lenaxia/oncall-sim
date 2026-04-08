@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto'
 import type { LoadedScenario } from '../scenario/types'
 import type { GameLoop } from '../engine/game-loop'
 import type { EvaluationState } from '../engine/evaluator'
-import type { AuditEntry } from '@shared/types/events'
+import type { AuditEntry, SimEventLogEntry } from '@shared/types/events'
 import type { LLMClient } from '../llm/llm-client'
 import { generateAllMetrics } from '../metrics/generator'
 import { createSimClock } from '../engine/sim-clock'
@@ -21,6 +21,7 @@ export interface DebriefResult {
   narrative:         string
   evaluationState:   EvaluationState
   auditLog:          AuditEntry[]
+  eventLog:          SimEventLogEntry[]   // simulation events for debrief timeline
   resolvedAtSimTime: number
 }
 
@@ -38,9 +39,11 @@ export interface Session {
 export function createSession(
   scenarioId: string,
   scenario:   LoadedScenario,
-  llmClient:  LLMClient
+  llmClient:  LLMClient,
+  clockAnchorMs?: number   // Unix ms for simTime=0; defaults to now
 ): Promise<Session> {
   const sessionId = randomUUID()
+  const anchor    = clockAnchorMs ?? Date.now()
 
   const metrics      = generateAllMetrics(scenario, sessionId)
   const clock        = createSimClock(scenario.timeline.defaultSpeed)
@@ -62,6 +65,7 @@ export function createSession(
     store,
     evaluator,
     metrics,
+    clockAnchorMs: anchor,
     onDirtyTick: (ctx) => stakeholderEngine.tick(ctx),
   })
 
@@ -85,29 +89,24 @@ function populateInitialState(
   store:    ReturnType<typeof createConversationStore>,
   scenario: LoadedScenario
 ): void {
-  // Pre-populate tickets
+  // Pre-populate tickets that start before incident (atSecond < 0).
+  // Tickets at atSecond >= 0 are fired as ticket_created events by the scheduler.
   for (const ticket of scenario.tickets) {
-    store.addTicket({
-      id:          ticket.id,
-      title:       ticket.title,
-      severity:    ticket.severity,
-      status:      ticket.status,
-      description: ticket.description,
-      createdBy:   ticket.createdBy,
-      simTime:     ticket.atSecond,
-    })
+    if (ticket.atSecond < 0) {
+      store.addTicket({
+        id:          ticket.id,
+        title:       ticket.title,
+        severity:    ticket.severity,
+        status:      ticket.status,
+        description: ticket.description,
+        createdBy:   ticket.createdBy,
+        simTime:     ticket.atSecond,
+      })
+    }
   }
 
-  // Pre-populate deployments (history)
-  for (const dep of scenario.cicd.deployments) {
-    store.addDeployment(dep.service, {
-      version:       dep.version,
-      deployedAtSec: dep.deployedAtSec,
-      status:        dep.status,
-      commitMessage: dep.commitMessage,
-      author:        dep.author,
-    })
-  }
+  // Deployments are NOT pre-populated here — the scheduler fires all deployment events
+  // (including historical ones at negative simTime) on the first tick.
 
   // Pre-populate scripted emails at t < 0 (pre-incident)
   for (const email of scenario.emails) {
@@ -122,6 +121,12 @@ function populateInitialState(
         simTime:  email.atSecond,
       })
     }
+  }
+
+  // Ensure all declared channels exist in the store, even if empty.
+  // This makes them visible in the chat sidebar from the start.
+  for (const channel of scenario.chat.channels) {
+    store.ensureChannel(channel.name)
   }
 
   // Pre-populate scripted chat messages at t < 0
