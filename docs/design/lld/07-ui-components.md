@@ -1,5 +1,21 @@
 # LLD 07 — UI Component Library
 
+> **⚠ SUPERSEDED**
+> This document has been replaced by `docs/design/ui-spec.md`, which went through nine
+> revision passes after this LLD was written. `ui-spec.md` is the authoritative
+> implementation reference for Phase 7 and Phase 8.
+>
+> **Do not implement from this file.** The following are known conflicts with `ui-spec.md`:
+> - `AuditContext` is eliminated — audit log lives in `SessionState.auditLog` via SSE
+> - `SessionState` shape is flat (not nested under `snapshot`)
+> - `SessionProvider` requires `onError`, `onExpired`, `onDebriefReady` props (missing here)
+> - `Badge` variants are `sev1/sev2/sev3/sev4` (not `critical/warning`); `count` prop removed
+> - Design token set is incomplete — half the tokens defined in `ui-spec.md §2` are absent
+> - `DebriefScreen` is fully specified in `ui-spec.md §8.15` (not a Phase 9 placeholder)
+> - `useSSE` takes a `UseSSEOptions` object (not bare parameters)
+>
+> This file is retained as a historical record of original intent only.
+
 **Phase:** 7
 **Depends on:** Phase 1 (shared types — `SimEvent`, `SessionSnapshot`, `ActionType`, etc.)
 **Can run in parallel with:** Phases 4–6

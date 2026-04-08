@@ -14,7 +14,12 @@
     "format": "prettier --write \"**/*.{ts,tsx,json,yaml,md}\""
   },
   "devDependencies": {
+    "@types/pino": "^7.0.4",
     "concurrently": "^8.2.2",
     "prettier": "^3.2.5"
+  },
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   }
 }

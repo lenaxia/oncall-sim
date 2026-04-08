@@ -226,6 +226,7 @@ export interface GameLoop {
 
   // Called by the API layer when a trainee action arrives.
   // Records in audit log, evaluates, marks dirty.
+  // page_user: creates a PageAlert, stores it, emits page_sent event, marks persona engaged.
   handleAction(action: ActionType, params: Record<string, unknown>): void
 
   // Called by the API layer when a trainee posts a chat message.
@@ -255,9 +256,14 @@ export interface GameLoop {
   // Current evaluation state — used by debrief after resolution.
   getEvaluationState(): EvaluationState
 
+  // Returns the simulation event log for use in the debrief timeline.
+  // Contains all significant SimEvents (excludes sim_time heartbeats and session_snapshot).
+  // Capped at 500 entries. Used by the resolve route to populate DebriefResult.eventLog.
+  getEventLog(): SimEventLogEntry[]
+
   // Register a callback invoked with each SimEvent produced by the loop.
-  // The API layer (SSE broker) registers here to forward events to clients.
-  onEvent(handler: (event: SimEvent) => void): void
+  // Returns a cleanup function — call it to unregister the handler (prevents resource leak).
+  onEvent(handler: (event: SimEvent) => void): () => void
 }
 
 export interface GameLoopDependencies {
@@ -327,9 +333,11 @@ handleAction(action, params):
      - add_ticket_comment → store.addTicketComment(...)
      - suppress_alarm → store.updateAlarmStatus(alarmId, 'suppressed')
      - ack_page → store.updateAlarmStatus(alarmId, 'acknowledged')
+     - page_user → store.addPage(PageAlert); emit page_sent event; mark persona engaged
   4. Emit corresponding SimEvent(s) via onEvent
-  5. Mark session dirty
-  6. If onDirtyTick registered AND not in-flight: call immediately (bypass tick timer)
+  5. Emit sim_time event (keeps client clock in sync)
+  6. Mark session dirty
+  7. If onDirtyTick registered AND not in-flight: call immediately (bypass tick timer)
 ```
 
 ---
