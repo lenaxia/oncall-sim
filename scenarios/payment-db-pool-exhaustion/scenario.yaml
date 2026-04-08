@@ -160,8 +160,8 @@ ticketing:
     at_second: -60
 
 ops_dashboard:
-  pre_incident_seconds: 300
-  resolution_seconds: 30
+  pre_incident_seconds: 259200
+  resolution_seconds: 60
   focal_service:
     name: payment-service
     scale:
@@ -179,7 +179,7 @@ ops_dashboard:
         warning_threshold: 500
         incident_peak: 8400
         onset_second: 0
-        noise: low
+        noise: high
       - archetype: error_rate
         label: "Error Rate"
         unit: "%"
@@ -187,7 +187,7 @@ ops_dashboard:
         warning_threshold: 2
         incident_peak: 15.2
         onset_second: 0
-        noise: low
+        noise: high
       - archetype: request_rate
         label: "Request Rate"
         unit: "rps"
@@ -383,6 +383,9 @@ cicd:
     - id: pipeline-payment
       service: payment-service
       name: "payment-service deploy pipeline"
+    - id: pipeline-config
+      service: payment-config
+      name: "payment-config deploy pipeline"
   deployments:
     - service: payment-service
       version: v2.4.1
