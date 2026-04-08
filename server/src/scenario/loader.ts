@@ -9,6 +9,10 @@ import yaml from 'js-yaml'
 import { ScenarioSchema } from './schema'
 import { validateCrossReferences, type ValidationError } from './validator'
 import { validateIncidentType } from '../metrics/resolver'
+import { logger } from '../logger'
+
+const log = logger.child({ component: 'loader' })
+
 import type {
   LoadedScenario, ServiceType, Difficulty, PersonaConfig, AlarmConfig,
   RemediationActionConfig, ScriptedEmail, ChatConfig, ScriptedTicket,
@@ -55,7 +59,7 @@ export async function loadAllScenarios(
   try {
     entries = await fsPromises.readdir(scenariosDir, { withFileTypes: true })
   } catch {
-    console.warn(`[loader] scenarios directory not found or unreadable: ${scenariosDir}`)
+    log.warn({ scenariosDir }, 'Scenarios directory not found or unreadable')
     return map
   }
 
@@ -66,14 +70,10 @@ export async function loadAllScenarios(
   for (const dir of subdirs) {
     const result = await loadScenario(dir)
     if (isScenarioLoadError(result)) {
-      console.error(`[loader] Scenario failed validation — excluded`, {
-        scenarioId: result.scenarioId,
-        scenarioDir: result.scenarioDir,
-        errors: result.errors,
-      })
+      log.error({ scenarioId: result.scenarioId, scenarioDir: result.scenarioDir, errors: result.errors }, 'Scenario failed validation — excluded')
     } else {
       const metricCount = Object.values(result.opsDashboard.focalService.metrics).length
-      console.info(`[loader] Scenario loaded`, { scenarioId: result.id, metrics: metricCount })
+      log.info({ scenarioId: result.id, metrics: metricCount }, 'Scenario loaded')
       map.set(result.id, result)
     }
   }
@@ -194,10 +194,7 @@ export async function loadScenario(
   if (raw.ops_dashboard) {
     const incidentType = raw.ops_dashboard.focal_service.incident_type
     if (!validateIncidentType(incidentType)) {
-      console.warn('[loader] incident_type not in registry — Tier 1 metrics will have no incident overlay', {
-        scenarioId:   raw.id,
-        incidentType,
-      })
+      log.warn({ scenarioId: raw.id, incidentType }, 'incident_type not in registry — Tier 1 metrics will have no incident overlay')
     }
   }
 
@@ -345,6 +342,8 @@ async function transform(
   const personas: PersonaConfig[] = raw.personas.map(p => ({
     id:                   p.id,
     displayName:          p.display_name,
+    jobTitle:             p.job_title,
+    team:                 p.team,
     avatarColor:          p.avatar_color,
     initiatesContact:     p.initiates_contact,
     cooldownSeconds:      p.cooldown_seconds,
@@ -405,6 +404,7 @@ async function transform(
     },
     engine: {
       tickIntervalSeconds: raw.engine.tick_interval_seconds,
+      defaultTab:          raw.engine.default_tab ?? 'email',
       llmEventTools: (raw.engine.llm_event_tools ?? []).map(t => ({
         tool:           t.tool,
         enabled:        t.enabled,

@@ -13,6 +13,9 @@ import { actionsRouter } from './routes/actions'
 import { chatRouter } from './routes/chat'
 import { emailRouter } from './routes/email'
 import { coachRouter } from './routes/coach'
+import { logger } from './logger'
+
+const log = logger.child({ component: 'server' })
 
 export function createApp(
   scenarios:    ReturnType<typeof loadAllScenarios> extends Promise<infer T> ? T : never,
@@ -34,7 +37,7 @@ export function createApp(
   // Preserves status codes set by middleware (e.g. body-parser returns 400 for malformed JSON).
   app.use((err: Error & { status?: number; statusCode?: number }, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status ?? err.statusCode ?? 500
-    if (status >= 500) console.error('[server] Unhandled route error', err)
+    if (status >= 500) log.error({ err, status }, 'Unhandled route error')
     res.status(status).json({ error: status < 500 ? err.message : 'Internal server error' })
   })
 
@@ -47,13 +50,13 @@ async function main(): Promise<void> {
     config = loadConfig()
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error(`[startup] Configuration error: ${msg}`)
+    log.error({ err: msg }, 'Configuration error')
     process.exit(1)
   }
 
   const scenariosDir = path.resolve(config.scenariosDir)
   const scenarios    = await loadAllScenarios(scenariosDir)
-  console.info(`[startup] Loaded ${scenarios.size} scenario(s)`)
+  log.info({ count: scenarios.size }, 'Scenarios loaded')
 
   const llmClient    = createLLMClient()
   const sessionStore = createSessionStore(config.sessionExpiryMs)
@@ -64,7 +67,7 @@ async function main(): Promise<void> {
   const app = createApp(scenarios, sessionStore, sseBroker, llmClient)
 
   app.listen(config.port, () => {
-    console.info(`[startup] Server started on port ${config.port}`)
+    log.info({ port: config.port, llmProvider: process.env.LLM_PROVIDER ?? 'mock' }, 'Server started')
   })
 }
 
@@ -74,7 +77,7 @@ const scriptPath = process.argv[1]
 const isMain = scriptPath ? scriptPath.endsWith('index.ts') || scriptPath.endsWith('index.js') : false
 if (isMain) {
   main().catch(err => {
-    console.error('[startup] Fatal error', err)
+    log.fatal({ err }, 'Fatal error')
     process.exit(1)
   })
 }

@@ -1,6 +1,4 @@
 // bedrock-provider.ts — AWS Bedrock LLM provider using the Converse API.
-// The @aws-sdk/client-bedrock-runtime package is loaded dynamically to avoid
-// requiring it in deployments that use OpenAI only.
 
 import type { LLMClient, LLMRequest, LLMResponse, LLMToolCall } from './llm-client'
 import { LLMError } from './llm-client'
@@ -8,6 +6,7 @@ import { LLMError } from './llm-client'
 interface BedrockConfig {
   region:     string
   modelId:    string
+  profile?:   string   // AWS named profile — uses default credential chain if omitted
   timeoutMs:  number
   maxRetries: number
 }
@@ -16,7 +15,6 @@ export class BedrockProvider implements LLMClient {
   constructor(private config: BedrockConfig) {}
 
   async call(request: LLMRequest): Promise<LLMResponse> {
-    // Lazy-load AWS SDK to avoid hard dependency when not using Bedrock
     let BedrockRuntimeClient: BedrockRuntimeClientType
     let ConverseCommand: ConverseCommandType
     try {
@@ -24,13 +22,23 @@ export class BedrockProvider implements LLMClient {
       BedrockRuntimeClient = sdk.BedrockRuntimeClient
       ConverseCommand       = sdk.ConverseCommand
     } catch {
-      throw new LLMError(
-        '@aws-sdk/client-bedrock-runtime is not installed. Run: npm install @aws-sdk/client-bedrock-runtime',
-        'provider_error'
-      )
+      throw new LLMError('@aws-sdk/client-bedrock-runtime is not installed.', 'provider_error')
     }
 
-    const client = new BedrockRuntimeClient({ region: this.config.region })
+    // Explicit profile -> fromIni; otherwise default SDK credential chain
+    let credentials: unknown
+    if (this.config.profile) {
+      try {
+        const { fromIni } = await import('@aws-sdk/credential-providers')
+        credentials = fromIni({ profile: this.config.profile })
+      } catch {
+        throw new LLMError('@aws-sdk/credential-providers not installed.', 'provider_error')
+      }
+    }
+
+    const clientConfig: Record<string, unknown> = { region: this.config.region }
+    if (credentials) clientConfig.credentials = credentials
+    const client = new BedrockRuntimeClient(clientConfig)
 
     const messages = request.messages
       .filter(m => m.role !== 'system')
@@ -76,14 +84,12 @@ export class BedrockProvider implements LLMClient {
 
         const errAny = err as { name?: string; $metadata?: { httpStatusCode?: number } }
 
-        // Rate limit — backoff, don't count as retry
         if (errAny.name === 'ThrottlingException' || errAny.$metadata?.httpStatusCode === 429) {
           await this._sleep(2000 * 2 ** attempt)
           attempt--
           continue
         }
 
-        // Retryable errors
         if (attempt < this.config.maxRetries) {
           await this._sleep(500 * 2 ** attempt)
           continue
@@ -104,9 +110,7 @@ export class BedrockProvider implements LLMClient {
     let text: string | undefined
 
     for (const block of output.content ?? []) {
-      if (block.text != null) {
-        text = block.text
-      }
+      if (block.text != null) text = block.text
       if (block.toolUse != null) {
         toolCalls.push({
           tool:   block.toolUse.name,
@@ -123,9 +127,9 @@ export class BedrockProvider implements LLMClient {
   }
 }
 
-// ── AWS SDK type stubs (avoid requiring SDK in non-Bedrock deployments) ───────
+// ── AWS SDK type stubs ────────────────────────────────────────────────────────
 
-type BedrockRuntimeClientType = new (cfg: { region: string }) => {
+type BedrockRuntimeClientType = new (cfg: Record<string, unknown>) => {
   send(cmd: unknown): Promise<unknown>
 }
 type ConverseCommandType = new (input: unknown) => unknown
@@ -140,10 +144,7 @@ interface BedrockConverseResponse {
     message?: {
       content?: Array<{
         text?:    string
-        toolUse?: {
-          name:   string
-          input?: Record<string, unknown>
-        }
+        toolUse?: { name: string; input?: Record<string, unknown> }
       }>
     }
   }

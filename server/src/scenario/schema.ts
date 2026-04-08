@@ -5,6 +5,8 @@ import { z } from 'zod'
 const PersonaSchema = z.object({
   id:                     z.string().min(1),
   display_name:           z.string().min(1),
+  job_title:              z.string().min(1),
+  team:                   z.string().min(1),
   avatar_color:           z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   initiates_contact:      z.boolean(),
   cooldown_seconds:       z.number().positive(),
@@ -111,6 +113,7 @@ const LLMEventToolSchema = z.object({
 const EngineSchema = z.object({
   tick_interval_seconds: z.number().positive(),
   llm_event_tools:       z.array(LLMEventToolSchema).optional().default([]),
+  default_tab:           z.enum(['email', 'chat', 'tickets', 'ops', 'logs', 'wiki', 'cicd']).optional(),
 })
 
 const ScriptedEmailSchema = z.object({

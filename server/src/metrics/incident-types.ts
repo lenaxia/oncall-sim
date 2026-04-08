@@ -2,6 +2,9 @@
 // HLD §8.3 defines all five incident types and their archetype response tables.
 
 import type { OverlayType } from './types'
+import { logger } from '../logger'
+
+const log = logger.child({ component: 'metrics' })
 
 export interface IncidentResponseProfile {
   overlay:            OverlayType
@@ -76,6 +79,6 @@ export function getIncidentResponse(
  */
 export function validateIncidentType(incidentType: string): boolean {
   if (INCIDENT_TYPE_REGISTRY[incidentType]) return true
-  console.warn(`[metrics] Unknown incident_type '${incidentType}'. Tier 1 metrics will have no incident overlay. Use Tier 2 (incident_peak) for explicit control.`)
+  log.warn({ incidentType }, 'Unknown incident_type — Tier 1 metrics will have no incident overlay. Use Tier 2 (incident_peak) for explicit control.')
   return false
 }

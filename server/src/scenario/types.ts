@@ -34,14 +34,27 @@ export interface LLMEventToolConfig {
   services?:       string[]
 }
 
+export type TabId = 'email' | 'chat' | 'tickets' | 'ops' | 'logs' | 'wiki' | 'cicd'
+
 export interface EngineConfig {
   tickIntervalSeconds: number
   llmEventTools:       LLMEventToolConfig[]
+  /**
+   * The tab the client opens by default when the session starts.
+   * Set this to whichever channel first reports the incident in the scenario:
+   * - 'email' for PagerDuty-style page (email notification)
+   * - 'chat'  for Slack-style "hey something's weird" message
+   * - 'ops'   for a scenario where the trainee is already watching dashboards
+   * Defaults to 'email' if omitted.
+   */
+  defaultTab: TabId
 }
 
 export interface PersonaConfig {
   id:                   string
   displayName:          string
+  jobTitle:             string   // e.g. "Senior SRE" — shown in DM persona card
+  team:                 string   // e.g. "Platform" — shown below job title
   avatarColor?:         string
   initiatesContact:     boolean
   cooldownSeconds:      number

@@ -103,6 +103,7 @@ export function sessionsRouter(
       narrative:         '',
       evaluationState:   evalState,
       auditLog:          snap.auditLog,
+      eventLog:          session.gameLoop.getEventLog(),
       resolvedAtSimTime: snap.simTime,
     }
 

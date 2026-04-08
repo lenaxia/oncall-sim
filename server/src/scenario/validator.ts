@@ -12,7 +12,7 @@ import type { ActionType } from '@shared/types/events'
 
 // All valid ActionType values from shared/types/events.ts
 const VALID_ACTION_TYPES: Set<string> = new Set<ActionType>([
-  'ack_page', 'escalate_page', 'update_ticket', 'add_ticket_comment', 'mark_resolved',
+  'ack_page', 'page_user', 'update_ticket', 'add_ticket_comment', 'mark_resolved',
   'post_chat_message', 'reply_email', 'direct_message_persona',
   'open_tab', 'search_logs', 'view_metric', 'read_wiki_page', 'view_deployment_history',
   'trigger_rollback', 'trigger_roll_forward', 'restart_service', 'scale_cluster',

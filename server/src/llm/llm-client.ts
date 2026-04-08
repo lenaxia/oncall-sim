@@ -80,8 +80,9 @@ export function createLLMClient(): LLMClient {
     const modelId = process.env.BEDROCK_MODEL_ID
     if (!modelId) throw new Error('[createLLMClient] BEDROCK_MODEL_ID is required when LLM_PROVIDER=bedrock')
     return new BedrockProvider({
-      region:     process.env.AWS_REGION       ?? 'us-east-1',
+      region:     process.env.AWS_REGION        ?? 'us-east-1',
       modelId,
+      profile:    process.env.AWS_PROFILE,
       timeoutMs:  parseInt(process.env.LLM_TIMEOUT_MS  ?? '30000', 10),
       maxRetries: parseInt(process.env.LLM_MAX_RETRIES ?? '2',     10),
     })
