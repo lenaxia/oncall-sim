@@ -5,16 +5,19 @@
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "outDir": "./dist",
+    "rootDir": "..",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "paths": {
       "@shared/*": ["../shared/*"]
     }
   },
-  "include": ["src", "__tests__"],
+  "include": ["src", "__tests__", "../shared"],
   "exclude": ["node_modules", "dist"]
 }
