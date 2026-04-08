@@ -73,7 +73,6 @@ export function SimShell({ onResolve }: SimShellProps) {
   const seenEmailIds     = useRef<Set<string>>(new Set())
   const seenChatCounts   = useRef<Map<string, number>>(new Map())
   const seenTicketCount  = useRef(0)
-  const seenAlarmCount   = useRef(0)
   const seenCicdVersions = useRef<Set<string>>(new Set())
 
   // Email unread tracking
@@ -110,14 +109,12 @@ export function SimShell({ onResolve }: SimShellProps) {
     }
   }, [state.chatMessages])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Alarm unread tracking
+  // Alarm badge: show dot while any alarm is firing, regardless of which tab is active.
+  // Clears automatically when no alarms remain in firing state.
   useEffect(() => {
-    const newCount = state.alarms.filter(a => a.status === 'firing').length
-    if (newCount > seenAlarmCount.current && activeTab !== 'ops') {
-      setHasNewAlarm(true)
-    }
-    seenAlarmCount.current = newCount
-  }, [state.alarms])  // eslint-disable-line react-hooks/exhaustive-deps
+    const hasFiring = state.alarms.some(a => a.status === 'firing')
+    setHasNewAlarm(hasFiring)
+  }, [state.alarms])
 
   // Ticket unread tracking
   useEffect(() => {
@@ -151,13 +148,14 @@ export function SimShell({ onResolve }: SimShellProps) {
   function handleTabChange(id: string) {
     const tabId = id as TabId
     setActiveTab(tabId)
-    if (tabId === 'email')   setEmailUnread(new Set())
-    if (tabId === 'ops')     setHasNewAlarm(false)
+    // Email: do NOT clear on tab switch — badge clears per-thread as user reads them
+    // Chat: do NOT clear active channel on tab switch — badge clears when user clicks channel
+    // Tickets: clear on arrival since all items are immediately visible
     if (tabId === 'tickets') setTicketUnread(0)
+    // CI/CD: clear on arrival since all items are immediately visible
     if (tabId === 'cicd')    setCicdUnread(0)
-    if (tabId === 'chat' && chatActiveChannel) {
-      setChatUnread(prev => { const n = new Map(prev); n.set(chatActiveChannel, 0); return n })
-    }
+    // Ops alarm: badge clears when all active alarms are acked/suppressed, not on tab open
+    // (handled by alarm tracking useEffect watching alarm status changes)
   }
 
   const tabs: TabDef[] = ALL_TABS.map(t => ({
