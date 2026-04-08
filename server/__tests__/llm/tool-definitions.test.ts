@@ -33,7 +33,7 @@ describe('getStakeholderTools', () => {
     const scenario: LoadedScenario = {
       ...getFixtureScenario(),
       engine: {
-        tickIntervalSeconds: 10,
+        tickIntervalSeconds: 10, defaultTab: 'email' as const,
         llmEventTools: [{ tool: 'trigger_metric_recovery' }],
       },
     }
@@ -45,7 +45,7 @@ describe('getStakeholderTools', () => {
     const scenario: LoadedScenario = {
       ...getFixtureScenario(),
       engine: {
-        tickIntervalSeconds: 10,
+        tickIntervalSeconds: 10, defaultTab: 'email' as const,
         llmEventTools: [{ tool: 'trigger_metric_spike' }],
       },
     }
@@ -56,7 +56,7 @@ describe('getStakeholderTools', () => {
   it('EVENT_TOOL not in llm_event_tools config is excluded', () => {
     const scenario: LoadedScenario = {
       ...getFixtureScenario(),
-      engine: { tickIntervalSeconds: 10, llmEventTools: [] },
+      engine: { tickIntervalSeconds: 10, defaultTab: 'email' as const, llmEventTools: [] },
     }
     const tools = getStakeholderTools(scenario)
     // Only communication tools
@@ -122,7 +122,7 @@ describe('validateToolCall', () => {
     const scenario: LoadedScenario = {
       ...getFixtureScenario(),
       engine: {
-        tickIntervalSeconds: 10,
+        tickIntervalSeconds: 10, defaultTab: 'email' as const,
         llmEventTools: [
           { tool: 'trigger_cascade', services: ['downstream-svc'] },
         ],
@@ -140,7 +140,7 @@ describe('validateToolCall', () => {
     const scenario: LoadedScenario = {
       ...getFixtureScenario(),
       engine: {
-        tickIntervalSeconds: 10,
+        tickIntervalSeconds: 10, defaultTab: 'email' as const,
         llmEventTools: [
           { tool: 'trigger_cascade', services: ['allowed-svc'] },
         ],

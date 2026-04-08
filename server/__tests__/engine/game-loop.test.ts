@@ -21,14 +21,15 @@ function makeDeps(overrides: Partial<GameLoopDependencies> = {}): GameLoopDepend
   const clock    = buildTestClock(0)
   return {
     scenario,
-    sessionId: 'test-session',
+    sessionId:     'test-session',
     clock,
-    scheduler:  createEventScheduler(scenario),
-    auditLog:   createAuditLog(),
-    store:      createConversationStore(),
-    evaluator:  createEvaluator(),
-    metrics:    generateAllMetrics(scenario, 'test-session'),
-    onDirtyTick: () => Promise.resolve([]),
+    scheduler:     createEventScheduler(scenario),
+    auditLog:      createAuditLog(),
+    store:         createConversationStore(),
+    evaluator:     createEvaluator(),
+    metrics:       generateAllMetrics(scenario, 'test-session'),
+    clockAnchorMs: 0,
+    onDirtyTick:   () => Promise.resolve([]),
     ...overrides,
   }
 }
@@ -126,17 +127,18 @@ describe('GameLoop — tick sequence (timer-driven)', () => {
     loop.handleAction('view_metric', {})
     expect(dirtyTick).toHaveBeenCalledTimes(1)
 
-    // Second action while in-flight: blocked
+    // Second action while in-flight: blocked (sets _dirty but doesn't call)
     loop.handleAction('open_tab', {})
     expect(dirtyTick).toHaveBeenCalledTimes(1)
 
-    // Resolve and flush ALL microtasks
+    // Resolve in-flight — finally block sees _dirty=true and auto-retriggers
     resolveTick([])
     await new Promise(resolve => setTimeout(resolve, 0))
-
-    // Now inFlight is cleared — third action should trigger
-    loop.handleAction('search_logs', {})
     expect(dirtyTick).toHaveBeenCalledTimes(2)
+
+    // Third action: in-flight is now clear (second call resolved synchronously) → triggers again
+    loop.handleAction('search_logs', {})
+    expect(dirtyTick).toHaveBeenCalledTimes(3)
   })
 
   it('inFlight clears after onDirtyTick resolves', async () => {
@@ -153,13 +155,15 @@ describe('GameLoop — tick sequence (timer-driven)', () => {
     loop.handleAction('open_tab', {})
     expect(dirtyTick).toHaveBeenCalledTimes(1)
 
-    // Resolve — inFlight should clear
+    // Resolve — inFlight clears and _dirty=true causes auto-retrigger
     resolveTick([])
     await new Promise(resolve => setTimeout(resolve, 0))
-
-    // After clear, new action triggers
-    loop.handleAction('search_logs', {})
     expect(dirtyTick).toHaveBeenCalledTimes(2)
+
+    // After auto-retrigger resolves, new action triggers again
+    await new Promise(resolve => setTimeout(resolve, 0))
+    loop.handleAction('search_logs', {})
+    expect(dirtyTick).toHaveBeenCalledTimes(3)
   })
 })
 

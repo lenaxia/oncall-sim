@@ -11,19 +11,20 @@ beforeEach(() => clearFixtureCache())
 function emptySnapshot(): ConversationStoreSnapshot {
   return {
     emails: [], chatChannels: {}, tickets: [], ticketComments: {},
-    logs: [], alarms: [], deployments: {},
+    logs: [], alarms: [], deployments: {}, pages: [],
   }
 }
 
 function makeContext(overrides: Partial<StakeholderContext> = {}): StakeholderContext {
   const scenario = getFixtureScenario()
   return {
-    sessionId:        'test-session',
+    sessionId:         'test-session',
     scenario,
-    simTime:          60,
-    auditLog:         [],
-    conversations:    emptySnapshot(),
-    personaCooldowns: {},
+    simTime:           60,
+    auditLog:          [],
+    conversations:     emptySnapshot(),
+    personaCooldowns:  {},
+    directlyAddressed: new Set<string>(),
     ...overrides,
   }
 }
