@@ -83,6 +83,30 @@ export interface CoachMessage {
   proactive: boolean                 // true = coach initiated; false = response to trainee question
 }
 
+/**
+ * A page sent by the trainee to a persona via the page_user action.
+ * Models a real PagerDuty page: the paged persona receives an alert and their
+ * on-call app fires a notification. The persona's system prompt handles responding.
+ */
+export interface PageAlert {
+  id:        string
+  personaId: string                  // who was paged
+  message:   string                  // the page message written by the trainee
+  simTime:   number
+}
+
+/**
+ * A significant simulation event recorded for the debrief timeline.
+ * Captures every meaningful event that occurred during the session —
+ * both simulation-driven events (alarms, emails, LLM messages) and
+ * trainee-triggered events — for display in the post-incident debrief.
+ * `sim_time` heartbeats and `session_snapshot` are excluded (too noisy).
+ */
+export interface SimEventLogEntry {
+  recordedAt: number   // sim seconds when this event was recorded
+  event:      SimEvent
+}
+
 // ── Enumerations ──────────────────────────────────────────────────────────────
 
 export type TicketSeverity    = 'SEV1' | 'SEV2' | 'SEV3' | 'SEV4'
@@ -97,10 +121,11 @@ export type DeploymentStatus  = 'active' | 'previous' | 'rolled_back'
 export type ActionType =
   // Incident management
   | 'ack_page'
-  | 'escalate_page'
+  | 'page_user'            // page a specific persona with a message (replaces escalate_page)
   | 'update_ticket'
   | 'add_ticket_comment'
   | 'mark_resolved'
+  | 'investigate_alert'    // evaluation-tracked: trainee examined this alarm
   // Communication
   | 'post_chat_message'
   | 'reply_email'
@@ -131,6 +156,7 @@ export interface SessionSnapshot {
   simTime: number                                             // current sim seconds
   speed: 1 | 2 | 5 | 10
   paused: boolean
+  clockAnchorMs: number                                       // Unix ms that corresponds to simTime=0
   emails: EmailMessage[]
   chatChannels: Record<string, ChatMessage[]>                // channel → messages
   tickets: Ticket[]
@@ -139,6 +165,7 @@ export interface SessionSnapshot {
   metrics: Record<string, Record<string, TimeSeriesPoint[]>> // service → metricId → series
   alarms: Alarm[]
   deployments: Record<string, Deployment[]>                  // service → deployments
+  pages: PageAlert[]                                         // pages sent by trainee
   auditLog: AuditEntry[]
   coachMessages: CoachMessage[]
 }
@@ -159,6 +186,7 @@ export type SimEvent =
   | { type: 'alarm_fired';       alarm: Alarm }
   | { type: 'alarm_silenced';    alarmId: string }
   | { type: 'deployment_update'; service: string; deployment: Deployment }
+  | { type: 'page_sent';         alert: PageAlert }          // trainee paged a persona
   | { type: 'coach_message';     message: CoachMessage }
   | { type: 'debrief_ready';     sessionId: string }
   | { type: 'error';             code: string; message: string }
