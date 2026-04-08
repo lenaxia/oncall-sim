@@ -9,19 +9,23 @@ import { EmptyState } from '../EmptyState'
 import { PageUserModal } from '../PageUserModal'
 import type { Alarm } from '@shared/types/events'
 
-export function OpsDashboardTab() {
+interface OpsDashboardTabProps {
+  activeService:    string
+  onServiceChange:  (svc: string) => void
+}
+
+export function OpsDashboardTab({ activeService, onServiceChange }: OpsDashboardTabProps) {
   const { state, dispatchAction } = useSession()
   const { scenario } = useScenario()
 
   const services = Object.keys(state.metrics)
-  const [activeService, setActiveService] = useState(services[0] ?? '')
 
   // If activeService is empty and metrics arrive, pick the first service
   useEffect(() => {
     if (activeService === '' && services.length > 0) {
-      setActiveService(services[0])
+      onServiceChange(services[0])
     }
-  }, [services.length, activeService])
+  }, [services.length, activeService])  // eslint-disable-line react-hooks/exhaustive-deps
   const [pageModalOpen, setPageModalOpen] = useState(false)
   const [pageModalAlarm, setPageModalAlarm] = useState<{ id: string; label: string } | null>(null)
 
@@ -69,7 +73,7 @@ export function OpsDashboardTab() {
                   ? 'text-sim-text border-b-2 border-sim-accent'
                   : 'text-sim-text-muted hover:text-sim-text',
               ].join(' ')}
-              onClick={() => setActiveService(svc)}
+              onClick={() => onServiceChange(svc)}
             >
               {svc}
               {hasFiringAlarm && (

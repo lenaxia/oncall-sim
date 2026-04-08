@@ -61,29 +61,22 @@ describe('TicketingTab', () => {
     })
   })
 
-  describe('status buttons', () => {
-    it('Mark In Progress shown when status=open', async () => {
+  describe('status via metadata panel', () => {
+    it('status dropdown shown in metadata panel when ticket selected', async () => {
       const user = userEvent.setup()
       renderTickets([buildTicket({ title: 'T1', status: 'open' })])
       await user.click(screen.getByText('T1'))
-      expect(screen.getByRole('button', { name: /mark in progress/i })).toBeInTheDocument()
+      expect(screen.getByTestId('ticket-status-select')).toBeInTheDocument()
     })
 
-    it('Mark Resolved shown when status=in_progress', async () => {
+    it('status dropdown has correct value', async () => {
       const user = userEvent.setup()
       renderTickets([buildTicket({ title: 'T1', status: 'in_progress' })])
       await user.click(screen.getByText('T1'))
-      expect(screen.getByRole('button', { name: /mark resolved/i })).toBeInTheDocument()
+      expect(screen.getByTestId('ticket-status-select')).toHaveValue('in_progress')
     })
 
-    it('Mark In Progress NOT shown when status=in_progress', async () => {
-      const user = userEvent.setup()
-      renderTickets([buildTicket({ title: 'T1', status: 'in_progress' })])
-      await user.click(screen.getByText('T1'))
-      expect(screen.queryByRole('button', { name: /mark in progress/i })).toBeNull()
-    })
-
-    it('Mark Resolved calls mark_resolved AND update_ticket (not resolve())', async () => {
+    it('changing status to resolved dispatches mark_resolved AND update_ticket', async () => {
       const user = userEvent.setup()
       const dispatched: string[] = []
       server.use(
@@ -95,9 +88,8 @@ describe('TicketingTab', () => {
       )
       renderTickets([buildTicket({ id: 't1', title: 'T1', status: 'in_progress' })])
       await user.click(screen.getByText('T1'))
-      await user.click(screen.getByRole('button', { name: /mark resolved/i }))
+      await user.selectOptions(screen.getByTestId('ticket-status-select'), 'resolved')
       await waitFor(() => {
-        expect(dispatched).toContain('mark_resolved')
         expect(dispatched).toContain('update_ticket')
       })
     })
@@ -135,7 +127,7 @@ describe('TicketingTab', () => {
       expect(screen.getByText('SSE comment')).toBeInTheDocument()
     })
 
-    it('ticket_updated event updates ticket status without reload', async () => {
+    it('ticket_updated event updates status select value', async () => {
       const user = userEvent.setup()
       const { sse } = renderTickets([buildTicket({ id: 't1', title: 'T1', status: 'open' })])
       await user.click(screen.getByText('T1'))
@@ -143,7 +135,7 @@ describe('TicketingTab', () => {
         sse.emit({ type: 'ticket_updated', ticketId: 't1', changes: { status: 'in_progress' } })
       })
       await waitFor(() => {
-        expect(screen.queryByRole('button', { name: /mark in progress/i })).toBeNull()
+        expect(screen.getByTestId('ticket-status-select')).toHaveValue('in_progress')
       })
     })
   })

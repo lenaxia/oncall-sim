@@ -73,17 +73,6 @@ export function TicketingTab() {
     })
   }
 
-  function handleMarkInProgress() {
-    if (!selected) return
-    dispatchAction('update_ticket', { ticketId: selected.id, changes: { status: 'in_progress' } })
-  }
-
-  function handleMarkResolved() {
-    if (!selected) return
-    dispatchAction('mark_resolved', { ticketId: selected.id })
-    dispatchAction('update_ticket', { ticketId: selected.id, changes: { status: 'resolved' } })
-  }
-
   function handleAddComment() {
     if (!selected || !commentText.trim()) return
     dispatchAction('add_ticket_comment', { ticketId: selected.id, body: commentText })
@@ -131,8 +120,6 @@ export function TicketingTab() {
           onStatusChange={handleStatusChange}
           onSeverityChange={handleSeverityChange}
           onAssigneeChange={handleAssigneeChange}
-          onMarkInProgress={handleMarkInProgress}
-          onMarkResolved={handleMarkResolved}
         />
       )}
 
@@ -159,15 +146,12 @@ export function TicketingTab() {
 
 function TicketMetadata({
   ticket, inactive, onStatusChange, onSeverityChange, onAssigneeChange,
-  onMarkInProgress, onMarkResolved,
 }: {
   ticket:            Ticket
   inactive:          boolean
   onStatusChange:    (s: TicketStatus) => void
   onSeverityChange:  (s: TicketSeverity) => void
   onAssigneeChange:  (a: string) => void
-  onMarkInProgress:  () => void
-  onMarkResolved:    () => void
 }) {
   const { state } = useSession()
   const { scenario } = useScenario()
@@ -257,37 +241,6 @@ function TicketMetadata({
         {/* Reporter */}
         <MetaSection label="Reported by">
           <span className="text-xs text-sim-persona">{ticket.createdBy}</span>
-        </MetaSection>
-
-        {/* Quick actions */}
-        <MetaSection label="Actions">
-          <div className="flex flex-col gap-1.5">
-            {ticket.status === 'open' && (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={onMarkInProgress}
-                disabled={inactive}
-                className="w-full justify-center"
-              >
-                Mark In Progress
-              </Button>
-            )}
-            {ticket.status === 'in_progress' && (
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={onMarkResolved}
-                disabled={inactive}
-                className="w-full justify-center"
-              >
-                Mark Resolved
-              </Button>
-            )}
-            {ticket.status === 'resolved' && (
-              <span className="text-xs text-sim-green">✓ Resolved</span>
-            )}
-          </div>
         </MetaSection>
       </div>
     </div>

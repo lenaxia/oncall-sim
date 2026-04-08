@@ -1,13 +1,18 @@
 import { describe, it, expect } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import {
-  renderWithProviders, buildTestSnapshot, buildAlarm, buildFlatSeries, buildMockSSE
-} from '../../src/testutil/index'
+import React, { useState } from 'react'
+import { renderWithProviders, buildTestSnapshot, buildAlarm, buildFlatSeries, buildMockSSE } from '../../src/testutil/index'
 import { OpsDashboardTab } from '../../src/components/tabs/OpsDashboardTab'
 import { server } from '../../src/testutil/setup'
 import { http, HttpResponse } from 'msw'
 import type { PageAlert } from '@shared/types/events'
+
+// Wrapper owns the controlled activeService state
+function OpsDashboardWrapper() {
+  const [activeService, setActiveService] = useState('')
+  return <OpsDashboardTab activeService={activeService} onServiceChange={setActiveService} />
+}
 
 function renderOps(opts: {
   alarms?: ReturnType<typeof buildAlarm>[]
@@ -15,7 +20,7 @@ function renderOps(opts: {
   pages?: PageAlert[]
 } = {}) {
   const sse = buildMockSSE()
-  const result = renderWithProviders(<OpsDashboardTab />, { sse })
+  const result = renderWithProviders(<OpsDashboardWrapper />, { sse })
   act(() => {
     sse.emit({
       type: 'session_snapshot',

@@ -91,15 +91,18 @@ export function MetricChart({
             />
             <Tooltip
               contentStyle={{
-                background: '#1c2128',
-                border: '1px solid #30363d',
-                borderRadius: 4,
-                fontSize: 10,
-                fontFamily: 'monospace',
+                background:   '#1c2128',
+                border:       '1px solid #30363d',
+                borderRadius: 6,
+                fontSize:     13,
+                fontFamily:   'monospace',
+                padding:      '8px 12px',
+                lineHeight:   '1.6',
               }}
-              itemStyle={{ color: '#e6edf3' }}
-              labelStyle={{ color: '#8b949e' }}
+              itemStyle={{ color: '#e6edf3', fontSize: 13 }}
+              labelStyle={{ color: '#8b949e', fontSize: 12, marginBottom: 4 }}
               labelFormatter={fmtTooltipLabel}
+              formatter={(value: number) => [`${value.toFixed(2)} ${unit}`.trim(), label]}
             />
             {criticalThreshold != null && (
               <ReferenceLine y={criticalThreshold} stroke="#f85149" strokeDasharray="4 2" strokeWidth={1} />

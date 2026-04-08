@@ -62,6 +62,9 @@ export function SimShell({ onResolve }: SimShellProps) {
   // Chat tab state — persists across tab switches
   const [chatActiveChannel, setChatActiveChannel] = useState<string | null>(null)
 
+  // Ops dashboard state — persists across tab switches; kept mounted to avoid Recharts re-init
+  const [opsActiveService, setOpsActiveService] = useState<string>('')
+
   // Unread counts
   const [emailUnread,   setEmailUnread]   = useState<Set<string>>(new Set())
   const [chatUnread,    setChatUnread]    = useState<Map<string, number>>(new Map())
@@ -239,7 +242,13 @@ export function SimShell({ onResolve }: SimShellProps) {
             />
           )}
           {activeTab === 'tickets' && <TicketingTab />}
-          {activeTab === 'ops'     && <OpsDashboardTab />}
+          {/* OpsDashboardTab stays mounted to avoid Recharts ResizeObserver re-init on tab switch */}
+          <div className={activeTab === 'ops' ? 'h-full' : 'hidden'}>
+            <OpsDashboardTab
+              activeService={opsActiveService}
+              onServiceChange={setOpsActiveService}
+            />
+          </div>
           {activeTab === 'logs'    && <LogsTab filterState={logFilter} onFilterChange={setLogFilter} />}
           {activeTab === 'wiki'    && <WikiTab />}
           {activeTab === 'cicd'    && <CICDTab />}
