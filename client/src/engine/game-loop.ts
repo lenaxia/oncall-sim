@@ -824,14 +824,18 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
               );
           const targetService = ra?.service ?? service;
           if (targetService) {
+            const desiredCount = params["desiredCount"] as number | undefined;
+            const logMessage =
+              ra?.sideEffect ??
+              (desiredCount != null
+                ? `Scale ${targetService}: desired ${desiredCount} instance(s) (${direction === "up" ? "+" : "-"}${count})`
+                : `Scale ${direction}: ${count} instance(s) requested for ${targetService}`);
             const scaleEntry: import("@shared/types/events").LogEntry = {
               id: randomUUID(),
               simTime: clock.getSimTime(),
               level: "INFO",
               service: targetService,
-              message:
-                ra?.sideEffect ??
-                `Scale ${direction}: ${count} instance(s) requested for ${targetService}`,
+              message: logMessage,
             };
             store.addLogEntry(scaleEntry);
             emit({ type: "log_entry", entry: scaleEntry });
