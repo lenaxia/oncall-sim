@@ -73,9 +73,11 @@ const INITIAL_STATE: SessionState = {
 // ── Reducer ───────────────────────────────────────────────────────────────────
 
 type Action =
-  | { type: 'SSE_EVENT';    event: SimEvent }
-  | { type: 'SET_STATUS';   status: SessionState['status'] }
+  | { type: 'SSE_EVENT';        event: SimEvent }
+  | { type: 'SET_STATUS';       status: SessionState['status'] }
   | { type: 'SET_RECONNECTING'; reconnecting: boolean }
+  | { type: 'SET_SPEED';        speed: 1 | 2 | 5 | 10 }
+  | { type: 'SET_PAUSED';       paused: boolean }
 
 function isTraineeEcho(emails: EmailMessage[], candidate: EmailMessage): boolean {
   if (candidate.from !== 'trainee') return false
@@ -95,6 +97,12 @@ function reducer(state: SessionState, action: Action): SessionState {
 
     case 'SET_RECONNECTING':
       return { ...state, reconnecting: action.reconnecting }
+
+    case 'SET_SPEED':
+      return { ...state, speed: action.speed, paused: false }
+
+    case 'SET_PAUSED':
+      return { ...state, paused: action.paused }
 
     case 'SSE_EVENT': {
       const ev = action.event
@@ -361,10 +369,12 @@ export function SessionProvider({
   }
 
   function setSpeed(speed: 1 | 2 | 5 | 10): void {
+    dispatch({ type: 'SET_SPEED', speed })
     post(`/api/sessions/${sessionId}/speed`, { speed }).catch(() => {})
   }
 
   function setPaused(paused: boolean): void {
+    dispatch({ type: 'SET_PAUSED', paused })
     post(`/api/sessions/${sessionId}/speed`, { paused }).catch(() => {})
   }
 
