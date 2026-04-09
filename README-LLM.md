@@ -26,6 +26,7 @@
 A browser-based on-call incident simulation platform for training software engineers on AWS services. The trainee works inside a realistic single-tab incident environment — email, chat, ticketing, dashboards, logs, runbooks, and CI/CD — and must diagnose and resolve a high-severity event driven by LLM-powered stakeholders.
 
 **Core Principles:**
+
 - Scenarios are fully config-driven — new scenarios require only YAML and Markdown files, zero code changes
 - LLMs drive stakeholder communication and dynamic sim events; the server controls all mechanics
 - Track trainee actions honestly without gamification
@@ -33,6 +34,7 @@ A browser-based on-call incident simulation platform for training software engin
 - Architecture supports future persistence, multi-user, and reactive metrics without redesign
 
 **Primary Source Documents:**
+
 - [`docs/design/hld.md`](docs/design/hld.md) — ⭐ AUTHORITATIVE specification
 - [`docs/design/lld/`](docs/design/lld/) — Low-level designs (one per phase)
 - [`docs/backlog/`](docs/backlog/) — Epics and user stories
@@ -56,6 +58,7 @@ Correct workflow:
 ```
 
 **Test requirements:**
+
 - Multiple happy path tests
 - Multiple unhappy path tests
 - Edge case coverage
@@ -64,12 +67,14 @@ Correct workflow:
 ### 1. TypeScript Strictness
 
 **ALWAYS DO:**
+
 - Enable `strict: true` in all `tsconfig.json` files
 - Define explicit interfaces and types for ALL data structures
 - Use discriminated unions for event types and state variants
 - Prefer `unknown` over `any` — narrow types explicitly
 
 **NEVER DO:**
+
 - Never use `any` unless interfacing with a library that forces it (document why)
 - Never use type assertions (`as Foo`) without a guard or comment explaining the invariant
 - Never leave implicit `any` from untyped function parameters
@@ -80,6 +85,7 @@ Correct workflow:
 The `shared/types/events.ts` file is the single source of truth for all SSE event shapes and core data interfaces. Both server and client import from it via tsconfig path aliases.
 
 **Rules:**
+
 - Never duplicate a type definition in server or client — always import from `shared/`
 - When adding a new SSE event type, update `SimEvent` discriminated union in `shared/types/events.ts` first, then implement
 - Zod schemas in `server/src/scenario/schema.ts` must stay in sync with `shared/types/events.ts` data shapes
@@ -101,6 +107,7 @@ The `shared/types/events.ts` file is the single source of truth for all SSE even
 ### 5. Scenario Config is the User Interface
 
 Scenario authors are experienced SREs, not developers. The config must be:
+
 - Authoring errors caught at startup with clear messages (scenario ID, field path, fix instruction)
 - No runtime surprises from misconfigured scenarios
 - New `incident_type` values that aren't in the registry log a warning, not an error
@@ -112,6 +119,7 @@ LLM failures, malformed tool call responses, and invalid scenario data must neve
 ### 7. Communication Tone
 
 **MANDATORY:**
+
 - Be neutral, factual, and objective
 - Never agree with something just because the user stated it
 - Validate before claiming — if uncertain, say so and ask
@@ -140,6 +148,7 @@ Do not guess, assume, or implement workarounds. A wrong implementation is worse 
 ### 11. Understand the Architecture Before Touching Code
 
 Before writing any code, read:
+
 - [`docs/design/hld.md`](docs/design/hld.md) — the full system design
 - The relevant LLD in [`docs/design/lld/`](docs/design/lld/)
 
@@ -148,12 +157,14 @@ Understand how your change fits into the whole. Changes that seem local often ha
 ### 12. Status Documentation
 
 When completing a story or phase:
+
 - Run all tests
 - Document test pass rate
 - Document known issues
 - Document confidence level
 
 **Status levels:**
+
 - ✅ Complete — all tests pass, ready for next phase
 - ⚠️ Complete with issues — tests mostly pass, known issues documented
 - ⚠️ Broken — tests failing, functionality broken
@@ -340,12 +351,14 @@ oncall-sim/
 ```
 
 **Key data flows:**
+
 1. Scenario loaded + validated at session start → metrics generated → stored in session
 2. Game loop ticks → event-scheduler fires scripted events → stakeholder-engine calls LLM → tool calls executed → SSE broadcast to client
 3. Trainee action → audit-log → stakeholder-engine triggered immediately → SSE broadcast
 4. Mark resolved → game loop stops → debrief LLM called → `debrief_ready` SSE → client polls debrief endpoint
 
 **Responsibility boundaries:**
+
 - LLM controls communication and dynamic events (via tool calls, server-validated)
 - Server controls mechanics (session state, metric generation, action execution)
 - Trainee controls remediation (rollback, restart, scale, etc.)
@@ -355,6 +368,7 @@ oncall-sim/
 ## Technology Stack
 
 ### Server
+
 - **Runtime:** Node.js 20+
 - **Framework:** Express + TypeScript (`strict: true`)
 - **Schema validation:** Zod (scenario config validation at startup)
@@ -364,6 +378,7 @@ oncall-sim/
 - **Testing:** Vitest
 
 ### Client
+
 - **Framework:** React 18 + TypeScript (`strict: true`)
 - **Styling:** Tailwind CSS
 - **Charts:** Recharts (time-series metric graphs)
@@ -371,10 +386,12 @@ oncall-sim/
 - **Testing:** Vitest + React Testing Library
 
 ### Shared
+
 - **Types:** `shared/types/events.ts` — imported by both server and client via tsconfig path aliases (`@shared/types/events`)
 - **No runtime shared code** — shared directory contains types only, no executable modules
 
 ### Environment
+
 - **Package manager:** npm workspaces (root + server + client)
 - **Node version:** 20 LTS
 
@@ -384,21 +401,23 @@ oncall-sim/
 
 Phases must be completed in order. Each phase has an LLD in `docs/design/lld/` and a backlog folder in `docs/backlog/`.
 
-| Phase | Name | Depends on | LLD |
-|---|---|---|---|
-| 1 | Shared types + scenario schema | Nothing | `01-shared-types.md` |
-| 2 | Metric generator | Phase 1 | `02-metric-generator.md` |
-| 3 | Scenario loader + validation | Phases 1, 2 | `03-scenario-loader.md` |
-| 4 | Core game engine | Phase 3 | `04-game-engine.md` |
-| 5 | LLM client + stakeholder engine | Phase 4 | `05-llm-client.md` |
-| 6 | Session management + REST API + SSE | Phases 3, 4, 5 | `06-api.md` |
-| 7 | UI component library | Phase 1 | `07-ui-components.md` |
-| 8 | Sim shell + all tabs | Phases 6, 7 | `08-sim-tabs.md` |
-| 9 | Coach + debrief | Phases 5, 6, 8 | `09-coach-debrief.md` |
+| Phase | Name                                | Depends on                   | LLD                      |
+| ----- | ----------------------------------- | ---------------------------- | ------------------------ |
+| 1     | Shared types + scenario schema      | Nothing                      | `01-shared-types.md`     |
+| 2     | Metric generator                    | Phase 1                      | `02-metric-generator.md` |
+| 3     | Scenario loader + validation        | Phases 1, 2                  | `03-scenario-loader.md`  |
+| 4     | Core game engine                    | Phase 3                      | `04-game-engine.md`      |
+| 5     | LLM client + stakeholder engine     | Phase 4                      | `05-llm-client.md`       |
+| 6     | Session management + REST API + SSE | Phases 3, 4, 5               | `06-api.md`              |
+| 7     | UI component library                | Phase 1                      | `07-ui-components.md`    |
+| 8     | Sim shell + all tabs                | Phases 6, 7                  | `08-sim-tabs.md`         |
+| 9     | Coach + debrief                     | Phases 5, 6, 8               | `09-coach-debrief.md`    |
+| 10    | Reactive metrics                    | Phases 1–6 (all implemented) | `10-reactive-metrics.md` |
 
 Phase 7 can run in parallel with Phases 4–6.
 
 **Before starting any phase:**
+
 1. Read the HLD sections relevant to that phase
 2. Read the phase LLD
 3. Read the backlog stories for that phase
@@ -455,6 +474,7 @@ npx vitest --workspace=server
 ```
 
 **ALWAYS run tests with mock LLM:**
+
 ```bash
 MOCK_LLM=true npm test --workspace=server
 ```
@@ -490,22 +510,24 @@ npm run build --workspace=client
 
 **Active Branches:**
 
-| Branch | Purpose | Status | Created |
-|---|---|---|---|
+| Branch | Purpose     | Status | Created    |
+| ------ | ----------- | ------ | ---------- |
 | `main` | Stable code | Active | 2026-04-07 |
 
 **Merged Branches:**
 
-| Branch | Purpose | Merged | Commit |
-|---|---|---|---|
-| _(none yet)_ | — | — | — |
+| Branch       | Purpose | Merged | Commit |
+| ------------ | ------- | ------ | ------ |
+| _(none yet)_ | —       | —      | —      |
 
 **Branch naming:**
+
 - Feature: `feature/phase-N-description`
 - Bugfix: `bugfix/description`
 - Docs: `docs/description`
 
 **Workflow:**
+
 1. Create branch from `main`
 2. Add to table above
 3. Work in branch with regular commits
@@ -524,6 +546,7 @@ npm run build --workspace=client
 - `lld/` — one file per development phase, named `NN-phase-name.md`
 
 **LLD format:**
+
 - Purpose and scope
 - Module interfaces (TypeScript signatures)
 - Key algorithms or data flows
@@ -537,11 +560,13 @@ npm run build --workspace=client
 **Naming:** `NNNN_YYYY-MM-DD_description.md` (continuous numbering from 0000)
 
 **When to create:**
+
 - After completing a phase or significant story
 - Before ending a session with unfinished work
 - When documenting a blocker or architectural decision
 
 **Contents:**
+
 - What was done
 - Test pass rate
 - Known issues
@@ -556,20 +581,24 @@ npm run build --workspace=client
 One folder per development phase, matching the phase numbering.
 
 **Story format:**
+
 ```markdown
 # Story: [title]
 
 ## As a [role], I want [goal] so that [benefit]
 
 ### Acceptance Criteria
+
 - [ ] Criterion 1
 - [ ] Criterion 2
 
 ### Tasks
+
 - [ ] Task 1
 - [ ] Task 2
 
 ### Status
+
 - Status: Not Started | In Progress | Complete
 - Started: YYYY-MM-DD
 - Completed: YYYY-MM-DD
@@ -578,6 +607,7 @@ One folder per development phase, matching the phase numbering.
 ### README Files
 
 Every major folder must have a `README.md` that explains:
+
 - What the folder contains
 - Rules for reading/editing files in it
 - Key files and their purpose
@@ -609,6 +639,7 @@ client/__tests__/components/SpeedControl.test.tsx
 ### Test Coverage Requirements
 
 Every module must have:
+
 - Happy path tests (valid inputs, expected outputs)
 - Unhappy path tests (invalid inputs, error conditions)
 - Edge cases specific to the module's domain
@@ -624,6 +655,7 @@ Every module must have:
 All server tests that touch the LLM must run with `MOCK_LLM=true`. The mock provider reads from `scenarios/_fixture/mock-llm-responses.yaml`.
 
 Mock response triggers:
+
 - `tick_N` — fires on the Nth stakeholder engine tick
 - `after_action:<action_type>:<optional_param>` — fires after a specific trainee action
 - `proactive_tick_N` — fires on the Nth coach tick
@@ -695,11 +727,122 @@ A: No. Log the error with scenario ID and field path, exclude that scenario from
 
 ---
 
-## Version History
+## Scenario Log Authoring
 
-| Version | Date | Changes |
-|---|---|---|
-| 1.0 | 2026-04-07 | Initial creation |
+Three complementary mechanisms fill the Logs tab. They are merged and sorted by `atSecond` at load time; the event-scheduler and game loop are unaffected.
+
+### 1. `logs` — scripted entries (precision signals)
+
+Use for the specific lines that carry diagnostic information the trainee must find.
+
+```yaml
+logs:
+  - id: log-001
+    at_second: 5
+    level: WARN
+    service: payment-service
+    message: "HikariPool-1 - Pool stats (total=5, active=5, idle=0, waiting=47)"
+```
+
+`logs` is optional (defaults to `[]`). All three mechanisms can be combined freely.
+
+### 2. `log_patterns` — repeated message templates (incident noise)
+
+Use for messages that repeat throughout the incident window — connection timeouts, retry attempts, HTTP 500s, pool stats. The loader generates one entry per `interval_seconds` step across `[from_second, to_second]`.
+
+**`{n}` substitution** replaces `{n}` in the message with the 1-based occurrence count — useful for `waiting={n}` pool stats, `attempt {n} failed`, etc.
+
+**`jitter_seconds`** perturbs each entry's timestamp by ±`jitter_seconds` using a live RNG (different every session). Omit it for exact-interval placement.
+
+**`seed`** fixes the RNG for that pattern. Use only when debugging a specific timestamp layout — omit in real scenarios so the stream varies per session.
+
+```yaml
+log_patterns:
+  - id: pool-timeout
+    level: ERROR
+    service: payment-service
+    message: "HikariCP - Connection is not available, request timed out after 30000ms"
+    interval_seconds: 15
+    from_second: 0
+    to_second: 840
+    jitter_seconds: 4          # timestamps vary ±4s — looks real, not metronomic
+
+  - id: pool-stats
+    level: WARN
+    service: payment-service
+    message: "HikariPool-1 - Pool stats (total=5, active=5, idle=0, waiting={n})"
+    interval_seconds: 30
+    from_second: 0
+    to_second: 840
+    jitter_seconds: 6
+
+  - id: retry-burst
+    level: ERROR
+    service: payment-service
+    message: "Retry attempt {n}/3 — circuit open"
+    interval_seconds: 5
+    from_second: 10
+    to_second: 40
+    count: 5                   # cap at 5 entries regardless of window size
+```
+
+### 3. `background_logs` — ambient profile noise (realism padding)
+
+Use to populate the log stream with realistic routine lines (health checks, GC events, successful requests) that existed before and during the incident. No message authoring required — pick a profile and a window.
+
+The profile's lines are sampled using a live RNG (different every session) so the stream never looks identical between runs. Use `seed` only when debugging.
+
+**Available profiles** (defined in `server/src/scenario/log-profiles.ts`):
+
+| Profile | Typical for |
+|---|---|
+| `java_web_service` | Spring Boot / Dropwizard API with HikariCP |
+| `nodejs_api` | Express / Fastify API with Redis and a DB pool |
+| `python_worker` | Celery worker processing a task queue |
+| `sidecar_proxy` | Envoy / Istio sidecar next to any service |
+
+**`density`** controls entries per minute: `low` (×0.4), `medium` (×1.0, default), `high` (×2.2).
+
+```yaml
+background_logs:
+  - profile: java_web_service
+    service: payment-service
+    from_second: -300          # start 5 sim-minutes before the incident
+    to_second: 840
+    density: medium            # omit seed — every session gets its own stream
+
+  - profile: sidecar_proxy
+    service: payment-service
+    from_second: -300
+    to_second: 840
+    density: low
+```
+
+### Adding a new profile
+
+Add an entry to `LOG_PROFILES` in `server/src/scenario/log-profiles.ts`. No other code changes needed.
+
+```typescript
+my_service: {
+  baseRate: 8,    // entries per 60 real seconds at density=medium
+  lines: [
+    { level: 'INFO',  message: 'GET /health 200 - 1ms', weight: 4 },
+    { level: 'DEBUG', message: 'cache hit: session (ttl 1200s)',  weight: 2 },
+    // ...
+  ],
+},
+```
+
+`weight` is relative — higher weight means the line appears more often. Omit for weight=1.
+
+---
+
+
+
+| Version | Date       | Changes                                               |
+| ------- | ---------- | ----------------------------------------------------- |
+| 1.1     | 2026-04-08 | Log volume: `log_patterns` and `background_logs`      |
+| 1.0     | 2026-04-07 | Initial creation                                      |
 
 ---
 

@@ -22,6 +22,8 @@ engine:
       max_calls: 1
     - tool: inject_log_entry
       enabled: true
+    - tool: apply_metric_response
+      enabled: true
 
 email:
   - id: email-001

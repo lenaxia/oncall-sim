@@ -9,6 +9,15 @@ stakeholder_responses:
 
   - trigger: after_action:trigger_rollback:fixture-service
     tool_calls:
+      - tool: apply_metric_response
+        params:
+          affected_metrics:
+            - service: fixture-service
+              metric_id: error_rate
+              direction: recovery
+              pattern: smooth_decay
+              speed: 5m
+              magnitude: full
       - tool: send_message
         params:
           persona: fixture-persona
