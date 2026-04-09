@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import type { LoadedScenario } from "../../src/scenario/types";
 import { createGameLoop } from "../../src/engine/game-loop";
 import { createEventScheduler } from "../../src/engine/event-scheduler";

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { createStakeholderEngine } from "../../src/engine/stakeholder-engine";
 import { LLMError } from "../../src/llm/llm-client";
 import {
