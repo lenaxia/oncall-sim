@@ -14,12 +14,13 @@ Session progress entries, handoffs, and architectural decisions.
 `NNNN_YYYY-MM-DD_description.md`
 
 Examples:
+
 - `0000_2026-04-07_phase1-shared-types-complete.md`
 - `0001_2026-04-08_phase2-metric-generator-in-progress.md`
 
 ## Next Entry
 
-`0008_YYYY-MM-DD_description.md`
+`0017_YYYY-MM-DD_description.md`
 
 ## Entry Format
 

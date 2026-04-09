@@ -508,23 +508,15 @@ describe("GameLoop — metric_update SSE streaming", () => {
       );
       const store = createMetricStore(series, resolvedParams);
 
-      // Apply a reactive overlay starting at t=0 so points exist in the window
-      const rp = store.getResolvedParams("fixture-service", "error_rate");
-      if (rp) {
-        store.applyReactiveOverlay(
-          {
-            service: "fixture-service",
-            metricId: "error_rate",
-            direction: "recovery",
-            pattern: "smooth_decay",
-            speedSeconds: 60,
-            magnitude: "full",
-            currentValue: 10,
-            targetValue: 1,
-          },
-          0,
-        );
-      }
+      // Apply an active overlay — metric_update events are now emitted every tick
+      store.applyActiveOverlay("fixture-service", "error_rate", {
+        startSimTime: 0,
+        startValue: 10,
+        targetValue: 1,
+        pattern: "smooth_decay",
+        speedSeconds: 300,
+        sustained: true,
+      });
 
       const clock = buildTestClock(0);
       const emitted: SimEvent[] = [];

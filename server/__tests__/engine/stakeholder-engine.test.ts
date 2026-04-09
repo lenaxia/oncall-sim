@@ -18,10 +18,10 @@ function nullMetricStore(): MetricStore {
   return {
     getAllSeries: () => ({}),
     getCurrentValue: () => null,
-    applyReactiveOverlay: () => {
+    generatePoint: () => [],
+    applyActiveOverlay: () => {
       /* no-op */
     },
-    getPointsInWindow: () => [],
     getResolvedParams: () => null,
     listMetrics: () => [],
   };
@@ -54,6 +54,7 @@ function makeContext(
     personaCooldowns: {},
     directlyAddressed: new Set<string>(),
     metricSummary: { simTime: 60, narratives: [] },
+    triggeredByAction: true,
     ...overrides,
   };
 }

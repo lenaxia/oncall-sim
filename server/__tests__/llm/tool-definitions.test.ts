@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   getStakeholderTools,
+  getMetricReactionTools,
   getCoachTools,
   validateToolCall,
   COMMUNICATION_TOOLS,
@@ -34,7 +35,7 @@ describe("getStakeholderTools", () => {
     expect(names).toContain("inject_log_entry");
   });
 
-  it("apply_metric_response included when enabled in llm_event_tools", () => {
+  it("apply_metric_response excluded from stakeholder tools even when enabled", () => {
     const scenario: LoadedScenario = {
       ...getFixtureScenario(),
       engine: {
@@ -44,7 +45,9 @@ describe("getStakeholderTools", () => {
       },
     };
     const tools = getStakeholderTools(scenario);
-    expect(tools.find((t) => t.name === "apply_metric_response")).toBeDefined();
+    expect(
+      tools.find((t) => t.name === "apply_metric_response"),
+    ).toBeUndefined();
   });
 
   it("apply_metric_response excluded when not in llm_event_tools", () => {
@@ -254,7 +257,7 @@ describe("validateToolCall", () => {
         llmEventTools: [{ tool: "apply_metric_response", enabled: true }],
       },
     };
-    const activeTools = getStakeholderTools(scenario);
+    const activeTools = getMetricReactionTools(scenario);
     const result = validateToolCall(
       {
         tool: "apply_metric_response",

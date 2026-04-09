@@ -546,8 +546,8 @@ describe("computeMetricSummary — integration with fixture scenario", () => {
     const nullStore: MetricStore = {
       getAllSeries: () => ({}),
       getCurrentValue: () => null,
-      applyReactiveOverlay: () => {},
-      getPointsInWindow: () => [],
+      generatePoint: () => [],
+      applyActiveOverlay: () => {},
       getResolvedParams: () => null,
       listMetrics: () => [],
     };
@@ -560,8 +560,8 @@ describe("computeMetricSummary — integration with fixture scenario", () => {
     const nullStore: MetricStore = {
       getAllSeries: () => ({}),
       getCurrentValue: () => null,
-      applyReactiveOverlay: () => {},
-      getPointsInWindow: () => [],
+      generatePoint: () => [],
+      applyActiveOverlay: () => {},
       getResolvedParams: () => null,
       listMetrics: () => [],
     };

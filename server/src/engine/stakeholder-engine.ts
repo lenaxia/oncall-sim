@@ -18,15 +18,6 @@ import { getStakeholderTools, validateToolCall } from "../llm/tool-definitions";
 import { renderMetricSummary } from "../metrics/metric-summary";
 import { logger } from "../logger";
 import type { MetricStore } from "../metrics/metric-store";
-import {
-  resolveReactiveTarget,
-  REACTIVE_SPEED_SECONDS,
-} from "../metrics/patterns/reactive-overlay";
-import type { ResolvedReactiveParams } from "../metrics/types";
-import type {
-  ReactiveSpeedTier,
-  ReactiveOverlayType,
-} from "@shared/types/events";
 
 const log = logger.child({ component: "stakeholder-engine" });
 
@@ -204,8 +195,6 @@ export function createStakeholderEngine(
       "- Only send messages if the personas have something meaningful to say given the current situation.",
       "- Respect persona cooldowns — do not send multiple rapid messages from the same persona.",
       "- If nothing meaningful needs to be said, do not call any tools.",
-      "",
-      ..._buildMetricResponseContext(),
     ].join("\n");
 
     // Audit log — always preserved in full (short, critical for evaluation context)
@@ -231,51 +220,6 @@ export function createStakeholderEngine(
     ];
   }
 
-  function _buildMetricResponseContext(): string[] {
-    // Only inject if apply_metric_response is enabled for this scenario
-    const isEnabled = scenario.engine.llmEventTools.some(
-      (t) => t.tool === "apply_metric_response" && t.enabled !== false,
-    );
-    if (!isEnabled) return [];
-
-    // Build service → metricId list from scenario topology
-    const serviceLines: string[] = [];
-    const focal = scenario.opsDashboard.focalService;
-    serviceLines.push(
-      `  ${focal.name}: ${focal.metrics.map((m) => m.archetype).join(", ")}`,
-    );
-    for (const cs of scenario.opsDashboard.correlatedServices) {
-      const metricIds =
-        cs.overrides?.map((m) => m.archetype) ??
-        focal.metrics.map((m) => m.archetype);
-      serviceLines.push(`  ${cs.name}: ${metricIds.join(", ")}`);
-    }
-
-    return [
-      "## Metric Response Tool: apply_metric_response",
-      "Use after any trainee action that changes the incident trajectory.",
-      "",
-      "Services and metrics in this scenario:",
-      ...serviceLines,
-      "",
-      "Patterns: smooth_decay | stepped | queue_burndown | oscillating | blip_then_decay | cascade_clear | sawtooth_rebound | cliff",
-      "Speed: 1m | 5m | 15m | 30m | 60m",
-      "Direction: recovery (toward resolved state) | worsening (toward incident peak)",
-      "Magnitude: full (complete) | partial (halfway to resolved state)",
-      "",
-      "Rules:",
-      "- Only call apply_metric_response when a trainee action has actually changed the situation.",
-      "- Use direction=worsening when the action made the situation worse.",
-      "- Use magnitude=partial when the fix is incomplete or does not address root cause.",
-      "- Specify different patterns and speeds per metric in one call for asymmetric recovery.",
-      "- For oscillating: set oscillation_mode=sustained if root cause is not addressed.",
-    ];
-  }
-
-  /**
-   * Builds the user message content, applying context window truncation if the
-   * combined conversation history exceeds TOKEN_BUDGET.
-   */
   function _buildUserContent(
     context: StakeholderContext,
     auditLines: string[],
@@ -482,192 +426,13 @@ export function createStakeholderEngine(
         ];
       }
 
-      case "apply_metric_response": {
-        const entries = params["affected_metrics"];
-        if (!Array.isArray(entries)) return [];
-
-        for (const rawEntry of entries as Record<string, unknown>[]) {
-          const service = rawEntry["service"] as string | undefined;
-          const metricId = rawEntry["metric_id"] as string | undefined;
-          if (!service || !metricId) continue;
-
-          // Validate service exists in scenario topology
-          const focalService = scenario.opsDashboard.focalService;
-          const isKnownService =
-            service === focalService.name ||
-            scenario.opsDashboard.correlatedServices.some(
-              (cs) => cs.name === service,
-            );
-          if (!isKnownService) {
-            log.warn(
-              { service },
-              "apply_metric_response: unknown service, skipping entry",
-            );
-            continue;
-          }
-
-          // Validate metricId exists on service
-          const knownMetrics: string[] =
-            service === focalService.name
-              ? focalService.metrics.map((m) => m.archetype)
-              : (() => {
-                  const cs = scenario.opsDashboard.correlatedServices.find(
-                    (c) => c.name === service,
-                  );
-                  return (
-                    cs?.overrides?.map((m) => m.archetype) ??
-                    focalService.metrics.map((m) => m.archetype)
-                  );
-                })();
-          if (!knownMetrics.includes(metricId)) {
-            log.warn(
-              { service, metricId },
-              "apply_metric_response: unknown metric_id, skipping entry",
-            );
-            continue;
-          }
-
-          const direction =
-            (rawEntry["direction"] as "recovery" | "worsening") ?? "recovery";
-          const pattern =
-            (rawEntry["pattern"] as ReactiveOverlayType) ?? "smooth_decay";
-          const speed = (rawEntry["speed"] as ReactiveSpeedTier) ?? "5m";
-          const magnitude =
-            (rawEntry["magnitude"] as "full" | "partial") ?? "full";
-
-          const speedSeconds = REACTIVE_SPEED_SECONDS[speed];
-
-          // cascade_clear: expand to per-metric smooth_decay with staggered start times
-          if (pattern === "cascade_clear") {
-            const INFRA_ARCHETYPES = new Set([
-              "cpu_utilization",
-              "memory_used",
-              "memory_rss",
-              "connection_pool_used",
-              "thread_count",
-              "heap_used",
-            ]);
-            const QUALITY_ARCHETYPES = new Set([
-              "error_rate",
-              "fault_rate",
-              "availability",
-              "p99_latency_ms",
-              "p50_latency_ms",
-            ]);
-
-            const group = INFRA_ARCHETYPES.has(metricId)
-              ? 0
-              : QUALITY_ARCHETYPES.has(metricId)
-                ? 1
-                : 2;
-            const staggeredSimTime =
-              context.simTime + (group * speedSeconds) / 3;
-
-            const rp = metricStore.getResolvedParams(service, metricId);
-            const currentValue = metricStore.getCurrentValue(
-              service,
-              metricId,
-              context.simTime,
-            );
-            if (!rp || currentValue === null) continue;
-
-            const targetValue = resolveReactiveTarget(
-              direction,
-              magnitude,
-              currentValue,
-              rp.resolvedValue,
-              rp.peakValue,
-            );
-            const expandedParams: ResolvedReactiveParams = {
-              service,
-              metricId,
-              direction,
-              magnitude,
-              pattern: "smooth_decay",
-              speedSeconds,
-              currentValue,
-              targetValue,
-            };
-            metricStore.applyReactiveOverlay(expandedParams, staggeredSimTime);
-            log.info(
-              {
-                service,
-                metricId,
-                pattern: "smooth_decay (cascade_clear)",
-                direction,
-                speed,
-                simTime: staggeredSimTime,
-              },
-              "apply_metric_response executed",
-            );
-            continue;
-          }
-
-          const rp = metricStore.getResolvedParams(service, metricId);
-          const currentValue = metricStore.getCurrentValue(
-            service,
-            metricId,
-            context.simTime,
-          );
-          if (!rp || currentValue === null) {
-            log.warn(
-              { service, metricId },
-              "apply_metric_response: no resolved params or current value, skipping",
-            );
-            continue;
-          }
-
-          const targetValue = resolveReactiveTarget(
-            direction,
-            magnitude,
-            currentValue,
-            rp.resolvedValue,
-            rp.peakValue,
-          );
-
-          let oscillationMode: "damping" | "sustained" | undefined;
-          let cycleSeconds: number | undefined;
-          if (pattern === "oscillating") {
-            oscillationMode =
-              (rawEntry["oscillation_mode"] as
-                | "damping"
-                | "sustained"
-                | undefined) ?? "damping";
-            const rawCycle = rawEntry["cycle_seconds"] as number | undefined;
-            cycleSeconds =
-              rawCycle != null ? Math.min(300, Math.max(30, rawCycle)) : 60;
-          }
-
-          const resolvedParams: ResolvedReactiveParams = {
-            service,
-            metricId,
-            direction,
-            pattern,
-            speedSeconds,
-            magnitude,
-            currentValue,
-            targetValue,
-            ...(oscillationMode !== undefined ? { oscillationMode } : {}),
-            ...(cycleSeconds !== undefined ? { cycleSeconds } : {}),
-          };
-
-          metricStore.applyReactiveOverlay(resolvedParams, context.simTime);
-          log.info(
-            {
-              service,
-              metricId,
-              pattern,
-              direction,
-              speed,
-              magnitude,
-              simTime: context.simTime,
-            },
-            "apply_metric_response executed",
-          );
-        }
-
-        return []; // metric_update events are streamed by the game loop via getPointsInWindow
-      }
+      case "apply_metric_response":
+        // Handled by metric-reaction-engine — should not reach here.
+        log.warn(
+          { tool },
+          "apply_metric_response reached stakeholder engine — ignored",
+        );
+        return [];
 
       default:
         log.warn({ tool }, "Unknown tool call");

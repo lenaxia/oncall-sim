@@ -14,6 +14,7 @@ import { createAuditLog } from "../engine/audit-log";
 import { createConversationStore } from "../engine/conversation-store";
 import { createEvaluator } from "../engine/evaluator";
 import { createStakeholderEngine } from "../engine/stakeholder-engine";
+import { createMetricReactionEngine } from "../engine/metric-reaction-engine";
 import { createGameLoop } from "../engine/game-loop";
 
 export type SessionStatus = "active" | "resolved" | "expired";
@@ -66,6 +67,13 @@ export function createSession(
     metricStore,
   );
 
+  const metricReactionEngine = createMetricReactionEngine(
+    llmClient,
+    scenario,
+    metricStore,
+    () => clock.getSimTime(),
+  );
+
   const gameLoop = createGameLoop({
     scenario,
     sessionId,
@@ -78,6 +86,7 @@ export function createSession(
     metricStore,
     clockAnchorMs: anchor,
     onDirtyTick: (ctx) => stakeholderEngine.tick(ctx),
+    onMetricReact: (ctx) => metricReactionEngine.react(ctx),
   });
 
   return Promise.resolve({

@@ -110,6 +110,11 @@ export const EVENT_TOOLS: LLMToolDefinition[] = [
                 enum: ["1m", "5m", "15m", "30m", "60m"],
               },
               magnitude: { type: "string", enum: ["full", "partial"] },
+              sustained: {
+                type: "boolean",
+                description:
+                  "If false, metric reverts to scripted incident behavior after speedSeconds. Defaults to true (persists until overwritten by another action). Only set false for transient one-off effects.",
+              },
               oscillation_mode: {
                 type: "string",
                 enum: ["damping", "sustained"],
@@ -195,7 +200,8 @@ export const COACH_TOOLS: LLMToolDefinition[] = [
 /**
  * Returns stakeholder tool definitions for the scenario.
  * COMMUNICATION_TOOLS always included.
- * EVENT_TOOLS filtered by scenario.engine.llmEventTools config.
+ * EVENT_TOOLS filtered by scenario.engine.llmEventTools config,
+ * excluding apply_metric_response (handled by metric-reaction-engine).
  */
 export function getStakeholderTools(
   scenario: LoadedScenario,
@@ -205,8 +211,25 @@ export function getStakeholderTools(
       .filter((t) => t.enabled !== false)
       .map((t) => t.tool),
   );
-  const eventTools = EVENT_TOOLS.filter((t) => enabledTools.has(t.name));
+  const eventTools = EVENT_TOOLS.filter(
+    (t) => enabledTools.has(t.name) && t.name !== "apply_metric_response",
+  );
   return [...COMMUNICATION_TOOLS, ...eventTools];
+}
+
+/**
+ * Returns the tool list for the metric reaction engine — apply_metric_response only.
+ * Enabled when the scenario has it in llm_event_tools; otherwise returns [].
+ */
+export function getMetricReactionTools(
+  scenario: LoadedScenario,
+): LLMToolDefinition[] {
+  const enabled = scenario.engine.llmEventTools.some(
+    (t) => t.tool === "apply_metric_response" && t.enabled !== false,
+  );
+  if (!enabled) return [];
+  const tool = EVENT_TOOLS.find((t) => t.name === "apply_metric_response");
+  return tool ? [tool] : [];
 }
 
 /**

@@ -16,28 +16,26 @@ describe("generateAllMetrics with fixture scenario", () => {
     expect(series["fixture-service"]["error_rate"].length).toBeGreaterThan(0);
   });
 
-  it("series length = (pre_incident_seconds + duration_seconds) / resolution_seconds + 1", () => {
+  it("series length = pre_incident_seconds / resolution_seconds + 1 (t <= 0 only)", () => {
     const scenario = getFixtureScenario();
     const { series } = generateAllMetrics(scenario, "session-1");
     const { preIncidentSeconds } = scenario.opsDashboard;
-    const durationSeconds = scenario.timeline.durationMinutes * 60;
     const resolutionSeconds = 15;
+    // Only t <= 0 points: from -preIncidentSeconds to 0
     const expectedLength =
-      Math.floor((preIncidentSeconds + durationSeconds) / resolutionSeconds) +
-      1;
+      Math.floor(preIncidentSeconds / resolutionSeconds) + 1;
     const s = series["fixture-service"]["error_rate"];
     expect(s.length).toBe(expectedLength);
   });
 
-  it("all t values within expected range", () => {
+  it("all t values within expected range (t <= 0 only)", () => {
     const scenario = getFixtureScenario();
     const { series } = generateAllMetrics(scenario, "session-1");
     const { preIncidentSeconds } = scenario.opsDashboard;
-    const durationSeconds = scenario.timeline.durationMinutes * 60;
     const s = series["fixture-service"]["error_rate"];
     s.forEach(({ t }) => {
       expect(t).toBeGreaterThanOrEqual(-preIncidentSeconds);
-      expect(t).toBeLessThanOrEqual(durationSeconds);
+      expect(t).toBeLessThanOrEqual(0);
     });
   });
 
@@ -102,8 +100,8 @@ describe("generateAllMetrics with fixture scenario", () => {
             {
               archetype: "error_rate",
               seriesOverride: [
-                { t: 0, v: 99 },
-                { t: 15, v: 98 },
+                { t: -15, v: 99 },
+                { t: 0, v: 98 },
               ],
             },
           ],
@@ -116,8 +114,8 @@ describe("generateAllMetrics with fixture scenario", () => {
     );
     const s = series["fixture-service"]["error_rate"];
     expect(s).toHaveLength(2);
-    expect(s[0]).toEqual({ t: 0, v: 99 });
-    expect(s[1]).toEqual({ t: 15, v: 98 });
+    expect(s[0]).toEqual({ t: -15, v: 99 });
+    expect(s[1]).toEqual({ t: 0, v: 98 });
   });
 });
 

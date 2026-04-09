@@ -40,6 +40,7 @@ export interface StakeholderContext {
   personaCooldowns: Record<string, number>;
   directlyAddressed: Set<string>; // persona IDs directly messaged since last LLM tick
   metricSummary: MetricSummary; // grounded metric state — current values, trends, history
+  triggeredByAction: boolean; // true only when dirty tick was caused by a trainee action/chat/email
 }
 
 // ── GameLoop ──────────────────────────────────────────────────────────────────
@@ -91,11 +92,12 @@ export interface GameLoopDependencies {
   metricStore?: MetricStore; // optional: when present, streams metric_update events and provides snapshot
   clockAnchorMs: number;
   onDirtyTick?: (context: StakeholderContext) => Promise<SimEvent[]>;
+  onMetricReact?: (context: StakeholderContext) => Promise<void>;
   onCoachTick?: (context: StakeholderContext) => Promise<CoachMessage | null>;
 }
 
 // Read-only MetricStore built from a plain series Record when no full MetricStore
-// is provided. Supports getAllSeries and getCurrentValue; reactive overlay
+// is provided. Supports getAllSeries and getCurrentValue; on-demand generation
 // methods are no-ops (no resolvedParams available).
 function _buildFallbackStore(
   metrics: Record<string, Record<string, TimeSeriesPoint[]>>,
@@ -121,11 +123,11 @@ function _buildFallbackStore(
       }
       return best?.v ?? null;
     },
-    applyReactiveOverlay() {
-      /* no-op: no resolvedParams in fallback store */
-    },
-    getPointsInWindow() {
+    generatePoint() {
       return [];
+    },
+    applyActiveOverlay() {
+      /* no-op: no resolvedParams in fallback store */
     },
     getResolvedParams() {
       return null;
@@ -162,6 +164,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     deps.metricStore ?? _buildFallbackStore(metrics);
 
   const onDirtyTick = deps.onDirtyTick ?? (() => Promise.resolve([]));
+  const onMetricReact = deps.onMetricReact ?? (() => Promise.resolve());
   const onCoachTick = deps.onCoachTick ?? (() => Promise.resolve(null));
 
   const _eventHandlers: Array<(event: SimEvent) => void> = [];
@@ -174,6 +177,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   const _personaCooldowns: Record<string, number> = {};
   const _eventLog: SimEventLogEntry[] = [];
   const _directlyAddressed = new Set<string>(); // cleared after each LLM tick
+  let _triggeredByAction = false; // true only when dirty tick was caused by trainee input
 
   const COACH_TICK_INTERVAL = 3; // call onCoachTick every 3 dirty ticks
 
@@ -200,6 +204,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         metricStore,
         clock.getSimTime(),
       ),
+      triggeredByAction: _triggeredByAction,
     };
   }
 
@@ -284,25 +289,28 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
 
     const ctx = buildStakeholderContext();
     _directlyAddressed.clear(); // context captured; clear so next round starts fresh
+    _triggeredByAction = false; // reset after capture
 
-    // Stakeholder tick
-    onDirtyTick(ctx)
-      .then((events) => {
-        for (const ev of events) {
-          applySimEventToStore(ev);
-          emit(ev);
-        }
-        // Do NOT set _dirty here — LLM output is already applied.
-        // _dirty is only set by external inputs (actions, chat, ticks with scripted events).
-      })
-      .catch((err) => {
-        log.error({ err }, "onDirtyTick error");
-      })
-      .finally(() => {
-        _inFlight = false;
-        // Re-trigger only if external input arrived while we were in-flight
-        if (_dirty) triggerDirtyTick();
-      });
+    // Stakeholder tick and metric reaction run concurrently — independent concerns.
+    Promise.all([
+      onDirtyTick(ctx)
+        .then((events) => {
+          for (const ev of events) {
+            applySimEventToStore(ev);
+            emit(ev);
+          }
+        })
+        .catch((err) => {
+          log.error({ err }, "onDirtyTick error");
+        }),
+      onMetricReact(ctx).catch((err) => {
+        log.error({ err }, "onMetricReact error");
+      }),
+    ]).finally(() => {
+      _inFlight = false;
+      // Re-trigger only if external input arrived while we were in-flight
+      if (_dirty) triggerDirtyTick();
+    });
 
     // Coach tick (every N dirty ticks)
     if (_coachTickCount % COACH_TICK_INTERVAL === 0) {
@@ -506,18 +514,13 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent());
 
-    // Step 4b: stream newly-visible reactive overlay points.
-    // Uses metricStore.listMetrics() — returns key pairs only, no series data —
-    // instead of getAllSeries() which deep-copies every array on every tick.
+    // Step 4b: generate and stream one point per metric for this tick.
+    // On-demand generation — each metric generates its value at simTime
+    // using current behavioral state (overlay or scripted incident config).
     if (metricStore) {
       for (const { service, metricId } of metricStore.listMetrics()) {
-        const newPoints = metricStore.getPointsInWindow(
-          service,
-          metricId,
-          previousSimTime,
-          simTime,
-        );
-        for (const point of newPoints) {
+        const points = metricStore.generatePoint(service, metricId, simTime);
+        for (const point of points) {
           emit({ type: "metric_update", service, metricId, point });
         }
       }
@@ -807,10 +810,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         }
 
         case "scale_cluster": {
-          const actionId  = params["remediationActionId"] as string | undefined;
-          const service   = params["service"] as string | undefined;
-          const direction = (params["direction"] as "up" | "down" | undefined) ?? "up";
-          const count     = (params["count"] as number | undefined) ?? 1;
+          const actionId = params["remediationActionId"] as string | undefined;
+          const service = params["service"] as string | undefined;
+          const direction =
+            (params["direction"] as "up" | "down" | undefined) ?? "up";
+          const count = (params["count"] as number | undefined) ?? 1;
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
             : scenario.remediationActions.find(
@@ -819,11 +823,12 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           const targetService = ra?.service ?? service;
           if (targetService) {
             const scaleEntry: import("@shared/types/events").LogEntry = {
-              id:      randomUUID(),
+              id: randomUUID(),
               simTime: clock.getSimTime(),
-              level:   "INFO",
+              level: "INFO",
               service: targetService,
-              message: ra?.sideEffect ??
+              message:
+                ra?.sideEffect ??
                 `Scale ${direction}: ${count} instance(s) requested for ${targetService}`,
             };
             store.addLogEntry(scaleEntry);
@@ -930,6 +935,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         paused: clock.isPaused(),
       });
 
+      _triggeredByAction = true;
       _dirty = true;
       triggerDirtyTick();
     },
@@ -973,6 +979,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         }
       }
 
+      _triggeredByAction = true;
       _dirty = true;
       triggerDirtyTick();
     },
@@ -993,6 +1000,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       store.addEmail(email);
       emit({ type: "email_received", email });
 
+      _triggeredByAction = true;
       _dirty = true;
       triggerDirtyTick();
     },
