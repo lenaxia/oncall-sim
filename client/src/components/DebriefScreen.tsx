@@ -3,6 +3,7 @@ import { Button } from './Button'
 import { Spinner } from './Spinner'
 import { Timestamp, formatSimTime } from './Timestamp'
 import type { DebriefPayload } from '../testutil/index'
+import type { AuditEntry } from '@shared/types/events'
 
 interface DebriefScreenProps {
   sessionId:     string
@@ -19,6 +20,50 @@ interface TimelineEntry {
   isRelevant?: boolean
   isRedHerring?: boolean
   why?:    string
+}
+
+// ── Human-readable audit entry labels ────────────────────────────────────────
+// Formats an AuditEntry into a descriptive string using its params.
+// Falls back to the raw action type if no meaningful params are available.
+
+function formatAuditLabel(entry: AuditEntry): string {
+  const p = entry.params
+  const str = (key: string) => (p[key] as string | undefined) ?? ''
+
+  switch (entry.action) {
+    case 'open_tab':               return `Opened ${str('tab')} tab`
+    case 'search_logs':            return `Searched logs${str('query') ? `: "${str('query')}"` : ''}`
+    case 'view_metric':            return `Viewed metric: ${str('metricId')} (${str('service')})`
+    case 'read_wiki_page':         return `Read wiki: ${str('title') || str('page')}`
+    case 'view_deployment_history':return `Viewed deployment history: ${str('service')}`
+    case 'view_pipeline':          return `Viewed pipeline: ${str('pipelineName') || str('pipelineId')}`
+    case 'investigate_alert':      return `Investigated alarm: ${str('alarmId')}`
+    case 'post_chat_message':      return `Sent chat in ${str('channel')}`
+    case 'direct_message_persona': return `DM'd ${str('personaId')}`
+    case 'reply_email':            return `Replied to email thread`
+    case 'ack_page':               return `Acknowledged page`
+    case 'page_user':              return `Paged ${str('personaId')}`
+    case 'update_ticket':          return `Updated ticket ${str('ticketId')}`
+    case 'add_ticket_comment':     return `Commented on ticket ${str('ticketId')}`
+    case 'mark_resolved':          return `Marked incident resolved`
+    case 'trigger_rollback':       return `Triggered rollback: pipeline ${str('pipelineId')}, stage ${str('stageId')}`
+    case 'trigger_roll_forward':   return `Triggered roll-forward: pipeline ${str('pipelineId')}`
+    case 'override_blocker':       return `Overrode blocker: pipeline ${str('pipelineId')}, stage ${str('stageId')}`
+    case 'approve_gate':           return `Approved gate: pipeline ${str('pipelineId')}, stage ${str('stageId')}`
+    case 'block_promotion':        return `Blocked promotion: pipeline ${str('pipelineId')}, stage ${str('stageId')}`
+    case 'restart_service':        return `Restarted service: ${str('service')}`
+    case 'scale_cluster': {
+      const dir   = str('direction') || 'scaled'
+      const count = p['count'] != null ? ` ${p['count']} instance(s)` : ''
+      return `Scale ${dir}${count}: ${str('service')}`
+    }
+    case 'throttle_traffic':       return `Throttled traffic: ${str('service')}`
+    case 'suppress_alarm':         return `Suppressed alarm: ${str('alarmId')}`
+    case 'emergency_deploy':       return `Emergency deploy: ${str('service')}`
+    case 'toggle_feature_flag':    return `Toggled flag '${str('flagId')}' → ${p['enabled'] ? 'enabled' : 'disabled'}`
+    case 'monitor_recovery':       return `Monitored recovery`
+    default:                       return entry.action
+  }
 }
 
 export function DebriefScreen({
@@ -61,20 +106,33 @@ export function DebriefScreen({
   const redHerringActions = new Set(evaluationState.redHerringsTaken.map(a => a.action))
 
   const auditEntries: TimelineEntry[] = auditLog.map(entry => ({
-    simTime:     entry.simTime,
-    kind:        'audit' as const,
-    label:       entry.action,
-    isRelevant:  relevantActions.has(entry.action),
+    simTime:      entry.simTime,
+    kind:         'audit' as const,
+    label:        formatAuditLabel(entry),
+    isRelevant:   relevantActions.has(entry.action),
     isRedHerring: redHerringActions.has(entry.action),
     why: evaluationState.relevantActionsTaken.find(a => a.action === entry.action)?.why
        ?? evaluationState.redHerringsTaken.find(a => a.action === entry.action)?.why,
   }))
 
-  const eventEntries: TimelineEntry[] = (eventLog ?? []).map(entry => ({
-    simTime: entry.recordedAt,
-    kind:    'event' as const,
-    label:   entry.event.type,
-  }))
+  const eventEntries: TimelineEntry[] = (eventLog ?? []).map(entry => {
+    const ev = entry.event
+    let label: string = ev.type
+    switch (ev.type) {
+      case 'email_received':        label = `Email received: "${ev.email.subject}"`; break
+      case 'chat_message':          label = `Chat in ${ev.channel}: "${ev.message.text.slice(0, 60)}${ev.message.text.length > 60 ? '…' : ''}"`; break
+      case 'alarm_fired':           label = `Alarm fired: ${ev.alarm.condition} (${ev.alarm.service})`; break
+      case 'alarm_silenced':        label = `Alarm silenced: ${ev.alarmId}`; break
+      case 'ticket_created':        label = `Ticket created: ${ev.ticket.id} — ${ev.ticket.title}`; break
+      case 'ticket_updated':        label = `Ticket updated: ${ev.ticketId}`; break
+      case 'ticket_comment':        label = `Ticket comment on ${ev.ticketId}`; break
+      case 'deployment_update':     label = `Deployment: ${ev.deployment.version} → ${ev.service} (${ev.deployment.status})`; break
+      case 'pipeline_stage_updated':label = `Pipeline stage: ${ev.pipelineId}/${ev.stage.name} → ${ev.stage.status}`; break
+      case 'page_sent':             label = `Page sent to ${ev.alert.personaId}`; break
+      case 'coach_message':         label = `Coach: "${ev.message.text.slice(0, 60)}${ev.message.text.length > 60 ? '…' : ''}"`; break
+    }
+    return { simTime: entry.recordedAt, kind: 'event' as const, label }
+  })
 
   const timeline = [...auditEntries, ...eventEntries].sort((a, b) => a.simTime - b.simTime)
 

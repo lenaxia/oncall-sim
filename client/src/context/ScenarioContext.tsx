@@ -80,7 +80,10 @@ export interface ScenarioConfig {
 }
 
 export interface ScenarioContextValue {
-  scenario: ScenarioConfig | null
+  scenario:          ScenarioConfig | null
+  /** Live instance counts per host group id — persists for the session lifetime. */
+  hostGroupCounts:   Record<string, number>
+  adjustHostGroup:   (groupId: string, delta: number) => void
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -94,22 +97,35 @@ export interface ScenarioProviderProps {
 
 export function ScenarioProvider({ scenarioId, children }: ScenarioProviderProps) {
   const [scenario, setScenario] = useState<ScenarioConfig | null>(null)
+  const [hostGroupCounts, setHostGroupCounts] = useState<Record<string, number>>({})
 
   useEffect(() => {
     let cancelled = false
     fetch(`/api/scenarios/${scenarioId}`)
       .then(r => r.json())
       .then((raw: Record<string, unknown>) => {
-        if (!cancelled) setScenario(normalise(raw))
+        if (!cancelled) {
+          const normalised = normalise(raw)
+          setScenario(normalised)
+          // Initialise instance counts from scenario data
+          setHostGroupCounts(
+            Object.fromEntries(normalised.hostGroups.map(g => [g.id, g.instanceCount]))
+          )
+        }
       })
-      .catch(() => {
-        // Fetch failure — scenario stays null; App handles via onError
-      })
+      .catch(() => {})
     return () => { cancelled = true }
   }, [scenarioId])
 
+  function adjustHostGroup(groupId: string, delta: number) {
+    setHostGroupCounts(prev => ({
+      ...prev,
+      [groupId]: Math.max(0, (prev[groupId] ?? 0) + delta),
+    }))
+  }
+
   return (
-    <ScenarioContext.Provider value={{ scenario }}>
+    <ScenarioContext.Provider value={{ scenario, hostGroupCounts, adjustHostGroup }}>
       {children}
     </ScenarioContext.Provider>
   )

@@ -168,28 +168,19 @@ function ScaleSection({
   onConfirm:  (s: ConfirmState) => void
 }) {
   const { dispatchAction } = useSession()
+  const { hostGroupCounts, adjustHostGroup } = useScenario()
   const services = [...new Set(actions.map(a => a.service))]
 
-  // Per-service delta count input (how many to add/remove)
+  // Delta count input per service (how many to add/remove) — UI-only, resetting is fine
   const [counts, setCounts] = useState<Record<string, number>>(() =>
     Object.fromEntries(services.map(s => [s, 1]))
   )
 
-  // Live instance counts per host group, updated optimistically on scale
-  const [instanceCounts, setInstanceCounts] = useState<Record<string, number>>(() =>
-    Object.fromEntries(hostGroups.map(g => [g.id, g.instanceCount]))
-  )
-
   function handleScale(ra: RemediationAction, service: string, direction: 'up' | 'down', count: number) {
     dispatchAction('scale_cluster', { remediationActionId: ra.id, service, direction, count })
-    // Update all groups belonging to this service
-    setInstanceCounts(prev => {
-      const next = { ...prev }
-      for (const g of hostGroups.filter(g => g.service === service)) {
-        next[g.id] = Math.max(0, (prev[g.id] ?? g.instanceCount) + (direction === 'up' ? count : -count))
-      }
-      return next
-    })
+    for (const g of hostGroups.filter(g => g.service === service)) {
+      adjustHostGroup(g.id, direction === 'up' ? count : -count)
+    }
   }
 
   return (
@@ -206,7 +197,7 @@ function ScaleSection({
               <div className="flex flex-col gap-0.5">
                 {groups.map(g => (
                   <span key={g.id} className="text-xs text-sim-text-faint">
-                    {g.label} — {instanceCounts[g.id] ?? g.instanceCount} instances
+                    {g.label} — {hostGroupCounts[g.id] ?? g.instanceCount} instances
                   </span>
                 ))}
               </div>

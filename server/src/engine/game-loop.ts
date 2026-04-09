@@ -52,7 +52,6 @@ const LOGGABLE_EVENT_TYPES = new Set<SimEvent["type"]>([
   "ticket_created",
   "ticket_updated",
   "ticket_comment",
-  "log_entry",
   "alarm_fired",
   "alarm_silenced",
   "deployment_update",
