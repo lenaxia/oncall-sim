@@ -103,7 +103,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -135,7 +135,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -165,7 +165,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -203,7 +203,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       modifiedScenario,
       nullMetricStore(),
     );
@@ -242,7 +242,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       modifiedScenario,
       nullMetricStore(),
     );
@@ -293,7 +293,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -315,7 +315,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
     const scenario = _fixture
     const provider = buildMockLLMProvider(makeResponses()); // no tick_1 response
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -334,7 +334,7 @@ describe("StakeholderEngine.tick — error paths", () => {
       },
     };
     const engine = createStakeholderEngine(
-      throwingClient,
+      () => throwingClient,
       _fixture,
       nullMetricStore(),
     );
@@ -367,7 +367,7 @@ describe("StakeholderEngine.tick — error paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -392,7 +392,7 @@ describe("StakeholderEngine.tick — error paths", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -427,7 +427,7 @@ describe("StakeholderEngine.tick — context building", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -482,7 +482,7 @@ describe("StakeholderEngine.tick — context building", () => {
       }),
     );
     const engine = createStakeholderEngine(
-      provider,
+      () => provider,
       scenario,
       nullMetricStore(),
     );
@@ -515,7 +515,7 @@ describe("StakeholderEngine — context window truncation", () => {
     };
 
     const engine = createStakeholderEngine(
-      spyProvider,
+      () => spyProvider,
       scenario,
       nullMetricStore(),
     );
@@ -567,7 +567,7 @@ describe("StakeholderEngine — context window truncation", () => {
     }));
 
     const engine = createStakeholderEngine(
-      spyProvider,
+      () => spyProvider,
       scenario,
       nullMetricStore(),
     );
@@ -611,7 +611,7 @@ describe("StakeholderEngine — context window truncation", () => {
     }));
 
     const engine = createStakeholderEngine(
-      spyProvider,
+      () => spyProvider,
       scenario,
       nullMetricStore(),
     );
@@ -664,7 +664,7 @@ describe("StakeholderEngine — context window truncation", () => {
     }));
 
     const engine = createStakeholderEngine(
-      spyProvider,
+      () => spyProvider,
       scenario,
       nullMetricStore(),
     );

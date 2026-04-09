@@ -339,7 +339,7 @@ interface SessionInstance {
 
 function createSession(
   scenario: LoadedScenario,
-  llmClient: LLMClient,
+  getLLMClient: () => LLMClient,
 ): SessionInstance {
   const sessionId = globalThis.crypto.randomUUID();
   const clockAnchorMs = Date.now();
@@ -394,14 +394,14 @@ function createSession(
 
   // Build stakeholder engine
   const stakeholderEngine = createStakeholderEngine(
-    llmClient,
+    getLLMClient,
     scenario,
     metricStore,
   );
 
   // Build metric reaction engine — decoupled from persona gating, fires on trainee actions only
   const metricReactionEngine = createMetricReactionEngine(
-    llmClient,
+    getLLMClient,
     scenario,
     metricStore,
     () => clock.getSimTime(),
@@ -423,7 +423,7 @@ function createSession(
     onCoachTick: () => Promise.resolve(null),
   });
 
-  return { gameLoop, llmClient };
+  return { gameLoop, llmClient: getLLMClient() };
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
@@ -472,7 +472,12 @@ export function SessionProvider({
       const tempLlm: LLMClient = {
         call: () => Promise.resolve({ toolCalls: [] }),
       };
-      sessionRef.current = createSession(scenario, tempLlm);
+      // Pass a getter so the stakeholder engine always uses the latest client.
+      // llmClientRef is initialised before this getter is ever invoked.
+      sessionRef.current = createSession(
+        scenario,
+        () => llmClientRef.current ?? tempLlm,
+      );
     }
   }
 

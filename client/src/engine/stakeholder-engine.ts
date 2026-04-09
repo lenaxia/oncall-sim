@@ -45,7 +45,7 @@ export interface StakeholderEngine {
 }
 
 export function createStakeholderEngine(
-  llmClient: LLMClient,
+  getLLMClient: () => LLMClient,
   scenario: LoadedScenario,
   metricStore: MetricStore,
 ): StakeholderEngine {
@@ -84,7 +84,7 @@ export function createStakeholderEngine(
     log.debug({ eligible, simTime: context.simTime }, "Calling LLM");
     let response;
     try {
-      response = await llmClient.call({
+      response = await getLLMClient().call({
         role: "stakeholder",
         messages,
         tools,
