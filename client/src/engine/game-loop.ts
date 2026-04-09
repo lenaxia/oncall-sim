@@ -1,4 +1,4 @@
-const randomUUID = () => globalThis.crypto.randomUUID()
+const randomUUID = () => globalThis.crypto.randomUUID();
 import type { LoadedScenario } from "../scenario/types";
 import type {
   SessionSnapshot,
@@ -287,8 +287,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     _dirty = false;
     _coachTickCount++;
 
+    // Build context BEFORE resetting _triggeredByAction so it captures the correct value.
     const ctx = buildStakeholderContext();
-    _directlyAddressed.clear(); // context captured; clear so next round starts fresh
+    _directlyAddressed.clear();
     _triggeredByAction = false; // reset after capture
 
     // Stakeholder tick and metric reaction run concurrently — independent concerns.
@@ -308,7 +309,8 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       }),
     ]).finally(() => {
       _inFlight = false;
-      // Re-trigger only if external input arrived while we were in-flight
+      // Re-trigger only if external input arrived while we were in-flight.
+      // _triggeredByAction may have been latched true again by a new action.
       if (_dirty) triggerDirtyTick();
     });
 

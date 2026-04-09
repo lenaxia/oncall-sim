@@ -30,7 +30,7 @@ export interface MetricReactionEngine {
 }
 
 export function createMetricReactionEngine(
-  llmClient: LLMClient,
+  getLLMClient: () => LLMClient,
   scenario: LoadedScenario,
   metricStore: MetricStore,
   getSimTime: () => number,
@@ -55,7 +55,7 @@ export function createMetricReactionEngine(
 
     let response;
     try {
-      response = await llmClient.call({
+      response = await getLLMClient().call({
         role: "stakeholder",
         messages,
         tools,
@@ -269,53 +269,110 @@ export function createMetricReactionEngine(
 
   function _buildPrompt(context: StakeholderContext): LLMMessage[] {
     const focalService = scenario.opsDashboard.focalService;
-    const serviceLines: string[] = [
-      `  ${focalService.name}: ${focalService.metrics.map((m) => m.archetype).join(", ")}`,
-    ];
-    for (const cs of scenario.opsDashboard.correlatedServices) {
-      const metricIds =
-        cs.overrides?.map((m) => m.archetype) ??
-        focalService.metrics.map((m) => m.archetype);
-      serviceLines.push(`  ${cs.name}: ${metricIds.join(", ")}`);
-    }
 
-    const auditLines = context.auditLog
-      .slice(-20)
-      .map(
-        (e) =>
-          `  t=${e.simTime} ${e.action}${e.params ? " " + JSON.stringify(e.params) : ""}`,
-      )
-      .join("\n");
+    // ── System prompt: stable instructions ──────────────────────────────────
+    const serviceLines: string[] = [];
+    for (const svc of [
+      focalService,
+      ...scenario.opsDashboard.correlatedServices,
+    ]) {
+      const metrics =
+        "metrics" in svc
+          ? (svc as typeof focalService).metrics
+          : ((svc as (typeof scenario.opsDashboard.correlatedServices)[0])
+              .overrides ?? focalService.metrics);
+      serviceLines.push(
+        `  ${svc.name}: ${metrics.map((m) => m.archetype).join(", ")}`,
+      );
+    }
 
     const systemContent = [
       "You are the environment simulator for an on-call training scenario.",
       "Your only job is to decide whether a recent trainee action warrants a change to metric behavior.",
       "Use apply_metric_response if the action changed the incident trajectory. Otherwise respond with no tool calls.",
       "",
-      "Services and metrics in this scenario:",
+      "Available services and metrics:",
       ...serviceLines,
       "",
       "Patterns: smooth_decay | stepped | queue_burndown | oscillating | blip_then_decay | cascade_clear | sawtooth_rebound | cliff",
       "Speed: 1m | 5m | 15m | 30m | 60m — how long the transition takes",
       "Direction: recovery (toward resolved state) | worsening (toward incident peak)",
       "Magnitude: full (complete) | partial (halfway to resolved state)",
-      "Sustained: true (default) — new behavior persists indefinitely until another action changes it.",
+      "Sustained: true (default) — new behavior persists indefinitely until overwritten.",
       "           false — behavior reverts to scripted incident progression after the transition completes.",
-      "           Use sustained=false only for transient one-off effects (e.g. a brief spike).",
+      "           Use sustained=false only for genuinely transient one-off effects.",
       "",
       "Rules:",
       "- Only call apply_metric_response when a trainee action has actually changed the situation.",
-      "- Use direction=worsening when the action made the situation worse.",
+      "- Use direction=worsening when the action made things worse.",
       "- Use magnitude=partial when the fix is incomplete or does not address root cause.",
       "- Specify different patterns and speeds per metric in one call for asymmetric recovery.",
       "- For oscillating: set oscillation_mode=sustained if root cause is not addressed.",
-      "- Do NOT set sustained=false unless the effect is genuinely transient.",
     ].join("\n");
+
+    // ── User message: live session state ─────────────────────────────────────
+
+    // Last trainee action (most important signal)
+    const lastAction = context.auditLog[context.auditLog.length - 1];
+    const actionSection = lastAction
+      ? `## Trainee Action\nt=${lastAction.simTime} ${lastAction.action} ${JSON.stringify(lastAction.params)}`
+      : "## Trainee Action\n(none)";
+
+    // Current metric values for every tracked metric
+    const metricLines: string[] = [];
+    for (const svc of [
+      focalService,
+      ...scenario.opsDashboard.correlatedServices,
+    ]) {
+      const metrics =
+        "metrics" in svc
+          ? (svc as typeof focalService).metrics
+          : ((svc as (typeof scenario.opsDashboard.correlatedServices)[0])
+              .overrides ?? focalService.metrics);
+      for (const m of metrics) {
+        const current = metricStore.getCurrentValue(
+          svc.name,
+          m.archetype,
+          context.simTime,
+        );
+        const rp = metricStore.getResolvedParams(svc.name, m.archetype);
+        const label = m.label ?? m.archetype;
+        const unit = m.unit ?? "";
+        const currentStr =
+          current !== null ? `${current.toFixed(2)}${unit}` : "no data";
+        const baselineStr = rp ? `baseline=${rp.baselineValue}${unit}` : "";
+        const peakStr = rp ? `incident_peak=${rp.peakValue}${unit}` : "";
+        metricLines.push(
+          `  ${svc.name}/${m.archetype} (${label}): current=${currentStr} ${baselineStr} ${peakStr}`.trimEnd(),
+        );
+      }
+    }
+
+    // Active alarms
+    const alarms = context.conversations.alarms;
+    const alarmLines =
+      alarms.length > 0
+        ? alarms.map(
+            (a) =>
+              `  ${a.id} ${a.service} ${a.condition} status=${a.status} severity=${a.severity}`,
+          )
+        : ["  (none)"];
+
+    // Host group counts from scenario (environmental state)
+    const hostLines =
+      scenario.hostGroups.length > 0
+        ? scenario.hostGroups.map(
+            (h) => `  ${h.label} (${h.service}): ${h.instanceCount} instances`,
+          )
+        : ["  (not configured)"];
 
     const userContent = [
       `## Scenario\n${scenario.title}`,
       `## Sim Time\nt=${context.simTime}`,
-      `## Recent Trainee Actions\n${auditLines || "  (none)"}`,
+      actionSection,
+      `## Current Metric Values\n${metricLines.join("\n")}`,
+      `## Active Alarms\n${alarmLines.join("\n")}`,
+      `## Host Groups\n${hostLines.join("\n")}`,
     ].join("\n\n");
 
     return [
