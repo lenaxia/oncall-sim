@@ -7,8 +7,10 @@ const VALID_ACTIONS = new Set<ActionType>([
   'investigate_alert',
   'post_chat_message', 'reply_email', 'direct_message_persona',
   'open_tab', 'search_logs', 'view_metric', 'read_wiki_page', 'view_deployment_history',
-  'trigger_rollback', 'trigger_roll_forward', 'restart_service', 'scale_cluster',
-  'throttle_traffic', 'suppress_alarm', 'emergency_deploy', 'toggle_feature_flag',
+  'view_pipeline',
+  'trigger_rollback', 'trigger_roll_forward', 'override_blocker', 'approve_gate', 'block_promotion',
+  'restart_service', 'scale_cluster', 'throttle_traffic', 'suppress_alarm',
+  'emergency_deploy', 'toggle_feature_flag',
   'monitor_recovery',
 ])
 

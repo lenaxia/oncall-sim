@@ -214,15 +214,32 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
       const c = raw.cicd as Record<string, unknown>
       return {
         pipelines: ((c.pipelines ?? []) as Array<Record<string, unknown>>).map(p => ({
-          id: p.id as string, service: p.service as string, name: p.name as string,
+          id:      p.id      as string,
+          name:    p.name    as string,
+          service: p.service as string,
+          stages:  ((p.stages ?? []) as Array<Record<string, unknown>>).map(s => ({
+            id:              s.id               as string,
+            name:            s.name             as string,
+            type:            s.type             as 'build' | 'deploy',
+            currentVersion:  s.current_version  as string,
+            previousVersion: (s.previous_version as string | null | undefined) ?? null,
+            status:          s.status           as import('../scenario/types').PipelineStageConfig['status'],
+            deployedAtSec:   s.deployed_at_sec  as number,
+            commitMessage:   s.commit_message   as string,
+            author:          s.author           as string,
+            blocker:         s.blocker
+              ? { type: (s.blocker as Record<string,unknown>).type as import('../scenario/types').StageBlockerConfig['type'],
+                  alarmId: (s.blocker as Record<string,unknown>).alarm_id as string | undefined }
+              : null,
+          })),
         })),
         deployments: ((c.deployments ?? []) as Array<Record<string, unknown>>).map(d => ({
-          service:       d.service as string,
-          version:       d.version as string,
+          service:       d.service       as string,
+          version:       d.version       as string,
           deployedAtSec: d.deployed_at_sec as number,
-          status:        d.status as 'active'|'previous'|'rolled_back',
+          status:        d.status        as 'active'|'previous'|'rolled_back',
           commitMessage: d.commit_message as string,
-          author:        d.author as string,
+          author:        d.author        as string,
         })),
       }
     })(),
@@ -422,6 +439,7 @@ export function buildTestSnapshot(
     metrics:        {},
     alarms:         [],
     deployments:    {},
+    pipelines:      [],
     pages:          [],
     auditLog:       [],
     coachMessages:  [],

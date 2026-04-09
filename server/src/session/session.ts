@@ -109,6 +109,46 @@ function populateInitialState(
   // Deployments are NOT pre-populated here — the scheduler fires all deployment events
   // (including historical ones at negative simTime) on the first tick.
 
+  // Pre-populate pipelines with stage state from scenario config.
+  // Each pipeline's stages represent the state at scenario start (t=0).
+  // Alarm blockers have their message derived from the referenced alarm config.
+  for (const pipelineConfig of scenario.cicd.pipelines) {
+    const stages: import('@shared/types/events').PipelineStage[] = pipelineConfig.stages.map(s => {
+      let blocker: import('@shared/types/events').StageBlocker | null = null
+      if (s.blocker) {
+        const alarmConfig = s.blocker.alarmId
+          ? scenario.alarms.find(a => a.id === s.blocker!.alarmId)
+          : null
+        const message = alarmConfig
+          ? `Alarm firing: ${alarmConfig.condition} on ${alarmConfig.service}`
+          : `${s.blocker.type.replace('_', ' ')} blocking promotion`
+        blocker = {
+          type:    s.blocker.type,
+          alarmId: s.blocker.alarmId,
+          message,
+        }
+      }
+      return {
+        id:              s.id,
+        name:            s.name,
+        type:            s.type,
+        currentVersion:  s.currentVersion,
+        previousVersion: s.previousVersion,
+        status:          s.status,
+        deployedAtSec:   s.deployedAtSec,
+        commitMessage:   s.commitMessage,
+        author:          s.author,
+        blocker,
+      }
+    })
+    store.addPipeline({
+      id:      pipelineConfig.id,
+      name:    pipelineConfig.name,
+      service: pipelineConfig.service,
+      stages,
+    })
+  }
+
   // Pre-populate scripted emails at t < 0 (pre-incident)
   for (const email of scenario.emails) {
     if (email.atSecond < 0) {

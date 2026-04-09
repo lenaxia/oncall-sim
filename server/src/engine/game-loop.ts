@@ -33,7 +33,7 @@ export interface StakeholderContext {
 const LOGGABLE_EVENT_TYPES = new Set<SimEvent['type']>([
   'email_received', 'chat_message', 'ticket_created', 'ticket_updated',
   'ticket_comment', 'log_entry', 'alarm_fired', 'alarm_silenced',
-  'deployment_update', 'page_sent', 'coach_message',
+  'deployment_update', 'pipeline_stage_updated', 'page_sent', 'coach_message',
 ])
 const EVENT_LOG_MAX_SIZE = 500
 
@@ -164,6 +164,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       case 'deployment_update':
         store.addDeployment(ev.service, ev.deployment)
         break
+      case 'pipeline_stage_updated':
+        store.updateStage(ev.pipelineId, ev.stage.id, ev.stage)
+        break
       case 'ticket_created':
         store.addTicket(ev.ticket)
         break
@@ -236,7 +239,6 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       const threshold = alarmConfig.threshold
       if (threshold == null) continue
 
-      // Get current metric value: find last point at or before simTime
       const series = metrics[alarmConfig.service]?.[alarmConfig.metricId]
       if (!series || series.length === 0) continue
       const point = [...series].reverse().find(p => p.t <= simTime)
@@ -257,7 +259,6 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         emit({ type: 'alarm_fired', alarm })
         _dirty = true
 
-        // Auto-page if configured
         if (alarmConfig.autoPage && alarmConfig.pageMessage) {
           const msg = alarmConfig.pageMessage
           const svc = alarmConfig.service
@@ -285,6 +286,55 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         }
       }
     }
+
+    // Step 3b: pipeline alarm-blocker synchronisation
+    // - If an alarm-blocked stage's alarm is no longer firing → reinstate if suppressedUntil passed
+    // - If a suppressed stage's suppressedUntil has expired → reinstate the blocker
+    const currentAlarms = store.snapshot().alarms
+    const alarmStatusMap = new Map(currentAlarms.map(a => [a.id, a.status]))
+
+    for (const pipeline of store.getAllPipelines()) {
+      for (const stage of pipeline.stages) {
+        if (!stage.blocker || stage.blocker.type !== 'alarm') continue
+        const alarmId = stage.blocker.alarmId
+        if (!alarmId) continue
+
+        const alarmStatus = alarmStatusMap.get(alarmId)
+
+        if (stage.status === 'blocked') {
+          // Suppression window expired → reinstate block (alarm still firing or acknowledged)
+          if (stage.blocker.suppressedUntil != null && simTime >= stage.blocker.suppressedUntil) {
+            if (alarmStatus === 'firing' || alarmStatus === 'acknowledged') {
+              // Restore blocker (remove suppressedUntil)
+              const restoredStage: import('@shared/types/events').PipelineStage = {
+                ...stage,
+                blocker: { ...stage.blocker, suppressedUntil: undefined },
+              }
+              store.updateStage(pipeline.id, stage.id, restoredStage)
+              emit({ type: 'pipeline_stage_updated', pipelineId: pipeline.id, stage: restoredStage })
+            }
+          }
+        } else if (stage.status === 'succeeded') {
+          // If alarm fires again after a suppression cleared it, re-block
+          if (alarmStatus === 'firing') {
+            const alarmObj = currentAlarms.find(a => a.id === alarmId)
+            const blockedStage: import('@shared/types/events').PipelineStage = {
+              ...stage,
+              status:  'blocked',
+              blocker: {
+                ...stage.blocker,
+                message: alarmObj
+                  ? `Alarm firing: ${alarmObj.condition} on ${alarmObj.service}`
+                  : stage.blocker.message,
+                suppressedUntil: undefined,
+              },
+            }
+            store.updateStage(pipeline.id, stage.id, blockedStage)
+            emit({ type: 'pipeline_stage_updated', pipelineId: pipeline.id, stage: blockedStage })
+          }
+        }
+      }  // end stage loop
+    }  // end pipeline loop
 
     // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent())
@@ -342,6 +392,90 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
             }
             store.addTicketComment(ticketId, comment)
             emit({ type: 'ticket_comment', ticketId, comment })
+          }
+          break
+        }
+        case 'trigger_rollback': {
+          // Roll back a specific pipeline stage to its previous version
+          const pipelineId = params['pipelineId'] as string | undefined
+          const stageId    = params['stageId']    as string | undefined
+          if (pipelineId && stageId) {
+            const pipeline = store.getPipeline(pipelineId)
+            const stage    = pipeline?.stages.find(s => s.id === stageId)
+            if (stage && stage.previousVersion) {
+              const rolledBackStage: import('@shared/types/events').PipelineStage = {
+                ...stage,
+                previousVersion: stage.currentVersion,
+                currentVersion:  stage.previousVersion,
+                status:          'in_progress',
+                deployedAtSec:   clock.getSimTime(),
+                commitMessage:   `Rollback to ${stage.previousVersion}`,
+                blocker:         null,
+              }
+              store.updateStage(pipelineId, stageId, rolledBackStage)
+              emit({ type: 'pipeline_stage_updated', pipelineId, stage: rolledBackStage })
+            }
+          }
+          break
+        }
+        case 'override_blocker': {
+          // Force-promote through an alarm or time-window blocker
+          // Suppression window: 30 sim-minutes
+          const SUPPRESSION_WINDOW = 30 * 60
+          const pipelineId = params['pipelineId'] as string | undefined
+          const stageId    = params['stageId']    as string | undefined
+          if (pipelineId && stageId) {
+            const pipeline = store.getPipeline(pipelineId)
+            const stage    = pipeline?.stages.find(s => s.id === stageId)
+            if (stage && stage.blocker) {
+              const overriddenStage: import('@shared/types/events').PipelineStage = {
+                ...stage,
+                status:  'succeeded',
+                blocker: {
+                  ...stage.blocker,
+                  suppressedUntil: clock.getSimTime() + SUPPRESSION_WINDOW,
+                },
+              }
+              store.updateStage(pipelineId, stageId, overriddenStage)
+              emit({ type: 'pipeline_stage_updated', pipelineId, stage: overriddenStage })
+            }
+          }
+          break
+        }
+        case 'approve_gate': {
+          const pipelineId = params['pipelineId'] as string | undefined
+          const stageId    = params['stageId']    as string | undefined
+          if (pipelineId && stageId) {
+            const pipeline = store.getPipeline(pipelineId)
+            const stage    = pipeline?.stages.find(s => s.id === stageId)
+            if (stage && stage.blocker?.type === 'manual_approval') {
+              const approvedStage: import('@shared/types/events').PipelineStage = {
+                ...stage,
+                status:  'in_progress',
+                blocker: null,
+              }
+              store.updateStage(pipelineId, stageId, approvedStage)
+              emit({ type: 'pipeline_stage_updated', pipelineId, stage: approvedStage })
+            }
+          }
+          break
+        }
+        case 'block_promotion': {
+          const pipelineId = params['pipelineId'] as string | undefined
+          const stageId    = params['stageId']    as string | undefined
+          const reason     = (params['reason'] as string | undefined) ?? 'Manually blocked'
+          if (pipelineId && stageId) {
+            const pipeline = store.getPipeline(pipelineId)
+            const stage    = pipeline?.stages.find(s => s.id === stageId)
+            if (stage) {
+              const blockedStage: import('@shared/types/events').PipelineStage = {
+                ...stage,
+                status:  'blocked',
+                blocker: { type: 'manual_approval', message: reason },
+              }
+              store.updateStage(pipelineId, stageId, blockedStage)
+              emit({ type: 'pipeline_stage_updated', pipelineId, stage: blockedStage })
+            }
           }
           break
         }
@@ -473,6 +607,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         metrics,
         alarms:         storeSnap.alarms,
         deployments:    storeSnap.deployments,
+        pipelines:      storeSnap.pipelines,
         pages:          storeSnap.pages,
         auditLog:       auditLog.getAll(),
         coachMessages:  [..._coachMessages],

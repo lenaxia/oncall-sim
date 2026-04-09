@@ -77,6 +77,39 @@ export interface Deployment {
   author: string
 }
 
+// ── Pipeline model ────────────────────────────────────────────────────────────
+
+export type StageStatus  = 'not_started' | 'in_progress' | 'succeeded' | 'failed' | 'blocked'
+export type BlockerType  = 'alarm' | 'time_window' | 'manual_approval' | 'test_failure'
+
+export interface StageBlocker {
+  type:     BlockerType
+  alarmId?: string    // references Alarm.id — message is derived from the alarm's condition + service
+  message:  string    // derived: shown to trainee; for alarm blockers computed as "{condition} on {service}"
+  /** simTime after which a suppressed alarm re-instates the blocker (null = permanent until alarm clears) */
+  suppressedUntil?: number
+}
+
+export interface PipelineStage {
+  id:              string
+  name:            string            // 'Build' | 'Staging' | 'Pre-Prod' | 'Prod'
+  type:            'build' | 'deploy'
+  currentVersion:  string
+  previousVersion: string | null
+  status:          StageStatus
+  deployedAtSec:   number
+  commitMessage:   string
+  author:          string
+  blocker:         StageBlocker | null
+}
+
+export interface Pipeline {
+  id:      string
+  name:    string
+  service: string
+  stages:  PipelineStage[]
+}
+
 export interface CoachMessage {
   id: string
   text: string
@@ -140,6 +173,10 @@ export type ActionType =
   // Remediation
   | 'trigger_rollback'
   | 'trigger_roll_forward'
+  | 'override_blocker'          // force-promote through an alarm/time-window blocker
+  | 'approve_gate'              // approve a manual_approval gate
+  | 'block_promotion'           // halt further promotion from a stage
+  | 'view_pipeline'             // evaluation-tracked: trainee viewed a pipeline
   | 'restart_service'
   | 'scale_cluster'
   | 'throttle_traffic'
@@ -165,7 +202,8 @@ export interface SessionSnapshot {
   logs: LogEntry[]
   metrics: Record<string, Record<string, TimeSeriesPoint[]>> // service → metricId → series
   alarms: Alarm[]
-  deployments: Record<string, Deployment[]>                  // service → deployments
+  deployments: Record<string, Deployment[]>                  // service → deployments (kept for debrief compat)
+  pipelines: Pipeline[]                                      // full pipeline+stage state
   pages: PageAlert[]                                         // pages sent by trainee
   auditLog: AuditEntry[]
   coachMessages: CoachMessage[]
@@ -184,10 +222,11 @@ export type SimEvent =
   | { type: 'ticket_comment';    ticketId: string; comment: TicketComment }
   | { type: 'log_entry';         entry: LogEntry }
   | { type: 'metric_update';     service: string; metricId: string; point: TimeSeriesPoint }  // Phase 2
-  | { type: 'alarm_fired';       alarm: Alarm }
-  | { type: 'alarm_silenced';    alarmId: string }
-  | { type: 'deployment_update'; service: string; deployment: Deployment }
-  | { type: 'page_sent';         alert: PageAlert }          // trainee paged a persona
+  | { type: 'alarm_fired';            alarm: Alarm }
+  | { type: 'alarm_silenced';         alarmId: string }
+  | { type: 'deployment_update';      service: string; deployment: Deployment }
+  | { type: 'pipeline_stage_updated'; pipelineId: string; stage: PipelineStage }
+  | { type: 'page_sent';              alert: PageAlert }          // trainee paged a persona
   | { type: 'coach_message';     message: CoachMessage }
   | { type: 'debrief_ready';     sessionId: string }
   | { type: 'error';             code: string; message: string }

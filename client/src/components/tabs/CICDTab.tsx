@@ -1,209 +1,251 @@
 import { useState } from 'react'
 import { useSession } from '../../context/SessionContext'
 import { useScenario } from '../../context/ScenarioContext'
+import { useSimClock } from '../../hooks/useSimClock'
 import { EmptyState } from '../EmptyState'
 import { WallTimestamp } from '../Timestamp'
 import { Button } from '../Button'
 import { Modal } from '../Modal'
-import type { Deployment } from '@shared/types/events'
+import type { Pipeline, PipelineStage, StageStatus } from '@shared/types/events'
 
-function formatRelativeTime(sec: number): string {
-  const abs = Math.abs(sec)
-  const d   = Math.floor(abs / 86400)
-  const h   = Math.floor((abs % 86400) / 3600)
-  const m   = Math.floor((abs % 3600) / 60)
-  if (d > 0) return `${d}d ${h}h before`
-  if (h > 0) return `${h}h ${m}m before`
-  return `${m}m before`
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function formatRelativeSim(simTime: number, current: number): string {
+  const diff = current - simTime
+  if (diff < 0) return 'future'
+  const d = Math.floor(diff / 86400)
+  const h = Math.floor((diff % 86400) / 3600)
+  const m = Math.floor((diff % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h ago`
+  if (h > 0) return `${h}h ${m}m ago`
+  if (m > 0) return `${m}m ago`
+  return 'just now'
 }
+
+function pipelineOverallStatus(pipeline: Pipeline): 'healthy' | 'blocked' | 'failed' | 'in_progress' {
+  const statuses = pipeline.stages.map(s => s.status)
+  if (statuses.some(s => s === 'failed'))      return 'failed'
+  if (statuses.some(s => s === 'blocked'))     return 'blocked'
+  if (statuses.some(s => s === 'in_progress')) return 'in_progress'
+  return 'healthy'
+}
+
+function prodStage(pipeline: Pipeline): PipelineStage | null {
+  return [...pipeline.stages].reverse().find(s => s.type === 'deploy') ?? null
+}
+
+function oldestVersionNotInProd(pipeline: Pipeline): number {
+  const prod = prodStage(pipeline)
+  if (!prod) return 0
+  return pipeline.stages.filter(s => s.currentVersion !== prod.currentVersion).length
+}
+
+const STAGE_STATUS_COLOURS: Record<StageStatus, string> = {
+  succeeded:   'bg-sim-green text-sim-bg',
+  in_progress: 'bg-sim-accent text-white animate-pulse',
+  blocked:     'bg-sim-red text-white',
+  failed:      'bg-sim-red text-white',
+  not_started: 'bg-sim-surface-2 text-sim-text-faint',
+}
+
+const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
+  succeeded:   '✓',
+  in_progress: '…',
+  blocked:     '⚠',
+  failed:      '✗',
+  not_started: '○',
+}
+
+const BLOCKER_ICON: Record<string, string> = {
+  alarm:            '🔔',
+  time_window:      '⏰',
+  manual_approval:  '👤',
+  test_failure:     '✗',
+}
+
+const OVERALL_STATUS_STYLES = {
+  healthy:     { dot: 'bg-sim-green',   label: 'HEALTHY',     text: 'text-sim-green' },
+  blocked:     { dot: 'bg-sim-red',     label: 'BLOCKED',     text: 'text-sim-red' },
+  failed:      { dot: 'bg-sim-red',     label: 'FAILED',      text: 'text-sim-red' },
+  in_progress: { dot: 'bg-sim-accent',  label: 'DEPLOYING',   text: 'text-sim-accent' },
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 export function CICDTab() {
   const { state, dispatchAction } = useSession()
   const { scenario } = useScenario()
+  const { simTime } = useSimClock()
 
-  const services = Object.keys(state.deployments)
-  const [activeService, setActiveService] = useState<string | null>(services[0] ?? null)
+  const pipelines = state.pipelines
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null)
+  const [selectedStageId,    setSelectedStageId]    = useState<string | null>(null)
 
   // Modal state
-  const [confirmRollback,    setConfirmRollback]    = useState<{ version: string } | null>(null)
-  const [confirmRollForward, setConfirmRollForward] = useState<{ version: string } | null>(null)
-  const [showEmergencyDeploy, setShowEmergencyDeploy] = useState(false)
-  const [showThrottle,        setShowThrottle]        = useState(false)
-  const [showFeatureFlag,     setShowFeatureFlag]      = useState(false)
-  const [emergencyNotes,      setEmergencyNotes]       = useState('')
-  const [throttleValue,       setThrottleValue]        = useState('')
-  const [featureFlagId,       setFeatureFlagId]        = useState('')
-  const [toggledFlags,        setToggledFlags]         = useState<Map<string, boolean>>(new Map())
+  const [confirmRollback,  setConfirmRollback]  = useState<{ pipelineId: string; stageId: string; version: string } | null>(null)
+  const [confirmOverride,  setConfirmOverride]  = useState<{ pipelineId: string; stageId: string } | null>(null)
 
-  const featureFlags = scenario?.featureFlags ?? []
-  const hasFeatureFlags = scenario?.engine.hasFeatureFlags ?? false
+  const selectedPipeline = pipelines.find(p => p.id === selectedPipelineId) ?? null
+  const selectedStage    = selectedPipeline?.stages.find(s => s.id === selectedStageId) ?? null
 
-  function handleSelectService(svc: string) {
-    setActiveService(svc)
-    dispatchAction('view_deployment_history', { service: svc })
+  function handleSelectPipeline(pipeline: Pipeline) {
+    setSelectedPipelineId(pipeline.id)
+    setSelectedStageId(null)
+    dispatchAction('view_pipeline', { pipelineId: pipeline.id, pipelineName: pipeline.name })
   }
 
-  function handleConfirmRollback() {
-    if (!activeService || !confirmRollback) return
-    dispatchAction('trigger_rollback', { service: activeService, version: confirmRollback.version })
+  function handleRollback() {
+    if (!confirmRollback) return
+    dispatchAction('trigger_rollback', {
+      pipelineId: confirmRollback.pipelineId,
+      stageId:    confirmRollback.stageId,
+    })
     setConfirmRollback(null)
   }
 
-  function handleConfirmRollForward() {
-    if (!activeService || !confirmRollForward) return
-    dispatchAction('trigger_roll_forward', { service: activeService, version: confirmRollForward.version })
-    setConfirmRollForward(null)
+  function handleOverride() {
+    if (!confirmOverride) return
+    dispatchAction('override_blocker', {
+      pipelineId: confirmOverride.pipelineId,
+      stageId:    confirmOverride.stageId,
+    })
+    setConfirmOverride(null)
   }
 
-  function handleEmergencyDeploy() {
-    if (!activeService) return
-    const notes = emergencyNotes.trim() || undefined
-    dispatchAction('emergency_deploy', { service: activeService, ...(notes ? { notes } : {}) })
-    setShowEmergencyDeploy(false)
-    setEmergencyNotes('')
+  function handleApproveGate(pipeline: Pipeline, stage: PipelineStage) {
+    dispatchAction('approve_gate', { pipelineId: pipeline.id, stageId: stage.id })
   }
 
-  function handleThrottle() {
-    if (!activeService) return
-    const pct = Number(throttleValue)
-    dispatchAction('throttle_traffic', { service: activeService, percentage: pct })
-    setShowThrottle(false)
-    setThrottleValue('')
+  function handleBlockPromotion(pipeline: Pipeline, stage: PipelineStage) {
+    dispatchAction('block_promotion', { pipelineId: pipeline.id, stageId: stage.id })
   }
 
-  function handleToggleFlag(enabled: boolean) {
-    if (!activeService || !featureFlagId) return
-    dispatchAction('toggle_feature_flag', { flag: featureFlagId, enabled })
-    setToggledFlags(m => new Map(m).set(featureFlagId, enabled))
-    setShowFeatureFlag(false)
+  const inactive = state.status !== 'active'
+
+  if (pipelines.length === 0) {
+    return <EmptyState title="No pipelines" message="Pipeline data will appear here." />
   }
-
-  const deployments = activeService ? (state.deployments[activeService] ?? []) : []
-  const prevDeployments   = deployments.filter(d => d.status === 'previous')
-  const rolledBackDeps    = deployments.filter(d => d.status === 'rolled_back')
-
-  const alarms = state.alarms
-  const hasFiringAlarmForService = (svc: string) =>
-    alarms.some(a => a.service === svc && a.status === 'firing')
-
-  const throttleNum = Number(throttleValue)
-  const throttleValid = throttleValue !== '' && throttleNum >= 0 && throttleNum <= 100
 
   return (
-    <div className="flex h-full">
-      {/* Left — service list */}
-      <div className="w-44 border-r border-sim-border overflow-auto flex-shrink-0 bg-sim-surface">
-        {services.map(svc => (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Pipeline list */}
+      <div className="flex-shrink-0 border-b border-sim-border bg-sim-surface">
+        <div className="text-xs font-semibold text-sim-text-faint uppercase tracking-wide px-4 pt-3 pb-2">
+          Pipelines
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-sim-text-faint uppercase tracking-wide border-b border-sim-border">
+                <th className="px-4 py-1.5 text-left">Pipeline</th>
+                <th className="px-4 py-1.5 text-left">Status</th>
+                <th className="px-4 py-1.5 text-left" data-testid="pipeline-last-prod">Last Prod Deploy</th>
+                <th className="px-4 py-1.5 text-left" data-testid="pipeline-oldest-not-prod">Versions Pending Prod</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pipelines.map(p => {
+                const overall  = pipelineOverallStatus(p)
+                const style    = OVERALL_STATUS_STYLES[overall]
+                const prod     = prodStage(p)
+                const pending  = oldestVersionNotInProd(p)
+                const isActive = p.id === selectedPipelineId
+
+                return (
+                  <tr
+                    key={p.id}
+                    className={[
+                      'border-b border-sim-border-muted cursor-pointer hover:bg-sim-surface-2 transition-colors duration-75',
+                      isActive ? 'bg-sim-surface-2 border-l-2 border-l-sim-accent' : '',
+                    ].join(' ')}
+                    onClick={() => handleSelectPipeline(p)}
+                  >
+                    <td className="px-4 py-2 font-medium text-sim-text">{p.name}</td>
+                    <td className="px-4 py-2">
+                      <span className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`} />
+                        <span className={`font-mono text-xs ${style.text}`}>{style.label}</span>
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-sim-text-muted">
+                      {prod ? formatRelativeSim(prod.deployedAtSec, simTime) : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-sim-text-muted">
+                      {pending > 0
+                        ? <span className="text-sim-yellow">{pending} stage{pending > 1 ? 's' : ''}</span>
+                        : <span className="text-sim-text-faint">0</span>
+                      }
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Stage flow + detail */}
+      {selectedPipeline && (
+        <div className="flex-1 overflow-auto p-4 flex flex-col gap-4">
+          <div className="text-xs font-semibold text-sim-text">{selectedPipeline.name}</div>
+
+          {/* Stage flow */}
           <div
-            key={svc}
-            className={[
-              'flex items-center px-3 py-2 border-b border-sim-border-muted cursor-pointer text-xs transition-colors duration-75',
-              svc === activeService
-                ? 'bg-sim-surface-2 text-sim-text border-l-2 border-l-sim-accent pl-[10px]'
-                : 'text-sim-text-muted hover:bg-sim-surface-2',
-            ].join(' ')}
-            onClick={() => handleSelectService(svc)}
+            data-testid="stage-flow"
+            className="flex items-center gap-0"
           >
-            {svc}
-            {hasFiringAlarmForService(svc) && (
-              <span className="ml-auto w-1.5 h-1.5 rounded-full bg-sim-red animate-pulse" />
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Right */}
-      <div className="flex-1 overflow-auto flex flex-col">
-        {activeService === null ? (
-          <EmptyState title="Select a service" message="Choose a service from the list." />
-        ) : (
-          <>
-            {/* Header */}
-            <div className="px-3 py-2 border-b border-sim-border bg-sim-surface flex-shrink-0">
-              <span className="text-xs font-semibold text-sim-text">{activeService} deployments</span>
-            </div>
-
-            {deployments.length === 0 ? (
-              <EmptyState title="No deployments" message="No deployment history available for this service." />
-            ) : (
-              <div className="flex-1 overflow-auto">
-                {/* Deployment table */}
-                <table className="w-full border-collapse text-xs">
-                  <thead>
-                    <tr className="text-xs font-medium text-sim-text-faint uppercase tracking-wide">
-                      <th className="py-2 px-3 text-left">Version</th>
-                      <th className="py-2 px-3 text-left">Deployed At</th>
-                      <th className="py-2 px-3 text-left">Status</th>
-                      <th className="py-2 px-3 text-left">Author</th>
-                      <th className="py-2 px-3 text-left">Commit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {deployments.map((dep, i) => (
-                      <DeploymentRow key={`${dep.version}-${i}`} dep={dep} />
-                    ))}
-                  </tbody>
-                </table>
-
-                {/* Action buttons */}
-                <div className="p-3 border-t border-sim-border">
-                  {/* Recovery group */}
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    {prevDeployments.map(dep => (
-                      <Button
-                        key={dep.version}
-                        variant="danger"
-                        size="sm"
-                        onClick={() => setConfirmRollback({ version: dep.version })}
-                      >
-                        Rollback to {dep.version}
-                      </Button>
-                    ))}
-                    {rolledBackDeps.map(dep => (
-                      <Button
-                        key={dep.version}
-                        variant="danger"
-                        size="sm"
-                        onClick={() => setConfirmRollForward({ version: dep.version })}
-                      >
-                        Roll-forward to {dep.version}
-                      </Button>
-                    ))}
-                    <Button variant="danger" size="sm" onClick={() => setShowEmergencyDeploy(true)}>
-                      Emergency deploy
-                    </Button>
-                  </div>
-
-                  <div className="border-t border-sim-border-muted my-1" />
-
-                  {/* Operational group */}
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="secondary" size="sm" onClick={() => dispatchAction('restart_service', { service: activeService })}>
-                      Restart service
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => dispatchAction('scale_cluster', { service: activeService, direction: 'up' })}>
-                      Scale up
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => dispatchAction('scale_cluster', { service: activeService, direction: 'down' })}>
-                      Scale down
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={() => setShowThrottle(true)}>
-                      Throttle traffic
-                    </Button>
-                    {hasFeatureFlags && (
-                      <Button variant="secondary" size="sm" onClick={() => { setFeatureFlagId(featureFlags[0]?.id ?? ''); setShowFeatureFlag(true) }}>
-                        Toggle feature flag
-                      </Button>
-                    )}
-                  </div>
-                </div>
+            {selectedPipeline.stages.map((stage, idx) => (
+              <div key={stage.id} className="flex items-center">
+                {idx > 0 && (
+                  <div className="w-6 h-px bg-sim-border mx-0 flex-shrink-0" />
+                )}
+                <button
+                  data-testid={`stage-pill-${stage.id}`}
+                  onClick={() => setSelectedStageId(stage.id === selectedStageId ? null : stage.id)}
+                  className={[
+                    'flex flex-col items-center gap-0.5 px-3 py-2 rounded text-xs font-medium transition-colors duration-75 min-w-[80px]',
+                    STAGE_STATUS_COLOURS[stage.status],
+                    selectedStageId === stage.id ? 'ring-2 ring-white ring-offset-1 ring-offset-sim-bg' : '',
+                  ].join(' ')}
+                >
+                  <span className="text-base leading-none">{STAGE_STATUS_LABEL[stage.status]}</span>
+                  <span>{stage.name}</span>
+                  <span className="font-mono text-[10px] opacity-75">{stage.currentVersion}</span>
+                </button>
               </div>
-            )}
-          </>
-        )}
-      </div>
+            ))}
+          </div>
 
-      {/* Rollback confirmation modal */}
+          {/* Stage detail */}
+          {selectedStage && (
+            <StageDetail
+              pipeline={selectedPipeline}
+              stage={selectedStage}
+              simTime={simTime}
+              inactive={inactive}
+              onRollback={() => setConfirmRollback({
+                pipelineId: selectedPipeline.id,
+                stageId:    selectedStage.id,
+                version:    selectedStage.previousVersion ?? '',
+              })}
+              onOverride={() => setConfirmOverride({
+                pipelineId: selectedPipeline.id,
+                stageId:    selectedStage.id,
+              })}
+              onApproveGate={() => handleApproveGate(selectedPipeline, selectedStage)}
+              onBlockPromotion={() => handleBlockPromotion(selectedPipeline, selectedStage)}
+            />
+          )}
+        </div>
+      )}
+
+      {!selectedPipeline && (
+        <div className="flex-1 flex items-center justify-center">
+          <EmptyState title="Select a pipeline" message="Click a pipeline above to view its stages." />
+        </div>
+      )}
+
+      {/* Rollback confirmation */}
       <Modal
         open={confirmRollback !== null}
         onClose={() => setConfirmRollback(null)}
@@ -211,173 +253,118 @@ export function CICDTab() {
         footer={
           <>
             <Button variant="ghost" size="sm" onClick={() => setConfirmRollback(null)}>Cancel</Button>
-            <Button variant="danger" size="sm" onClick={handleConfirmRollback}>Rollback →</Button>
+            <Button variant="danger" size="sm" onClick={handleRollback}>Rollback →</Button>
           </>
         }
       >
         <p className="text-xs text-sim-text-muted">
-          Roll back {activeService} to {confirmRollback?.version}?
+          Roll back <strong>{confirmRollback?.pipelineId}</strong> {confirmRollback?.stageId} stage
+          to <strong>{confirmRollback?.version}</strong>?
         </p>
       </Modal>
 
-      {/* Roll-forward confirmation modal */}
+      {/* Override blocker confirmation */}
       <Modal
-        open={confirmRollForward !== null}
-        onClose={() => setConfirmRollForward(null)}
-        title="Confirm Roll-forward"
+        open={confirmOverride !== null}
+        onClose={() => setConfirmOverride(null)}
+        title="Override Blocker"
         footer={
           <>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmRollForward(null)}>Cancel</Button>
-            <Button variant="danger" size="sm" onClick={handleConfirmRollForward}>Roll-forward →</Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirmOverride(null)}>Cancel</Button>
+            <Button variant="danger" size="sm" onClick={handleOverride}>Override →</Button>
           </>
         }
       >
-        <p className="text-xs text-sim-text-muted">
-          Roll forward {activeService} to {confirmRollForward?.version}?
+        <p className="text-xs text-sim-text-muted mb-2">
+          Force-promote through the blocking condition on the <strong>{confirmOverride?.stageId}</strong> stage.
+        </p>
+        <p className="text-xs text-sim-yellow">
+          ⚠ The blocker will reinstate in 30 sim-minutes if the alarm is still firing.
         </p>
       </Modal>
-
-      {/* Emergency deploy modal */}
-      <Modal
-        open={showEmergencyDeploy}
-        onClose={() => setShowEmergencyDeploy(false)}
-        title={`Emergency Deploy — ${activeService}`}
-        footer={
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setShowEmergencyDeploy(false)}>Cancel</Button>
-            <Button variant="danger" size="sm" onClick={handleEmergencyDeploy}>Deploy →</Button>
-          </>
-        }
-      >
-        <p className="text-xs text-sim-text-muted mb-3">
-          This will trigger an emergency deployment for {activeService}. Use only if a hotfix is ready.
-        </p>
-        <div>
-          <div className="text-xs font-medium text-sim-text-muted uppercase tracking-wide mb-1">
-            Notes (optional)
-          </div>
-          <textarea
-            placeholder="Brief description of what is being deployed..."
-            value={emergencyNotes}
-            onChange={e => setEmergencyNotes(e.target.value)}
-            className="w-full bg-sim-surface border border-sim-border text-sim-text text-xs
-                       font-mono px-3 py-1 rounded resize-none min-h-[48px] outline-none
-                       focus:border-sim-accent placeholder:text-sim-text-faint"
-          />
-        </div>
-      </Modal>
-
-      {/* Throttle traffic modal */}
-      <Modal
-        open={showThrottle}
-        onClose={() => setShowThrottle(false)}
-        title={`Throttle Traffic — ${activeService}`}
-        footer={
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setShowThrottle(false)}>Cancel</Button>
-            <Button variant="secondary" size="sm" disabled={!throttleValid} onClick={handleThrottle}>
-              Apply Throttle
-            </Button>
-          </>
-        }
-      >
-        <div>
-          <div className="text-xs font-medium text-sim-text-muted uppercase tracking-wide mb-1">
-            Throttle To (% of normal traffic)
-          </div>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            placeholder="e.g. 50"
-            value={throttleValue}
-            onChange={e => setThrottleValue(e.target.value)}
-            className="w-full bg-sim-surface border border-sim-border text-sim-text text-xs
-                       font-mono px-3 py-1 rounded outline-none focus:border-sim-accent"
-          />
-          <div className="text-xs text-sim-text-faint mt-1">Enter 0–100. 0 = drop all traffic. 100 = no throttle.</div>
-        </div>
-      </Modal>
-
-      {/* Feature flag modal */}
-      {hasFeatureFlags && (
-        <Modal
-          open={showFeatureFlag}
-          onClose={() => setShowFeatureFlag(false)}
-          title="Toggle Feature Flag"
-          footer={
-            <Button variant="ghost" size="sm" onClick={() => setShowFeatureFlag(false)}>Cancel</Button>
-          }
-        >
-          <div className="flex flex-col gap-3">
-            <div>
-              <div className="text-xs font-medium text-sim-text-muted uppercase tracking-wide mb-1">Flag</div>
-              <select
-                value={featureFlagId}
-                onChange={e => setFeatureFlagId(e.target.value)}
-                className="w-full bg-sim-surface border border-sim-border text-sim-text text-xs
-                           font-mono px-3 py-1 rounded outline-none cursor-pointer"
-              >
-                {featureFlags.map(f => (
-                  <option key={f.id} value={f.id}>{f.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={toggledFlags.get(featureFlagId) === true}
-                onClick={() => handleToggleFlag(true)}
-              >
-                Enable
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={toggledFlags.get(featureFlagId) === false}
-                onClick={() => handleToggleFlag(false)}
-              >
-                Disable
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
     </div>
   )
 }
 
-function DeploymentRow({ dep }: { dep: Deployment }) {
-  const statusDot =
-    dep.status === 'active'      ? 'text-sim-green' :
-    dep.status === 'previous'    ? 'text-sim-text-faint' :
-                                   'text-sim-orange'
+// ── Stage detail panel ────────────────────────────────────────────────────────
 
+function StageDetail({
+  pipeline, stage, simTime, inactive,
+  onRollback, onOverride, onApproveGate, onBlockPromotion,
+}: {
+  pipeline:          Pipeline
+  stage:             PipelineStage
+  simTime:           number
+  inactive:          boolean
+  onRollback:        () => void
+  onOverride:        () => void
+  onApproveGate:     () => void
+  onBlockPromotion:  () => void
+}) {
   return (
-    <tr className={`border-b border-sim-border-muted ${dep.status === 'active' ? 'bg-sim-surface-2' : ''}`}>
-      <td className="py-2 px-3">
-        {dep.status === 'rolled_back' ? (
-          <span className="text-sim-text-muted line-through">{dep.version}</span>
-        ) : (
-          <span className={dep.status === 'active' ? 'text-sim-text font-medium' : 'text-sim-text-muted'}>
-            {dep.version}
-          </span>
+    <div className="bg-sim-surface border border-sim-border rounded p-4 flex flex-col gap-4">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="text-xs font-semibold text-sim-text">{stage.name}</div>
+          <div className="text-xs text-sim-text-muted font-mono mt-0.5">{stage.currentVersion}</div>
+          <div className="text-xs text-sim-text-faint mt-0.5">
+            {stage.commitMessage} · {stage.author} · <WallTimestamp simTime={stage.deployedAtSec} />
+          </div>
+        </div>
+        <span className={`text-xs font-medium px-2 py-0.5 rounded ${STAGE_STATUS_COLOURS[stage.status]}`}>
+          {stage.status.replace('_', ' ')}
+        </span>
+      </div>
+
+      {/* Blocker */}
+      {stage.blocker && (
+        <div className="flex items-start gap-2 bg-sim-red-dim border border-sim-red rounded px-3 py-2">
+          <span className="flex-shrink-0 text-base">{BLOCKER_ICON[stage.blocker.type] ?? '⚠'}</span>
+          <div>
+            <div className="text-xs font-semibold text-sim-red capitalize">
+              {stage.blocker.type.replace('_', ' ')} blocking promotion
+            </div>
+            <div className="text-xs text-sim-text-muted mt-0.5">{stage.blocker.message}</div>
+            {stage.blocker.suppressedUntil != null && (
+              <div className="text-xs text-sim-yellow mt-0.5">
+                Suppressed until simTime {stage.blocker.suppressedUntil}s — will reinstate if alarm still firing
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex flex-wrap gap-2">
+        {stage.previousVersion && (
+          <Button variant="danger" size="sm" onClick={onRollback} disabled={inactive}>
+            Rollback to {stage.previousVersion}
+          </Button>
         )}
-      </td>
-      <td className="py-2 px-3 text-sim-text-muted">
-        {dep.deployedAtSec < 0
-          ? formatRelativeTime(dep.deployedAtSec)
-          : <WallTimestamp simTime={dep.deployedAtSec} />
-        }
-      </td>
-      <td className="py-2 px-3">
-        <span className={statusDot}>●</span>
-        {' '}
-        <span className={`${statusDot} text-xs`}>{dep.status.replace('_', ' ')}</span>
-      </td>
-      <td className="py-2 px-3 text-sim-text-muted">{dep.author}</td>
-      <td className="py-2 px-3 text-sim-text-muted truncate max-w-[160px]">{dep.commitMessage}</td>
-    </tr>
+        {stage.blocker && stage.blocker.type !== 'manual_approval' && (
+          <Button variant="secondary" size="sm" onClick={onOverride} disabled={inactive}>
+            Override Blocker
+          </Button>
+        )}
+        {stage.blocker?.type === 'manual_approval' && (
+          <Button variant="primary" size="sm" onClick={onApproveGate} disabled={inactive}>
+            Approve Gate
+          </Button>
+        )}
+        {stage.status !== 'blocked' && (
+          <Button variant="ghost" size="sm" onClick={onBlockPromotion} disabled={inactive}>
+            Block Promotion
+          </Button>
+        )}
+      </div>
+
+      {/* Previous version info */}
+      {stage.previousVersion && (
+        <div className="text-xs text-sim-text-faint border-t border-sim-border pt-2 mt-1">
+          Previous: <span className="font-mono text-sim-text-muted">{stage.previousVersion}</span>
+        </div>
+      )}
+    </div>
   )
 }

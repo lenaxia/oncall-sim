@@ -44,6 +44,7 @@ export function buildTestSnapshot(
     metrics:        {},
     alarms:         [],
     deployments:    {},
+    pipelines:      [],
     pages:          [],
     auditLog:       [],
     coachMessages:  [],

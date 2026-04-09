@@ -1,200 +1,239 @@
 import { describe, it, expect } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { renderWithProviders, buildTestSnapshot, buildDeployment, buildMockSSE } from '../../src/testutil/index'
+import React from 'react'
+import { renderWithProviders, buildTestSnapshot, buildMockSSE } from '../../src/testutil/index'
 import { CICDTab } from '../../src/components/tabs/CICDTab'
 import { server } from '../../src/testutil/setup'
 import { http, HttpResponse } from 'msw'
+import type { Pipeline, PipelineStage } from '@shared/types/events'
 
-function renderCICD(
-  deployments: Record<string, ReturnType<typeof buildDeployment>[]> = {},
-  opts: { hasFeatureFlags?: boolean } = {}
-) {
-  server.use(
-    http.get('/api/scenarios/:id', () =>
-      HttpResponse.json({
-        id: '_fixture', title: 'Test', description: '', serviceType: 'api',
-        difficulty: 'medium', tags: [], topology: { focalService: 'svc-a', upstream: [], downstream: [] },
-        personas: [], wiki: { pages: [] }, cicd: { pipelines: [] },
-        featureFlags: opts.hasFeatureFlags ? [{ id: 'ff-1', label: 'New Checkout' }] : [],
-        evaluation: { rootCause: '', relevantActions: [], redHerrings: [], debriefContext: '' },
-        engine: { defaultTab: 'cicd', tickIntervalSeconds: 15 },
-        timeline: { durationMinutes: 10 },
-      })
-    )
-  )
+function buildStage(overrides: Partial<PipelineStage> = {}): PipelineStage {
+  return {
+    id: 'prod', name: 'Prod', type: 'deploy',
+    currentVersion: 'v2.4.1', previousVersion: 'v2.4.0',
+    status: 'succeeded', deployedAtSec: -1200,
+    commitMessage: 'config: fix pool size', author: 'sara-chen', blocker: null,
+    ...overrides,
+  }
+}
+
+function buildPipeline(overrides: Partial<Pipeline> = {}): Pipeline {
+  return {
+    id: 'pipeline-payment', name: 'payment-service', service: 'payment-service',
+    stages: [
+      buildStage({ id: 'build',   name: 'Build',    type: 'build',  status: 'succeeded', deployedAtSec: -1500 }),
+      buildStage({ id: 'staging', name: 'Staging',  type: 'deploy', status: 'succeeded', deployedAtSec: -1400 }),
+      buildStage({ id: 'preprod', name: 'Pre-Prod', type: 'deploy', status: 'blocked',   deployedAtSec: -1200,
+        blocker: { type: 'alarm', alarmId: 'alarm-001', message: 'Alarm firing: p99 latency > 2000ms on payment-service' } }),
+      buildStage({ id: 'prod',    name: 'Prod',     type: 'deploy', status: 'succeeded', deployedAtSec: -1200 }),
+    ],
+    ...overrides,
+  }
+}
+
+function renderCICD(pipelines: Pipeline[] = [buildPipeline()]) {
   const sse = buildMockSSE()
   const result = renderWithProviders(<CICDTab />, { sse })
-  act(() => {
-    sse.emit({ type: 'session_snapshot', snapshot: buildTestSnapshot({ deployments }) })
-  })
+  act(() => { sse.emit({ type: 'session_snapshot', snapshot: buildTestSnapshot({ pipelines }) }) })
   return { ...result, sse }
 }
 
 describe('CICDTab', () => {
-  describe('service list', () => {
-    it('renders services from deployments', () => {
-      renderCICD({ 'svc-a': [buildDeployment()] })
-      expect(screen.getByText('svc-a')).toBeInTheDocument()
+  describe('pipeline list', () => {
+    it('shows empty state when no pipelines', () => {
+      renderCICD([])
+      expect(screen.getByText(/no pipelines/i)).toBeInTheDocument()
     })
 
-    it('clicking service shows deployment table', async () => {
-      const user = userEvent.setup()
-      renderCICD({ 'svc-a': [buildDeployment({ version: 'v2.0.0', status: 'active' })] })
-      await user.click(screen.getByText('svc-a'))
-      expect(screen.getByText('v2.0.0')).toBeInTheDocument()
+    it('renders pipeline names in list', () => {
+      renderCICD([
+        buildPipeline({ id: 'p1', name: 'payment-service' }),
+        buildPipeline({ id: 'p2', name: 'fraud-service', service: 'fraud-service' }),
+      ])
+      expect(screen.getByText('payment-service')).toBeInTheDocument()
+      expect(screen.getByText('fraud-service')).toBeInTheDocument()
+    })
+
+    it('shows BLOCKED for pipeline with a blocked stage', () => {
+      renderCICD([buildPipeline()])
+      expect(screen.getAllByText(/blocked/i).length).toBeGreaterThan(0)
+    })
+
+    it('shows HEALTHY for pipeline where all stages succeeded', () => {
+      renderCICD([buildPipeline({
+        stages: [
+          buildStage({ id: 'build',   name: 'Build',    status: 'succeeded' }),
+          buildStage({ id: 'staging', name: 'Staging',  status: 'succeeded' }),
+          buildStage({ id: 'preprod', name: 'Pre-Prod', status: 'succeeded' }),
+          buildStage({ id: 'prod',    name: 'Prod',     status: 'succeeded' }),
+        ],
+      })])
+      expect(screen.getByText(/healthy/i)).toBeInTheDocument()
+    })
+
+    it('shows last prod deploy metric', () => {
+      renderCICD()
+      expect(screen.getByTestId('pipeline-last-prod')).toBeInTheDocument()
+    })
+
+    it('shows oldest version not in prod metric', () => {
+      renderCICD()
+      expect(screen.getByTestId('pipeline-oldest-not-prod')).toBeInTheDocument()
     })
   })
 
-  describe('deployment table', () => {
-    it('active deployment row is highlighted', async () => {
+  describe('stage flow', () => {
+    it('clicking a pipeline shows stage flow', async () => {
       const user = userEvent.setup()
-      renderCICD({ 'svc-a': [buildDeployment({ version: 'v1.0.0', status: 'active' })] })
-      await user.click(screen.getByText('svc-a'))
-      const versionEl = await screen.findByText('v1.0.0')
-      expect(versionEl.closest('tr')).toHaveClass('bg-sim-surface-2')
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      expect(screen.getByTestId('stage-flow')).toBeInTheDocument()
     })
 
-    it('pre-incident deployments show relative time', async () => {
+    it('all 4 stage names visible in stage flow', async () => {
       const user = userEvent.setup()
-      renderCICD({ 'svc-a': [buildDeployment({ deployedAtSec: -300, status: 'previous', version: 'v0.9.0' })] })
-      await user.click(screen.getByText('svc-a'))
-      await screen.findByText('v0.9.0')
-      expect(screen.getByText(/before/i)).toBeInTheDocument()
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      expect(screen.getByText('Build')).toBeInTheDocument()
+      expect(screen.getByText('Staging')).toBeInTheDocument()
+      expect(screen.getByText('Pre-Prod')).toBeInTheDocument()
+      expect(screen.getByText('Prod')).toBeInTheDocument()
     })
 
-    it('rolled_back deployment shows strikethrough', async () => {
+    it('blocked stage shows blocker message in detail panel', async () => {
       const user = userEvent.setup()
-      renderCICD({ 'svc-a': [buildDeployment({ version: 'v1.1.0', status: 'rolled_back' })] })
-      await user.click(screen.getByText('svc-a'))
-      const versionEl = await screen.findByText('v1.1.0')
-      expect(versionEl).toHaveClass('line-through')
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-preprod'))
+      expect(screen.getByText(/p99 latency > 2000ms/i)).toBeInTheDocument()
     })
   })
 
-  describe('action buttons', () => {
-    it('Rollback button shown when previous deployment exists', async () => {
+  describe('stage actions', () => {
+    it('Rollback button shown when stage has previousVersion', async () => {
       const user = userEvent.setup()
-      renderCICD({
-        'svc-a': [
-          buildDeployment({ version: 'v2.0.0', status: 'active' }),
-          buildDeployment({ version: 'v1.0.0', status: 'previous' }),
-        ]
-      })
-      await user.click(screen.getByText('svc-a'))
-      await waitFor(() => {
-        expect(screen.getByRole('button', { name: /rollback/i })).toBeInTheDocument()
-      })
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-prod'))
+      expect(screen.getByRole('button', { name: /rollback/i })).toBeInTheDocument()
     })
 
-    it('Rollback button shows confirmation modal', async () => {
-      const user = userEvent.setup()
-      renderCICD({
-        'svc-a': [
-          buildDeployment({ version: 'v2.0.0', status: 'active' }),
-          buildDeployment({ version: 'v1.0.0', status: 'previous' }),
-        ]
-      })
-      await user.click(screen.getByText('svc-a'))
-      await user.click(await screen.findByRole('button', { name: /rollback/i }))
-      expect(screen.getByRole('dialog')).toBeInTheDocument()
-    })
-
-    it('confirming rollback dispatches trigger_rollback', async () => {
+    it('Rollback dispatches trigger_rollback with pipelineId and stageId', async () => {
       const user = userEvent.setup()
       let captured: unknown
-      server.use(
-        http.post('/api/sessions/:id/actions', async ({ request }) => {
-          captured = await request.json()
-          return new HttpResponse(null, { status: 204 })
-        })
-      )
-      renderCICD({
-        'svc-a': [
-          buildDeployment({ version: 'v2.0.0', status: 'active' }),
-          buildDeployment({ version: 'v1.0.0', status: 'previous' }),
-        ]
-      })
-      await user.click(screen.getByText('svc-a'))
-      await user.click(await screen.findByRole('button', { name: /rollback/i }))
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        captured = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-prod'))
+      await user.click(screen.getByRole('button', { name: /rollback/i }))
       await user.click(screen.getByRole('button', { name: /rollback →/i }))
       await waitFor(() => {
-        expect((captured as { action: string })?.action).toBe('trigger_rollback')
+        const body = captured as { action: string; params: { pipelineId: string; stageId: string } }
+        expect(body.action).toBe('trigger_rollback')
+        expect(body.params.pipelineId).toBe('pipeline-payment')
+        expect(body.params.stageId).toBe('prod')
       })
     })
 
-    it('cancelling rollback modal does not dispatch', async () => {
+    it('Override Blocker button shown for alarm-blocked stage', async () => {
       const user = userEvent.setup()
-      let rollbackCalled = false
-      server.use(
-        http.post('/api/sessions/:id/actions', async ({ request }) => {
-          const body = await request.json() as { action: string }
-          if (body.action === 'trigger_rollback') rollbackCalled = true
-          return new HttpResponse(null, { status: 204 })
-        })
-      )
-      renderCICD({
-        'svc-a': [
-          buildDeployment({ version: 'v2.0.0', status: 'active' }),
-          buildDeployment({ version: 'v1.0.0', status: 'previous' }),
-        ]
-      })
-      await user.click(screen.getByText('svc-a'))
-      await user.click(await screen.findByRole('button', { name: /rollback/i }))
-      await user.click(screen.getByRole('button', { name: /cancel/i }))
-      expect(rollbackCalled).toBe(false)
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-preprod'))
+      expect(screen.getByRole('button', { name: /override blocker/i })).toBeInTheDocument()
     })
 
-    it('Restart service button dispatches restart_service', async () => {
+    it('Override Blocker dispatches override_blocker', async () => {
       const user = userEvent.setup()
       let captured: unknown
-      server.use(
-        http.post('/api/sessions/:id/actions', async ({ request }) => {
-          captured = await request.json()
-          return new HttpResponse(null, { status: 204 })
-        })
-      )
-      renderCICD({ 'svc-a': [buildDeployment()] })
-      await user.click(screen.getByText('svc-a'))
-      await user.click(await screen.findByRole('button', { name: /restart service/i }))
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        captured = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-preprod'))
+      await user.click(screen.getByRole('button', { name: /override blocker/i }))
+      await user.click(screen.getByRole('button', { name: /override →/i }))
       await waitFor(() => {
-        expect((captured as { action: string })?.action).toBe('restart_service')
+        const body = captured as { action: string; params: { stageId: string } }
+        expect(body.action).toBe('override_blocker')
+        expect(body.params.stageId).toBe('preprod')
       })
     })
 
-    it('Toggle Feature Flag button not shown when no feature flags', async () => {
+    it('Approve Gate shown for manual_approval blocked stage', async () => {
       const user = userEvent.setup()
-      renderCICD({ 'svc-a': [buildDeployment()] }, { hasFeatureFlags: false })
-      await user.click(screen.getByText('svc-a'))
-      await waitFor(() => screen.getByRole('button', { name: /restart service/i }))
-      expect(screen.queryByRole('button', { name: /toggle feature flag/i })).toBeNull()
+      renderCICD([buildPipeline({
+        stages: [
+          buildStage({ id: 'build',   name: 'Build',    status: 'succeeded' }),
+          buildStage({ id: 'staging', name: 'Staging',  status: 'succeeded' }),
+          buildStage({ id: 'preprod', name: 'Pre-Prod', status: 'blocked',
+            blocker: { type: 'manual_approval', message: 'Awaiting release manager' } }),
+          buildStage({ id: 'prod',    name: 'Prod',     status: 'not_started' }),
+        ],
+      })])
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-preprod'))
+      expect(screen.getByRole('button', { name: /approve gate/i })).toBeInTheDocument()
     })
 
-    it('Toggle Feature Flag button shown when hasFeatureFlags=true', async () => {
+    it('Block Promotion dispatches block_promotion', async () => {
       const user = userEvent.setup()
-      renderCICD({ 'svc-a': [buildDeployment()] }, { hasFeatureFlags: true })
-      await user.click(screen.getByText('svc-a'))
+      let captured: unknown
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        captured = await request.json()
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-prod'))
+      await user.click(screen.getByRole('button', { name: /block promotion/i }))
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: /toggle feature flag/i })).toBeInTheDocument()
+        const body = captured as { action: string; params: { stageId: string } }
+        expect(body.action).toBe('block_promotion')
+        expect(body.params.stageId).toBe('prod')
       })
     })
   })
 
-  describe('view_deployment_history', () => {
-    it('dispatched when service selected', async () => {
+  describe('SSE updates', () => {
+    it('pipeline_stage_updated clears blocker in detail panel', async () => {
+      const user = userEvent.setup()
+      const { sse } = renderCICD()
+      await user.click(screen.getByText('payment-service'))
+      await user.click(screen.getByTestId('stage-pill-preprod'))
+      expect(screen.getByText(/p99 latency > 2000ms/i)).toBeInTheDocument()
+      act(() => {
+        sse.emit({
+          type: 'pipeline_stage_updated',
+          pipelineId: 'pipeline-payment',
+          stage: buildStage({ id: 'preprod', name: 'Pre-Prod', status: 'succeeded', blocker: null }),
+        })
+      })
+      await waitFor(() => {
+        expect(screen.queryByText(/p99 latency > 2000ms/i)).toBeNull()
+      })
+    })
+  })
+
+  describe('view_pipeline dispatch', () => {
+    it('dispatches view_pipeline when pipeline selected', async () => {
       const user = userEvent.setup()
       let captured: unknown
-      server.use(
-        http.post('/api/sessions/:id/actions', async ({ request }) => {
-          const body = await request.json() as { action: string }
-          if (body.action === 'view_deployment_history') captured = body
-          return new HttpResponse(null, { status: 204 })
-        })
-      )
-      renderCICD({ 'svc-a': [buildDeployment()] })
-      await user.click(screen.getByText('svc-a'))
+      server.use(http.post('/api/sessions/:id/actions', async ({ request }) => {
+        const body = await request.json() as { action: string }
+        if (body.action === 'view_pipeline') captured = body
+        return new HttpResponse(null, { status: 204 })
+      }))
+      renderCICD()
+      await user.click(screen.getByText('payment-service'))
       await waitFor(() => {
-        expect((captured as { action: string })?.action).toBe('view_deployment_history')
+        expect((captured as { action: string })?.action).toBe('view_pipeline')
       })
     })
   })

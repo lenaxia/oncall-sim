@@ -1,6 +1,6 @@
 import type {
   ChatMessage, EmailMessage, Ticket, TicketComment, LogEntry,
-  Alarm, AlarmStatus, Deployment, PageAlert,
+  Alarm, AlarmStatus, Deployment, PageAlert, Pipeline, PipelineStage,
 } from '@shared/types/events'
 
 export interface ConversationStoreSnapshot {
@@ -11,6 +11,7 @@ export interface ConversationStoreSnapshot {
   logs:           LogEntry[]
   alarms:         Alarm[]
   deployments:    Record<string, Deployment[]>
+  pipelines:      Pipeline[]
   pages:          PageAlert[]
 }
 
@@ -42,6 +43,11 @@ export interface ConversationStore {
   getDeployments(service: string): Deployment[]
   getAllDeployments(): Record<string, Deployment[]>
 
+  addPipeline(pipeline: Pipeline): void
+  updateStage(pipelineId: string, stageId: string, changes: Partial<PipelineStage>): void
+  getPipeline(pipelineId: string): Pipeline | null
+  getAllPipelines(): Pipeline[]
+
   addPage(page: PageAlert): void
   getAllPages(): PageAlert[]
 
@@ -56,7 +62,8 @@ export function createConversationStore(): ConversationStore {
   const _logs:           LogEntry[]                        = []
   const _alarms:         Map<string, Alarm>                = new Map()
   const _deployments:    Record<string, Deployment[]>      = {}
-  const _pages:          PageAlert[]                       = []
+  const _pipelines:      Map<string, Pipeline>              = new Map()
+  const _pages:          PageAlert[]                        = []
 
   function deepClone<T>(val: T): T {
     return JSON.parse(JSON.stringify(val)) as T
@@ -144,6 +151,29 @@ export function createConversationStore(): ConversationStore {
       return deepClone(_deployments)
     },
 
+    // ── Pipelines ─────────────────────────────────────────────────────────────
+    addPipeline(pipeline) {
+      _pipelines.set(pipeline.id, deepClone(pipeline))
+    },
+    updateStage(pipelineId, stageId, changes) {
+      const pipeline = _pipelines.get(pipelineId)
+      if (!pipeline) return
+      const updated: Pipeline = {
+        ...pipeline,
+        stages: pipeline.stages.map(s =>
+          s.id === stageId ? { ...s, ...changes } : s
+        ),
+      }
+      _pipelines.set(pipelineId, updated)
+    },
+    getPipeline(pipelineId) {
+      const p = _pipelines.get(pipelineId)
+      return p ? deepClone(p) : null
+    },
+    getAllPipelines() {
+      return deepClone([..._pipelines.values()])
+    },
+
     // ── Pages ─────────────────────────────────────────────────────────────────
     addPage(page) {
       _pages.push(page)
@@ -166,6 +196,7 @@ export function createConversationStore(): ConversationStore {
         logs:           deepClone(_logs),
         alarms:         deepClone([..._alarms.values()]),
         deployments:    deepClone(_deployments),
+        pipelines:      deepClone([..._pipelines.values()]),
         pages:          deepClone(_pages),
       }
     },

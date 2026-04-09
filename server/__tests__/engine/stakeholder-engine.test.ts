@@ -11,7 +11,7 @@ beforeEach(() => clearFixtureCache())
 function emptySnapshot(): ConversationStoreSnapshot {
   return {
     emails: [], chatChannels: {}, tickets: [], ticketComments: {},
-    logs: [], alarms: [], deployments: {}, pages: [],
+    logs: [], alarms: [], deployments: {}, pipelines: [], pages: [],
   }
 }
 

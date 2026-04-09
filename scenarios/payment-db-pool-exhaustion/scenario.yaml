@@ -383,11 +383,103 @@ wiki:
 cicd:
   pipelines:
     - id: pipeline-payment
+      name: "payment-service"
       service: payment-service
-      name: "payment-service deploy pipeline"
-    - id: pipeline-config
-      service: payment-config
-      name: "payment-config deploy pipeline"
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: succeeded
+          deployed_at_sec: -1500
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          blocker: null
+
+        - id: staging
+          name: "Staging"
+          type: deploy
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: succeeded
+          deployed_at_sec: -1400
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          blocker: null
+
+        - id: preprod
+          name: "Pre-Prod"
+          type: deploy
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: blocked
+          deployed_at_sec: -1200
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          blocker:
+            type: alarm
+            alarm_id: alarm-latency-001
+
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: succeeded
+          deployed_at_sec: -1200
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          blocker: null
+
+    - id: pipeline-fraud
+      name: "fraud-service"
+      service: fraud-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v1.7.3
+          previous_version: v1.7.2
+          status: succeeded
+          deployed_at_sec: -7200
+          commit_message: "fix: improve rule evaluation latency"
+          author: sara-chen
+          blocker: null
+
+        - id: staging
+          name: "Staging"
+          type: deploy
+          current_version: v1.7.3
+          previous_version: v1.7.2
+          status: succeeded
+          deployed_at_sec: -7100
+          commit_message: "fix: improve rule evaluation latency"
+          author: sara-chen
+          blocker: null
+
+        - id: preprod
+          name: "Pre-Prod"
+          type: deploy
+          current_version: v1.7.3
+          previous_version: v1.7.2
+          status: succeeded
+          deployed_at_sec: -6900
+          commit_message: "fix: improve rule evaluation latency"
+          author: sara-chen
+          blocker: null
+
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v1.7.3
+          previous_version: v1.7.2
+          status: succeeded
+          deployed_at_sec: -6800
+          commit_message: "fix: improve rule evaluation latency"
+          author: sara-chen
+          blocker: null
+
   deployments:
     - service: payment-service
       version: v2.4.1

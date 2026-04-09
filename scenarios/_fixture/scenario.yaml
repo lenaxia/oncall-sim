@@ -102,8 +102,49 @@ wiki:
 cicd:
   pipelines:
     - id: pipeline-001
+      name: "fixture-service"
       service: fixture-service
-      name: "fixture-service deploy"
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v1.0.1
+          previous_version: v1.0.0
+          status: succeeded
+          deployed_at_sec: -400
+          commit_message: "feat: add new feature (introduces bug)"
+          author: fixture-persona
+          blocker: null
+        - id: staging
+          name: "Staging"
+          type: deploy
+          current_version: v1.0.1
+          previous_version: v1.0.0
+          status: succeeded
+          deployed_at_sec: -350
+          commit_message: "feat: add new feature (introduces bug)"
+          author: fixture-persona
+          blocker: null
+        - id: preprod
+          name: "Pre-Prod"
+          type: deploy
+          current_version: v1.0.1
+          previous_version: v1.0.0
+          status: succeeded
+          deployed_at_sec: -320
+          commit_message: "feat: add new feature (introduces bug)"
+          author: fixture-persona
+          blocker: null
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v1.0.1
+          previous_version: v1.0.0
+          status: succeeded
+          deployed_at_sec: -300
+          commit_message: "feat: add new feature (introduces bug)"
+          author: fixture-persona
+          blocker: null
   deployments:
     - service: fixture-service
       version: v1.0.1

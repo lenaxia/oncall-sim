@@ -2,7 +2,8 @@
 // These are the camelCase runtime types used throughout the server.
 // Distinct from the raw YAML shape (which uses snake_case).
 
-import type { AlarmSeverity, TicketSeverity, TicketStatus, LogLevel, DeploymentStatus } from '@shared/types/events'
+import type { AlarmSeverity, TicketSeverity, TicketStatus, LogLevel, DeploymentStatus,
+              StageStatus, BlockerType } from '@shared/types/events'
 
 export type ServiceType          = 'api' | 'workflow' | 'serverless' | 'database' | 'console'
 export type Difficulty           = 'easy' | 'medium' | 'hard'
@@ -200,10 +201,29 @@ export interface WikiConfig {
   pages: WikiPage[]
 }
 
+export interface StageBlockerConfig {
+  type:     BlockerType
+  alarmId?: string   // references AlarmConfig.id — message derived at runtime
+}
+
+export interface PipelineStageConfig {
+  id:              string
+  name:            string
+  type:            'build' | 'deploy'
+  currentVersion:  string
+  previousVersion: string | null
+  status:          StageStatus
+  deployedAtSec:   number
+  commitMessage:   string
+  author:          string
+  blocker:         StageBlockerConfig | null
+}
+
 export interface PipelineConfig {
   id:      string
-  service: string
   name:    string
+  service: string
+  stages:  PipelineStageConfig[]
 }
 
 export interface ScriptedDeployment {

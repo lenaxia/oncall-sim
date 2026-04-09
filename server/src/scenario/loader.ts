@@ -328,8 +328,22 @@ async function transform(
   const cicd: CICDConfig = {
     pipelines: (raw.cicd.pipelines ?? []).map(p => ({
       id:      p.id,
-      service: p.service,
       name:    p.name,
+      service: p.service,
+      stages:  (p.stages ?? []).map((s): import('../scenario/types').PipelineStageConfig => ({
+        id:              s.id,
+        name:            s.name,
+        type:            s.type,
+        currentVersion:  s.current_version,
+        previousVersion: s.previous_version ?? null,
+        status:          s.status,
+        deployedAtSec:   s.deployed_at_sec,
+        commitMessage:   s.commit_message,
+        author:          s.author,
+        blocker:         s.blocker
+          ? { type: s.blocker.type, alarmId: s.blocker.alarm_id }
+          : null,
+      })),
     })),
     deployments: (raw.cicd.deployments ?? []).map((d): ScriptedDeployment => ({
       service:       d.service,

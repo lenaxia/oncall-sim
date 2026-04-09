@@ -7,6 +7,8 @@ import type {
   Alarm,
   TicketComment,
   Deployment,
+  Pipeline,
+  PipelineStage,
   PageAlert,
   ChatMessage,
   EmailMessage,
@@ -39,6 +41,7 @@ export interface SessionState {
   ticketComments:  Record<string, TicketComment[]>
   logs:            LogEntry[]
   deployments:     Record<string, Deployment[]>
+  pipelines:       Pipeline[]
   metrics:         Record<string, Record<string, TimeSeriesPoint[]>>
   pages:           PageAlert[]
   auditLog:        AuditEntry[]
@@ -60,6 +63,7 @@ const INITIAL_STATE: SessionState = {
   ticketComments:  {},
   logs:            [],
   deployments:     {},
+  pipelines:       [],
   metrics:         {},
   pages:           [],
   auditLog:        [],
@@ -112,6 +116,7 @@ function reducer(state: SessionState, action: Action): SessionState {
             ticketComments: snap.ticketComments,
             logs:           snap.logs,
             deployments:    snap.deployments,
+            pipelines:      snap.pipelines ?? [],
             metrics:        snap.metrics,
             pages:          snap.pages ?? [],
             auditLog:       snap.auditLog,
@@ -184,6 +189,16 @@ function reducer(state: SessionState, action: Action): SessionState {
             deployments: { ...state.deployments, [ev.service]: [...prev, ev.deployment] },
           }
         }
+
+        case 'pipeline_stage_updated':
+          return {
+            ...state,
+            pipelines: state.pipelines.map(p =>
+              p.id === ev.pipelineId
+                ? { ...p, stages: p.stages.map(s => s.id === ev.stage.id ? ev.stage : s) }
+                : p
+            ),
+          }
 
         case 'page_sent':
           return { ...state, pages: [...state.pages, ev.alert] }

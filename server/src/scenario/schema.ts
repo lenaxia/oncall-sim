@@ -177,10 +177,29 @@ const WikiSchema = z.object({
   pages: z.array(WikiPageSchema),
 })
 
+const StageBlockerSchema = z.object({
+  type:     z.enum(['alarm', 'time_window', 'manual_approval', 'test_failure']),
+  alarm_id: z.string().optional(),   // references alarms[].id — message derived from alarm.condition
+})
+
+const PipelineStageSchema = z.object({
+  id:               z.string().min(1),
+  name:             z.string().min(1),
+  type:             z.enum(['build', 'deploy']),
+  current_version:  z.string().min(1),
+  previous_version: z.string().nullable().optional(),
+  status:           z.enum(['not_started', 'in_progress', 'succeeded', 'failed', 'blocked']),
+  deployed_at_sec:  z.number(),
+  commit_message:   z.string().min(1),
+  author:           z.string().min(1),
+  blocker:          StageBlockerSchema.nullable().optional(),
+})
+
 const PipelineSchema = z.object({
   id:      z.string().min(1),
-  service: z.string().min(1),
   name:    z.string().min(1),
+  service: z.string().min(1),
+  stages:  z.array(PipelineStageSchema).min(1),
 })
 
 const DeploymentSchema = z.object({
