@@ -1,0 +1,32 @@
+# docker-compose.yml — local testing of k8s mode
+# Starts the client static server + LLM proxy sidecar
+#
+# Usage:
+#   cp proxy/.env.example proxy/.env   # fill in your LLM credentials
+#   docker-compose up --build
+
+services:
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+      args:
+        VITE_LLM_MODE: k8s
+        VITE_LLM_BASE_URL: http://localhost:8000/llm
+        VITE_LLM_API_KEY: ""
+        VITE_LLM_MODEL: ""
+    ports:
+      - "3000:3000"
+    network_mode: host # share localhost with proxy sidecar
+
+  proxy:
+    build:
+      context: proxy
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - proxy/.env
+    environment:
+      CORS_ORIGINS: "http://localhost:3000"
+    network_mode: host

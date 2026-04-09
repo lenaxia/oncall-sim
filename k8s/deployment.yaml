@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oncall-sim
+  labels:
+    app: oncall-sim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oncall-sim
+  template:
+    metadata:
+      labels:
+        app: oncall-sim
+    spec:
+      containers:
+        # Static client container — serves pre-built dist/ via npx serve
+        - name: client
+          image: oncall-client:latest
+          ports:
+            - containerPort: 3000
+          # No env vars needed — VITE_* vars are baked into the bundle at build time
+
+        # LLM proxy sidecar — credentials never reach the browser
+        - name: proxy
+          image: oncall-proxy:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: oncall-secrets
+                  key: llm-model
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: oncall-secrets
+                  key: llm-api-key
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: oncall-secrets
+                  key: llm-base-url
+            # Limit CORS to the client container (same pod, localhost)
+            - name: CORS_ORIGINS
+              value: "http://localhost:3000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oncall-sim
+spec:
+  selector:
+    app: oncall-sim
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+  type: ClusterIP

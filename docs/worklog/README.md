@@ -20,7 +20,7 @@ Examples:
 
 ## Next Entry
 
-`0017_YYYY-MM-DD_description.md`
+`0016_YYYY-MM-DD_description.md`
 
 ## Entry Format
 

@@ -1,36 +1,29 @@
-import { http, HttpResponse } from 'msw'
-import {
-  buildScenarioSummary,
-  buildFullScenario,
-  buildDebriefPayload,
-} from './index'
+import { http, HttpResponse } from "msw";
+import { buildDebriefResult } from "./index";
 
+// Default MSW handlers for tests that still test API calls directly
+// (dispatchAction, postChatMessage, replyEmail, setSpeed via the game loop
+// calling those methods, which in the engine-direct architecture route through
+// the game loop — but tests that verify the HTTP path can still use these).
 export const defaultHandlers = [
-  http.get('/api/scenarios', () =>
-    HttpResponse.json([buildScenarioSummary()])
+  http.post(
+    "/api/sessions/:id/actions",
+    () => new HttpResponse(null, { status: 204 }),
   ),
-  http.get('/api/scenarios/:id', () =>
-    HttpResponse.json(buildFullScenario())
+  http.post(
+    "/api/sessions/:id/chat",
+    () => new HttpResponse(null, { status: 204 }),
   ),
-  http.post('/api/sessions', () =>
-    HttpResponse.json({ sessionId: 'test-session-id' }, { status: 201 })
+  http.post(
+    "/api/sessions/:id/email/reply",
+    () => new HttpResponse(null, { status: 204 }),
   ),
-  http.post('/api/sessions/:id/actions', () =>
-    new HttpResponse(null, { status: 204 })
+  http.post(
+    "/api/sessions/:id/speed",
+    () => new HttpResponse(null, { status: 204 }),
   ),
-  http.post('/api/sessions/:id/chat', () =>
-    new HttpResponse(null, { status: 204 })
+  // Kept for any residual test that fetches debrief directly
+  http.get("/api/sessions/:id/debrief", () =>
+    HttpResponse.json(buildDebriefResult()),
   ),
-  http.post('/api/sessions/:id/email/reply', () =>
-    new HttpResponse(null, { status: 204 })
-  ),
-  http.post('/api/sessions/:id/speed', () =>
-    new HttpResponse(null, { status: 204 })
-  ),
-  http.post('/api/sessions/:id/resolve', () =>
-    HttpResponse.json({ status: 'resolving' }, { status: 202 })
-  ),
-  http.get('/api/sessions/:id/debrief', () =>
-    HttpResponse.json(buildDebriefPayload())
-  ),
-]
+];

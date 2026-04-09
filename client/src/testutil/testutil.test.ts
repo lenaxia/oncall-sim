@@ -3,7 +3,7 @@ import {
   buildTestSnapshot,
   buildFlatSeries,
   buildAuditEntry,
-  buildMockSSE,
+  buildMockGameLoop,
   buildChatMessage,
   buildEmail,
   buildTicket,
@@ -57,45 +57,52 @@ describe('buildAuditEntry', () => {
   })
 })
 
-describe('buildMockSSE', () => {
-  it('starts connected', () => {
-    const sse = buildMockSSE()
-    expect(sse.isConnected).toBe(true)
-  })
-
-  it('emit calls the registered handler', () => {
-    const sse = buildMockSSE()
+describe('buildMockGameLoop', () => {
+  it('emit calls the registered onEvent handler', () => {
+    const mockLoop = buildMockGameLoop()
     const received: SimEvent[] = []
-    sse.setHandler(e => received.push(e))
+    mockLoop.onEvent(e => received.push(e))
 
     const event: SimEvent = { type: 'sim_time', simTime: 10, speed: 1, paused: false }
-    sse.emit(event)
+    mockLoop.emit(event)
     expect(received).toHaveLength(1)
     expect(received[0]).toEqual(event)
   })
 
-  it('disconnect sets isConnected to false and calls onDisconnect', () => {
-    const sse = buildMockSSE()
-    let disconnected = false
-    sse.setOnDisconnect(() => { disconnected = true })
-    sse.disconnect()
-    expect(sse.isConnected).toBe(false)
-    expect(disconnected).toBe(true)
+  it('multiple handlers all receive the event', () => {
+    const mockLoop = buildMockGameLoop()
+    const counts = [0, 0]
+    mockLoop.onEvent(() => counts[0]++)
+    mockLoop.onEvent(() => counts[1]++)
+    mockLoop.emit({ type: 'sim_time', simTime: 0, speed: 1, paused: false })
+    expect(counts).toEqual([1, 1])
   })
 
-  it('reconnect sets isConnected to true and calls onReconnect', () => {
-    const sse = buildMockSSE()
-    sse.disconnect()
-    let reconnected = false
-    sse.setOnReconnect(() => { reconnected = true })
-    sse.reconnect()
-    expect(sse.isConnected).toBe(true)
-    expect(reconnected).toBe(true)
+  it('onEvent returns unsubscribe function that removes handler', () => {
+    const mockLoop = buildMockGameLoop()
+    const received: SimEvent[] = []
+    const unsub = mockLoop.onEvent(e => received.push(e))
+    unsub()
+    mockLoop.emit({ type: 'sim_time', simTime: 0, speed: 1, paused: false })
+    expect(received).toHaveLength(0)
   })
 
   it('emit with no handler registered does not throw', () => {
-    const sse = buildMockSSE()
-    expect(() => sse.emit({ type: 'sim_time', simTime: 0, speed: 1, paused: false })).not.toThrow()
+    const mockLoop = buildMockGameLoop()
+    expect(() => mockLoop.emit({ type: 'sim_time', simTime: 0, speed: 1, paused: false })).not.toThrow()
+  })
+
+  it('getSnapshot returns default snapshot', () => {
+    const mockLoop = buildMockGameLoop()
+    const snap = mockLoop.getSnapshot()
+    expect(snap.sessionId).toBe('test-session-id')
+  })
+
+  it('getEvaluationState returns empty state', () => {
+    const mockLoop = buildMockGameLoop()
+    const state = mockLoop.getEvaluationState()
+    expect(state.resolved).toBe(false)
+    expect(state.relevantActionsTaken).toHaveLength(0)
   })
 })
 

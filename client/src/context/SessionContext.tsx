@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useReducer,
   useRef,
+  useState,
 } from "react";
 import type {
   SessionSnapshot,
@@ -22,8 +23,22 @@ import type {
   CoachMessage,
   AuditEntry,
   TimeSeriesPoint,
+  DebriefResult,
 } from "@shared/types/events";
-import type { MockSSEConnection } from "../testutil/mock-sse";
+import type { LoadedScenario } from "../scenario/types";
+import type { GameLoop } from "../engine/game-loop";
+import { createGameLoop } from "../engine/game-loop";
+import { createSimClock } from "../engine/sim-clock";
+import { createEventScheduler } from "../engine/event-scheduler";
+import { createAuditLog } from "../engine/audit-log";
+import { createConversationStore } from "../engine/conversation-store";
+import { createEvaluator } from "../engine/evaluator";
+import { generateAllMetrics } from "../metrics/generator";
+import { createMetricStore } from "../metrics/metric-store";
+import { createLLMClient } from "../llm/llm-client";
+import type { LLMClient } from "../llm/llm-client";
+import { createStakeholderEngine } from "../engine/stakeholder-engine";
+import { createMetricReactionEngine } from "../engine/metric-reaction-engine";
 
 // ── Tab IDs ───────────────────────────────────────────────────────────────────
 
@@ -44,7 +59,7 @@ export interface SessionState {
   simTime: number;
   speed: 1 | 2 | 5 | 10;
   paused: boolean;
-  clockAnchorMs: number; // Unix ms that corresponds to simTime=0
+  clockAnchorMs: number;
   status: "active" | "resolved" | "expired";
 
   tickets: Ticket[];
@@ -67,7 +82,7 @@ const INITIAL_STATE: SessionState = {
   simTime: 0,
   speed: 1,
   paused: false,
-  clockAnchorMs: Date.now(), // updated from snapshot on first connect
+  clockAnchorMs: Date.now(),
   status: "active",
   tickets: [],
   alarms: [],
@@ -86,7 +101,7 @@ const INITIAL_STATE: SessionState = {
 // ── Reducer ───────────────────────────────────────────────────────────────────
 
 type Action =
-  | { type: "SSE_EVENT"; event: SimEvent }
+  | { type: "ENGINE_EVENT"; event: SimEvent }
   | { type: "SET_STATUS"; status: SessionState["status"] }
   | { type: "SET_RECONNECTING"; reconnecting: boolean }
   | { type: "SET_SPEED"; speed: 1 | 2 | 5 | 10 }
@@ -110,17 +125,14 @@ function reducer(state: SessionState, action: Action): SessionState {
   switch (action.type) {
     case "SET_STATUS":
       return { ...state, status: action.status };
-
     case "SET_RECONNECTING":
       return { ...state, reconnecting: action.reconnecting };
-
     case "SET_SPEED":
       return { ...state, speed: action.speed, paused: false };
-
     case "SET_PAUSED":
       return { ...state, paused: action.paused };
 
-    case "SSE_EVENT": {
+    case "ENGINE_EVENT": {
       const ev = action.event;
       switch (ev.type) {
         case "session_snapshot": {
@@ -186,6 +198,7 @@ function reducer(state: SessionState, action: Action): SessionState {
             ),
           };
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         case "alarm_acknowledged" as SimEvent["type"]:
           return {
             ...state,
@@ -237,29 +250,13 @@ function reducer(state: SessionState, action: Action): SessionState {
               p.id === ev.pipelineId
                 ? {
                     ...p,
-                    stages: p.stages.map((s) =>
+                    stages: p.stages.map((s: PipelineStage) =>
                       s.id === ev.stage.id ? ev.stage : s,
                     ),
                   }
                 : p,
             ),
           };
-
-        case "page_sent":
-          return { ...state, pages: [...state.pages, ev.alert] };
-
-        case "coach_message":
-          return {
-            ...state,
-            coachMessages: [...state.coachMessages, ev.message],
-          };
-
-        case "session_expired":
-          return { ...state, status: "expired" };
-
-        case "error":
-          console.error(ev.code, ev.message);
-          return state;
 
         case "metric_update": {
           const { service, metricId, point } = ev;
@@ -294,6 +291,22 @@ function reducer(state: SessionState, action: Action): SessionState {
           };
         }
 
+        case "page_sent":
+          return { ...state, pages: [...state.pages, ev.alert] };
+
+        case "coach_message":
+          return {
+            ...state,
+            coachMessages: [...state.coachMessages, ev.message],
+          };
+
+        case "session_expired":
+          return { ...state, status: "expired" };
+
+        case "error":
+          console.error(ev.code, ev.message);
+          return state;
+
         case "debrief_ready":
         default:
           return state;
@@ -317,28 +330,124 @@ export interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
+// ── Session factory ───────────────────────────────────────────────────────────
+
+interface SessionInstance {
+  gameLoop: GameLoop;
+  llmClient: LLMClient;
+}
+
+function createSession(
+  scenario: LoadedScenario,
+  llmClient: LLMClient,
+): SessionInstance {
+  const sessionId = globalThis.crypto.randomUUID();
+  const clockAnchorMs = Date.now();
+
+  const clock = createSimClock(scenario.timeline.defaultSpeed);
+  const scheduler = createEventScheduler(scenario);
+  const auditLog = createAuditLog();
+  const store = createConversationStore();
+  const evaluator = createEvaluator();
+
+  // Pre-generate all metrics and wire the MetricStore
+  const { series, resolvedParams } = generateAllMetrics(scenario, sessionId);
+  const metricStore = createMetricStore(series, resolvedParams);
+
+  // Wire pipelines from scenario into store
+  for (const pipeline of scenario.cicd.pipelines) {
+    store.addPipeline({
+      id: pipeline.id,
+      name: pipeline.name,
+      service: pipeline.service,
+      stages: pipeline.stages.map((s) => ({
+        id: s.id,
+        name: s.name,
+        type: s.type,
+        currentVersion: s.currentVersion,
+        previousVersion: s.previousVersion,
+        status: s.status,
+        deployedAtSec: s.deployedAtSec,
+        commitMessage: s.commitMessage,
+        author: s.author,
+        blockers: s.blockers.map((b) => ({
+          type: b.type,
+          alarmId: b.alarmId,
+          message: b.message ?? "",
+        })),
+        alarmWatches: s.alarmWatches,
+        tests: s.tests,
+        promotionEvents: s.promotionEvents.map((e) => ({
+          version: e.version,
+          simTime: e.simTime,
+          status: e.status,
+          note: e.note,
+        })),
+      })),
+    });
+  }
+
+  // Wire chat channels
+  for (const channel of scenario.chat.channels) {
+    store.ensureChannel(channel.id);
+  }
+
+  // Build stakeholder engine
+  const stakeholderEngine = createStakeholderEngine(
+    llmClient,
+    scenario,
+    metricStore,
+  );
+
+  // Build metric reaction engine — decoupled from persona gating, fires on trainee actions only
+  const metricReactionEngine = createMetricReactionEngine(
+    llmClient,
+    scenario,
+    metricStore,
+    () => clock.getSimTime(),
+  );
+
+  const gameLoop = createGameLoop({
+    scenario,
+    sessionId,
+    clock,
+    scheduler,
+    auditLog,
+    store,
+    evaluator,
+    metrics: series,
+    metricStore,
+    clockAnchorMs,
+    onDirtyTick: (ctx) => stakeholderEngine.tick(ctx),
+    onMetricReact: (ctx) => metricReactionEngine.react(ctx),
+    onCoachTick: () => Promise.resolve(null),
+  });
+
+  return { gameLoop, llmClient };
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export interface SessionProviderProps {
-  sessionId: string;
-  /** Injected SSE connection — uses real EventSource if omitted (production); MockSSEConnection in tests */
-  sseConnection?: MockSSEConnection;
+  scenario: LoadedScenario;
   onExpired: () => void;
-  onDebriefReady: () => void;
+  onDebriefReady: (result: DebriefResult) => void;
   onError: (message: string) => void;
   children: React.ReactNode;
+  /** Test-only: inject a mock game loop. Bypasses engine creation. */
+  _testGameLoop?: GameLoop;
 }
 
 export function SessionProvider({
-  sessionId,
-  sseConnection,
+  scenario,
   onExpired,
   onDebriefReady,
   onError,
   children,
+  _testGameLoop,
 }: SessionProviderProps) {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
-  const [resolving, setResolving] = React.useState(false);
+  const [resolving, setResolving] = useState(false);
 
   // Stable callback refs
   const onExpiredRef = useRef(onExpired);
@@ -348,127 +457,173 @@ export function SessionProvider({
   onDebriefReadyRef.current = onDebriefReady;
   onErrorRef.current = onError;
 
-  // SSE wiring — supports both injected mock and real EventSource
+  const llmClientRef = useRef<LLMClient | null>(null);
+  const sessionRef = useRef<SessionInstance | null>(null);
+
+  // When a test game loop is injected, create a minimal session wrapper around it.
+  // Otherwise create the full session with the real engine.
+  if (sessionRef.current === null) {
+    if (_testGameLoop) {
+      const tempLlm: LLMClient = {
+        call: () => Promise.resolve({ toolCalls: [] }),
+      };
+      sessionRef.current = { gameLoop: _testGameLoop, llmClient: tempLlm };
+    } else {
+      const tempLlm: LLMClient = {
+        call: () => Promise.resolve({ toolCalls: [] }),
+      };
+      sessionRef.current = createSession(scenario, tempLlm);
+    }
+  }
+
+  // Wire real LLM client once available (skipped in test mode — _testGameLoop implies mock LLM)
   useEffect(() => {
-    function handleEvent(event: SimEvent) {
+    if (_testGameLoop) return;
+    let cancelled = false;
+    void createLLMClient()
+      .then((client) => {
+        if (!cancelled) llmClientRef.current = client;
+      })
+      .catch((err) => {
+        if (!cancelled)
+          onErrorRef.current(`Failed to initialise LLM client: ${String(err)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Start game loop, wire event dispatch, stop on unmount
+  useEffect(() => {
+    const { gameLoop } = sessionRef.current!;
+    const clockAnchorMs = Date.now();
+
+    // Emit initial snapshot so state.connected=true and UI can render.
+    // In test mode the test controls when snapshots arrive via mockLoop.emit().
+    if (!_testGameLoop) {
+      const snapshot = gameLoop.getSnapshot();
+      dispatch({
+        type: "ENGINE_EVENT",
+        event: {
+          type: "session_snapshot",
+          snapshot: { ...snapshot, clockAnchorMs },
+        },
+      });
+    }
+
+    const unsubscribe = gameLoop.onEvent((event: SimEvent) => {
       if (event.type === "session_expired") {
-        dispatch({ type: "SSE_EVENT", event });
+        dispatch({ type: "ENGINE_EVENT", event });
         onExpiredRef.current();
         return;
       }
-      if (event.type === "debrief_ready") {
-        onDebriefReadyRef.current();
-        return;
-      }
-      dispatch({ type: "SSE_EVENT", event });
-    }
+      dispatch({ type: "ENGINE_EVENT", event });
+    });
 
-    if (sseConnection) {
-      // Test path: use injected mock
-      sseConnection.setHandler(handleEvent);
-      return () => {};
-    }
-
-    // Production path: real EventSource with reconnect
-    let es: EventSource | null = null;
-    let backoff = 1000;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    function connect() {
-      if (cancelled) return;
-      es = new EventSource(`/api/sessions/${sessionId}/events`);
-      es.onmessage = (e: MessageEvent<string>) => {
-        if (e.data.startsWith(":")) return;
-        try {
-          const parsed = JSON.parse(e.data) as SimEvent;
-          backoff = 1000; // reset on success
-          dispatch({ type: "SET_RECONNECTING", reconnecting: false });
-          handleEvent(parsed);
-        } catch {
-          /* ignore malformed */
-        }
-      };
-      es.onerror = () => {
-        if (cancelled) return;
-        es?.close();
-        dispatch({ type: "SET_RECONNECTING", reconnecting: true });
-        timeoutId = setTimeout(() => {
-          backoff = Math.min(backoff * 2, 30000);
-          connect();
-        }, backoff);
-      };
-    }
-    connect();
+    if (!_testGameLoop) gameLoop.start();
 
     return () => {
-      cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      es?.close();
+      if (!_testGameLoop) gameLoop.stop();
+      unsubscribe();
     };
-  }, [sessionId, sseConnection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── API helpers ───────────────────────────────────────────────────────────
-
-  async function post(path: string, body: unknown): Promise<void> {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      onErrorRef.current(`Request failed (${res.status})`);
-    }
-  }
+  // ── Action helpers ────────────────────────────────────────────────────────
 
   function dispatchAction(
     type: ActionType,
     params: Record<string, unknown> = {},
   ): void {
     if (state.status !== "active") return;
-    post(`/api/sessions/${sessionId}/actions`, { action: type, params }).catch(
-      () => {
-        onErrorRef.current(
-          `Action failed — ${type} could not be submitted. Try again.`,
-        );
-      },
-    );
+    try {
+      sessionRef.current!.gameLoop.handleAction(type, params);
+    } catch (err) {
+      onErrorRef.current(`Action failed — ${type}: ${String(err)}`);
+    }
   }
 
   function postChatMessage(channel: string, text: string): void {
     if (state.status !== "active") return;
-    post(`/api/sessions/${sessionId}/chat`, { channel, text }).catch(() => {
-      onErrorRef.current("Chat message could not be sent. Try again.");
-    });
+    try {
+      sessionRef.current!.gameLoop.handleChatMessage(channel, text);
+    } catch (err) {
+      onErrorRef.current(`Chat message failed: ${String(err)}`);
+    }
   }
 
   function replyEmail(threadId: string, body: string): void {
     if (state.status !== "active") return;
-    post(`/api/sessions/${sessionId}/email/reply`, { threadId, body }).catch(
-      () => {
-        onErrorRef.current("Reply could not be sent. Try again.");
-      },
-    );
+    try {
+      sessionRef.current!.gameLoop.handleEmailReply(threadId, body);
+    } catch (err) {
+      onErrorRef.current(`Email reply failed: ${String(err)}`);
+    }
   }
 
   function setSpeed(speed: 1 | 2 | 5 | 10): void {
     dispatch({ type: "SET_SPEED", speed });
-    post(`/api/sessions/${sessionId}/speed`, { speed }).catch(() => {});
+    sessionRef.current!.gameLoop.setSpeed(speed);
   }
 
   function setPaused(paused: boolean): void {
     dispatch({ type: "SET_PAUSED", paused });
-    post(`/api/sessions/${sessionId}/speed`, { paused }).catch(() => {});
+    if (paused) {
+      sessionRef.current!.gameLoop.pause();
+    } else {
+      sessionRef.current!.gameLoop.resume();
+    }
   }
 
   async function resolveSession(): Promise<void> {
     setResolving(true);
-    const res = await fetch(`/api/sessions/${sessionId}/resolve`, {
-      method: "POST",
-    });
-    if (!res.ok) {
+    try {
+      const { gameLoop, llmClient } = sessionRef.current!;
+      const activeLlm = llmClientRef.current ?? llmClient;
+
+      gameLoop.stop();
+
+      const evaluationState = gameLoop.getEvaluationState();
+      const snapshot = gameLoop.getSnapshot();
+      const eventLog = gameLoop.getEventLog();
+      const resolvedAtSimTime = snapshot.simTime;
+
+      let narrative = "";
+      try {
+        const response = await activeLlm.call({
+          role: "debrief",
+          messages: [
+            {
+              role: "user",
+              content: JSON.stringify({
+                evaluationState,
+                auditLog: snapshot.auditLog,
+                eventLog,
+                scenario: { id: scenario.id, title: scenario.title },
+              }),
+            },
+          ],
+          tools: [],
+          sessionId: snapshot.sessionId,
+        });
+        narrative = response.text ?? "";
+      } catch {
+        /* debrief LLM failure is non-fatal */
+      }
+
+      const debriefResult: DebriefResult = {
+        narrative,
+        evaluationState,
+        auditLog: snapshot.auditLog,
+        eventLog,
+        resolvedAtSimTime,
+      };
+
+      onDebriefReadyRef.current(debriefResult);
+    } catch (err) {
       setResolving(false);
-      onErrorRef.current("Could not end simulation. Please try again.");
+      onErrorRef.current(`Could not end simulation: ${String(err)}`);
     }
   }
 

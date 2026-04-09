@@ -262,6 +262,31 @@ export interface SessionSnapshot {
   coachMessages: CoachMessage[];
 }
 
+// ── Evaluation and debrief types ──────────────────────────────────────────────
+
+export interface EvaluationState {
+  relevantActionsTaken: Array<{
+    action: string;
+    service?: string;
+    why: string;
+    takenAt: number;
+  }>;
+  redHerringsTaken: Array<{
+    action: string;
+    why: string;
+    takenAt: number;
+  }>;
+  resolved: boolean;
+}
+
+export interface DebriefResult {
+  narrative: string;
+  evaluationState: EvaluationState;
+  auditLog: AuditEntry[];
+  eventLog: SimEventLogEntry[];
+  resolvedAtSimTime: number;
+}
+
 // ── SSE event discriminated union ─────────────────────────────────────────────
 
 export type SimEvent =
