@@ -227,10 +227,22 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
             deployedAtSec:   s.deployed_at_sec  as number,
             commitMessage:   s.commit_message   as string,
             author:          s.author           as string,
-            blocker:         s.blocker
-              ? { type: (s.blocker as Record<string,unknown>).type as import('../scenario/types').StageBlockerConfig['type'],
-                  alarmId: (s.blocker as Record<string,unknown>).alarm_id as string | undefined }
-              : null,
+            blockers:        ((s.blockers ?? []) as Array<Record<string,unknown>>).map(b => ({
+              type:    b.type    as import('../scenario/types').StageBlockerConfig['type'],
+              alarmId: b.alarm_id as string | undefined,
+              message: b.message as string | undefined,
+            })),
+            alarmWatches:    (s.alarm_watches ?? []) as string[],
+            tests:           ((s.tests ?? []) as Array<Record<string,unknown>>).map(t => ({
+              name:   t.name   as string,
+              status: t.status as import('@shared/types/events').TestStatus,
+              url:    t.url    as string | undefined,
+              note:   t.note   as string | undefined,
+            })),
+            promotionEvents: ((s.promotion_events ?? []) as Array<Record<string,unknown>>).map(e => ({
+              version: e.version as string, simTime: e.sim_time as number,
+              status: e.status as 'succeeded'|'failed'|'blocked', note: e.note as string,
+            })),
           })),
         })),
         deployments: ((c.deployments ?? []) as Array<Record<string, unknown>>).map(d => ({

@@ -114,7 +114,13 @@ cicd:
           deployed_at_sec: -400
           commit_message: "feat: add new feature (introduces bug)"
           author: fixture-persona
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          promotion_events:
+            - version: v1.0.1
+              sim_time: -400
+              status: succeeded
+              note: "AutoPromote: build passed"
         - id: staging
           name: "Staging"
           type: deploy
@@ -124,7 +130,13 @@ cicd:
           deployed_at_sec: -350
           commit_message: "feat: add new feature (introduces bug)"
           author: fixture-persona
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          promotion_events:
+            - version: v1.0.1
+              sim_time: -350
+              status: succeeded
+              note: "AutoPromote: integration tests passed"
         - id: preprod
           name: "Pre-Prod"
           type: deploy
@@ -134,7 +146,13 @@ cicd:
           deployed_at_sec: -320
           commit_message: "feat: add new feature (introduces bug)"
           author: fixture-persona
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          promotion_events:
+            - version: v1.0.1
+              sim_time: -320
+              status: succeeded
+              note: "AutoPromote: regression tests passed"
         - id: prod
           name: "Prod"
           type: deploy
@@ -144,7 +162,13 @@ cicd:
           deployed_at_sec: -300
           commit_message: "feat: add new feature (introduces bug)"
           author: fixture-persona
-          blocker: null
+          blockers: []
+          alarm_watches: [fixture-alarm-001]
+          promotion_events:
+            - version: v1.0.1
+              sim_time: -300
+              status: succeeded
+              note: "AutoPromote: canary passed"
   deployments:
     - service: fixture-service
       version: v1.0.1

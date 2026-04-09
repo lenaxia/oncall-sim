@@ -13,7 +13,8 @@ function buildStage(overrides: Partial<PipelineStage> = {}): PipelineStage {
     id: 'prod', name: 'Prod', type: 'deploy',
     currentVersion: 'v2.4.1', previousVersion: 'v2.4.0',
     status: 'succeeded', deployedAtSec: -1200,
-    commitMessage: 'config: fix pool size', author: 'sara-chen', blocker: null,
+    commitMessage: 'config: fix pool size', author: 'sara-chen',
+    blockers: [], alarmWatches: [], tests: [], promotionEvents: [],
     ...overrides,
   }
 }
@@ -25,7 +26,7 @@ function buildPipeline(overrides: Partial<Pipeline> = {}): Pipeline {
       buildStage({ id: 'build',   name: 'Build',    type: 'build',  status: 'succeeded', deployedAtSec: -1500 }),
       buildStage({ id: 'staging', name: 'Staging',  type: 'deploy', status: 'succeeded', deployedAtSec: -1400 }),
       buildStage({ id: 'preprod', name: 'Pre-Prod', type: 'deploy', status: 'blocked',   deployedAtSec: -1200,
-        blocker: { type: 'alarm', alarmId: 'alarm-001', message: 'Alarm firing: p99 latency > 2000ms on payment-service' } }),
+        blockers: [{ type: "alarm", alarmId: "alarm-001", message: "Alarm firing: p99 latency > 2000ms on payment-service" }], alarmWatches: ["alarm-001"], tests: [], promotionEvents: [] }),
       buildStage({ id: 'prod',    name: 'Prod',     type: 'deploy', status: 'succeeded', deployedAtSec: -1200 }),
     ],
     ...overrides,
@@ -173,7 +174,7 @@ describe('CICDTab', () => {
           buildStage({ id: 'build',   name: 'Build',    status: 'succeeded' }),
           buildStage({ id: 'staging', name: 'Staging',  status: 'succeeded' }),
           buildStage({ id: 'preprod', name: 'Pre-Prod', status: 'blocked',
-            blocker: { type: 'manual_approval', message: 'Awaiting release manager' } }),
+            blockers: [{ type: 'manual_approval', message: 'Awaiting release manager' }] }),
           buildStage({ id: 'prod',    name: 'Prod',     status: 'not_started' }),
         ],
       })])
@@ -212,7 +213,7 @@ describe('CICDTab', () => {
         sse.emit({
           type: 'pipeline_stage_updated',
           pipelineId: 'pipeline-payment',
-          stage: buildStage({ id: 'preprod', name: 'Pre-Prod', status: 'succeeded', blocker: null }),
+          stage: buildStage({ id: 'preprod', name: 'Pre-Prod', status: 'succeeded', blockers: [] }),
         })
       })
       await waitFor(() => {

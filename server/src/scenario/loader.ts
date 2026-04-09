@@ -340,9 +340,18 @@ async function transform(
         deployedAtSec:   s.deployed_at_sec,
         commitMessage:   s.commit_message,
         author:          s.author,
-        blocker:         s.blocker
-          ? { type: s.blocker.type, alarmId: s.blocker.alarm_id }
-          : null,
+        blockers:        (s.blockers ?? []).map(b => ({
+          type:    b.type,
+          alarmId: b.alarm_id,
+          message: b.message,
+        })),
+        alarmWatches:    s.alarm_watches ?? [],
+        tests:           (s.tests ?? []).map(t => ({
+          name: t.name, status: t.status, url: t.url, note: t.note,
+        })),
+        promotionEvents: (s.promotion_events ?? []).map(e => ({
+          version: e.version, simTime: e.sim_time, status: e.status, note: e.note,
+        })),
       })),
     })),
     deployments: (raw.cicd.deployments ?? []).map((d): ScriptedDeployment => ({

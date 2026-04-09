@@ -79,20 +79,35 @@ export interface Deployment {
 
 // ── Pipeline model ────────────────────────────────────────────────────────────
 
-export type StageStatus  = 'not_started' | 'in_progress' | 'succeeded' | 'failed' | 'blocked'
-export type BlockerType  = 'alarm' | 'time_window' | 'manual_approval' | 'test_failure'
+export type StageStatus   = 'not_started' | 'in_progress' | 'succeeded' | 'failed' | 'blocked'
+export type BlockerType   = 'alarm' | 'time_window' | 'manual_approval' | 'test_failure'
+export type TestStatus    = 'pending' | 'running' | 'passed' | 'failed' | 'skipped'
 
 export interface StageBlocker {
   type:     BlockerType
-  alarmId?: string    // references Alarm.id — message is derived from the alarm's condition + service
-  message:  string    // derived: shown to trainee; for alarm blockers computed as "{condition} on {service}"
-  /** simTime after which a suppressed alarm re-instates the blocker (null = permanent until alarm clears) */
+  alarmId?: string    // references Alarm.id — message derived from alarm.condition + service
+  message:  string
+  /** simTime after which a suppressed alarm re-instates the blocker */
   suppressedUntil?: number
+}
+
+export interface StageTest {
+  name:   string
+  status: TestStatus
+  url?:   string     // link to test run results
+  note?:  string
+}
+
+export interface PromotionEvent {
+  version:    string
+  simTime:    number
+  status:     'succeeded' | 'failed' | 'blocked'
+  note:       string    // e.g. "AutoPromote: approved" | "Blocked: alarm firing" | "Rollback to v2.4.0"
 }
 
 export interface PipelineStage {
   id:              string
-  name:            string            // 'Build' | 'Staging' | 'Pre-Prod' | 'Prod'
+  name:            string
   type:            'build' | 'deploy'
   currentVersion:  string
   previousVersion: string | null
@@ -100,7 +115,14 @@ export interface PipelineStage {
   deployedAtSec:   number
   commitMessage:   string
   author:          string
-  blocker:         StageBlocker | null
+  /** Active blockers — can be more than one (alarm + time_window simultaneously) */
+  blockers:        StageBlocker[]
+  /** Alarm IDs that dynamically block promotion when firing (configured watches) */
+  alarmWatches:    string[]
+  /** Current test results for this stage (integration/regression tests) */
+  tests:           StageTest[]
+  /** Recent promotion history (last 5 events, newest first) */
+  promotionEvents: PromotionEvent[]
 }
 
 export interface Pipeline {

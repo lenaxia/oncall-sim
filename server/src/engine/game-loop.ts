@@ -288,53 +288,83 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     }
 
     // Step 3b: pipeline alarm-blocker synchronisation
-    // - If an alarm-blocked stage's alarm is no longer firing → reinstate if suppressedUntil passed
-    // - If a suppressed stage's suppressedUntil has expired → reinstate the blocker
+    // For each pipeline stage:
+    //   - If an alarm in alarmWatches fires → add an alarm blocker (if not already present)
+    //   - If a suppressed alarm blocker's suppressedUntil has expired → reinstate it
+    //   - If all alarm blockers are cleared (alarm no longer firing) → remove them
     const currentAlarms = store.snapshot().alarms
-    const alarmStatusMap = new Map(currentAlarms.map(a => [a.id, a.status]))
+    const alarmMap = new Map(currentAlarms.map(a => [a.id, a]))
 
     for (const pipeline of store.getAllPipelines()) {
       for (const stage of pipeline.stages) {
-        if (!stage.blocker || stage.blocker.type !== 'alarm') continue
-        const alarmId = stage.blocker.alarmId
-        if (!alarmId) continue
+        let changed = false
+        let updatedStage: import('@shared/types/events').PipelineStage = { ...stage, blockers: [...stage.blockers] }
 
-        const alarmStatus = alarmStatusMap.get(alarmId)
+        // 1. Add blockers from alarmWatches for any newly-firing alarm
+        for (const watchId of stage.alarmWatches) {
+          const alarm = alarmMap.get(watchId)
+          if (!alarm) continue
 
-        if (stage.status === 'blocked') {
-          // Suppression window expired → reinstate block (alarm still firing or acknowledged)
-          if (stage.blocker.suppressedUntil != null && simTime >= stage.blocker.suppressedUntil) {
-            if (alarmStatus === 'firing' || alarmStatus === 'acknowledged') {
-              // Restore blocker (remove suppressedUntil)
-              const restoredStage: import('@shared/types/events').PipelineStage = {
-                ...stage,
-                blocker: { ...stage.blocker, suppressedUntil: undefined },
+          const existingBlocker = updatedStage.blockers.find(b => b.alarmId === watchId)
+
+          if (alarm.status === 'firing') {
+            if (!existingBlocker) {
+              // Alarm just fired — add blocker
+              updatedStage = {
+                ...updatedStage,
+                status: 'blocked',
+                blockers: [...updatedStage.blockers, {
+                  type:    'alarm' as const,
+                  alarmId: watchId,
+                  message: `Alarm firing: ${alarm.condition} on ${alarm.service}`,
+                }],
               }
-              store.updateStage(pipeline.id, stage.id, restoredStage)
-              emit({ type: 'pipeline_stage_updated', pipelineId: pipeline.id, stage: restoredStage })
+              changed = true
+            } else if (existingBlocker.suppressedUntil != null && simTime >= existingBlocker.suppressedUntil) {
+              // Suppression window expired — reinstate blocker
+              updatedStage = {
+                ...updatedStage,
+                status: 'blocked',
+                blockers: updatedStage.blockers.map(b =>
+                  b.alarmId === watchId ? { ...b, suppressedUntil: undefined } : b
+                ),
+              }
+              changed = true
             }
-          }
-        } else if (stage.status === 'succeeded') {
-          // If alarm fires again after a suppression cleared it, re-block
-          if (alarmStatus === 'firing') {
-            const alarmObj = currentAlarms.find(a => a.id === alarmId)
-            const blockedStage: import('@shared/types/events').PipelineStage = {
-              ...stage,
-              status:  'blocked',
-              blocker: {
-                ...stage.blocker,
-                message: alarmObj
-                  ? `Alarm firing: ${alarmObj.condition} on ${alarmObj.service}`
-                  : stage.blocker.message,
-                suppressedUntil: undefined,
-              },
+          } else if (alarm.status === 'suppressed') {
+            // Suppressed — remove the active blocker (let promotion proceed temporarily)
+            if (existingBlocker && existingBlocker.suppressedUntil == null) {
+              updatedStage = {
+                ...updatedStage,
+                blockers: updatedStage.blockers.filter(b => b.alarmId !== watchId),
+              }
+              // If no more blockers, mark stage as succeeded
+              if (updatedStage.blockers.length === 0) {
+                updatedStage = { ...updatedStage, status: 'succeeded' }
+              }
+              changed = true
             }
-            store.updateStage(pipeline.id, stage.id, blockedStage)
-            emit({ type: 'pipeline_stage_updated', pipelineId: pipeline.id, stage: blockedStage })
+          } else {
+            // Alarm gone (no longer in store / no longer firing) — remove blocker
+            if (existingBlocker) {
+              updatedStage = {
+                ...updatedStage,
+                blockers: updatedStage.blockers.filter(b => b.alarmId !== watchId),
+              }
+              if (updatedStage.blockers.length === 0 && updatedStage.status === 'blocked') {
+                updatedStage = { ...updatedStage, status: 'succeeded' }
+              }
+              changed = true
+            }
           }
         }
-      }  // end stage loop
-    }  // end pipeline loop
+
+        if (changed) {
+          store.updateStage(pipeline.id, stage.id, updatedStage)
+          emit({ type: 'pipeline_stage_updated', pipelineId: pipeline.id, stage: updatedStage })
+        }
+      }
+    }
 
     // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent())
@@ -396,13 +426,18 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           break
         }
         case 'trigger_rollback': {
-          // Roll back a specific pipeline stage to its previous version
           const pipelineId = params['pipelineId'] as string | undefined
           const stageId    = params['stageId']    as string | undefined
           if (pipelineId && stageId) {
             const pipeline = store.getPipeline(pipelineId)
             const stage    = pipeline?.stages.find(s => s.id === stageId)
             if (stage && stage.previousVersion) {
+              const promotionEvent: import('@shared/types/events').PromotionEvent = {
+                version: stage.previousVersion,
+                simTime: clock.getSimTime(),
+                status:  'succeeded',
+                note:    `Rollback to ${stage.previousVersion}`,
+              }
               const rolledBackStage: import('@shared/types/events').PipelineStage = {
                 ...stage,
                 previousVersion: stage.currentVersion,
@@ -410,7 +445,8 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
                 status:          'in_progress',
                 deployedAtSec:   clock.getSimTime(),
                 commitMessage:   `Rollback to ${stage.previousVersion}`,
-                blocker:         null,
+                blockers:        [],
+                promotionEvents: [promotionEvent, ...stage.promotionEvents].slice(0, 5),
               }
               store.updateStage(pipelineId, stageId, rolledBackStage)
               emit({ type: 'pipeline_stage_updated', pipelineId, stage: rolledBackStage })
@@ -419,22 +455,22 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           break
         }
         case 'override_blocker': {
-          // Force-promote through an alarm or time-window blocker
-          // Suppression window: 30 sim-minutes
+          // Suppress alarm blockers for 30 sim-minutes; let promotion through
           const SUPPRESSION_WINDOW = 30 * 60
           const pipelineId = params['pipelineId'] as string | undefined
           const stageId    = params['stageId']    as string | undefined
           if (pipelineId && stageId) {
             const pipeline = store.getPipeline(pipelineId)
             const stage    = pipeline?.stages.find(s => s.id === stageId)
-            if (stage && stage.blocker) {
+            if (stage && stage.blockers.length > 0) {
               const overriddenStage: import('@shared/types/events').PipelineStage = {
                 ...stage,
-                status:  'succeeded',
-                blocker: {
-                  ...stage.blocker,
-                  suppressedUntil: clock.getSimTime() + SUPPRESSION_WINDOW,
-                },
+                status: 'succeeded',
+                blockers: stage.blockers.map(b =>
+                  b.type === 'alarm'
+                    ? { ...b, suppressedUntil: clock.getSimTime() + SUPPRESSION_WINDOW }
+                    : b
+                ).filter(b => b.type !== 'manual_approval' && b.type !== 'time_window'),
               }
               store.updateStage(pipelineId, stageId, overriddenStage)
               emit({ type: 'pipeline_stage_updated', pipelineId, stage: overriddenStage })
@@ -448,11 +484,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           if (pipelineId && stageId) {
             const pipeline = store.getPipeline(pipelineId)
             const stage    = pipeline?.stages.find(s => s.id === stageId)
-            if (stage && stage.blocker?.type === 'manual_approval') {
+            if (stage && stage.blockers.some(b => b.type === 'manual_approval')) {
               const approvedStage: import('@shared/types/events').PipelineStage = {
                 ...stage,
-                status:  'in_progress',
-                blocker: null,
+                status:   'in_progress',
+                blockers: stage.blockers.filter(b => b.type !== 'manual_approval'),
               }
               store.updateStage(pipelineId, stageId, approvedStage)
               emit({ type: 'pipeline_stage_updated', pipelineId, stage: approvedStage })
@@ -470,8 +506,8 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
             if (stage) {
               const blockedStage: import('@shared/types/events').PipelineStage = {
                 ...stage,
-                status:  'blocked',
-                blocker: { type: 'manual_approval', message: reason },
+                status:   'blocked',
+                blockers: [...stage.blockers, { type: 'manual_approval', message: reason }],
               }
               store.updateStage(pipelineId, stageId, blockedStage)
               emit({ type: 'pipeline_stage_updated', pipelineId, stage: blockedStage })

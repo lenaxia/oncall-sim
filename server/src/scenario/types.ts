@@ -3,7 +3,7 @@
 // Distinct from the raw YAML shape (which uses snake_case).
 
 import type { AlarmSeverity, TicketSeverity, TicketStatus, LogLevel, DeploymentStatus,
-              StageStatus, BlockerType } from '@shared/types/events'
+              StageStatus, BlockerType, TestStatus } from '@shared/types/events'
 
 export type ServiceType          = 'api' | 'workflow' | 'serverless' | 'database' | 'console'
 export type Difficulty           = 'easy' | 'medium' | 'hard'
@@ -203,7 +203,22 @@ export interface WikiConfig {
 
 export interface StageBlockerConfig {
   type:     BlockerType
-  alarmId?: string   // references AlarmConfig.id — message derived at runtime
+  alarmId?: string
+  message?: string   // if absent, derived at runtime from alarm config
+}
+
+export interface StageTestConfig {
+  name:   string
+  status: TestStatus
+  url?:   string
+  note?:  string
+}
+
+export interface PromotionEventConfig {
+  version:  string
+  simTime:  number
+  status:   'succeeded' | 'failed' | 'blocked'
+  note:     string
 }
 
 export interface PipelineStageConfig {
@@ -216,7 +231,10 @@ export interface PipelineStageConfig {
   deployedAtSec:   number
   commitMessage:   string
   author:          string
-  blocker:         StageBlockerConfig | null
+  blockers:        StageBlockerConfig[]
+  alarmWatches:    string[]            // alarm IDs that dynamically block when firing
+  tests:           StageTestConfig[]
+  promotionEvents: PromotionEventConfig[]
 }
 
 export interface PipelineConfig {

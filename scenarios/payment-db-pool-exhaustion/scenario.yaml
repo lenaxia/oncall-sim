@@ -395,7 +395,22 @@ cicd:
           deployed_at_sec: -1500
           commit_message: "config: increase DB pool size for high-traffic preparation"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+            - name: "Static analysis"
+              status: passed
+          promotion_events:
+            - version: v2.4.1
+              sim_time: -1500
+              status: succeeded
+              note: "AutoPromote: unit tests and static analysis passed"
+            - version: v2.4.0
+              sim_time: -90000
+              status: succeeded
+              note: "AutoPromote: unit tests and static analysis passed"
 
         - id: staging
           name: "Staging"
@@ -406,20 +421,49 @@ cicd:
           deployed_at_sec: -1400
           commit_message: "config: increase DB pool size for high-traffic preparation"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Integration tests"
+              status: passed
+            - name: "Load test (1k rps)"
+              status: passed
+          promotion_events:
+            - version: v2.4.1
+              sim_time: -1400
+              status: succeeded
+              note: "AutoPromote: integration and load tests passed"
+            - version: v2.4.0
+              sim_time: -89000
+              status: succeeded
+              note: "AutoPromote: integration and load tests passed"
 
         - id: preprod
           name: "Pre-Prod"
           type: deploy
           current_version: v2.4.1
           previous_version: v2.4.0
-          status: blocked
-          deployed_at_sec: -1200
+          status: succeeded
+          deployed_at_sec: -1300
           commit_message: "config: increase DB pool size for high-traffic preparation"
           author: sara-chen
-          blocker:
-            type: alarm
-            alarm_id: alarm-latency-001
+          blockers: []
+          # Watches the latency alarm — will be dynamically blocked when alarm fires
+          alarm_watches: [alarm-latency-001]
+          tests:
+            - name: "Regression tests (IAD)"
+              status: passed
+            - name: "Canary health check"
+              status: passed
+          promotion_events:
+            - version: v2.4.1
+              sim_time: -1300
+              status: succeeded
+              note: "AutoPromote: regression tests passed, canary healthy"
+            - version: v2.4.0
+              sim_time: -88000
+              status: succeeded
+              note: "AutoPromote: regression tests passed"
 
         - id: prod
           name: "Prod"
@@ -430,7 +474,22 @@ cicd:
           deployed_at_sec: -1200
           commit_message: "config: increase DB pool size for high-traffic preparation"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Canary health check"
+              status: passed
+            - name: "Smoke tests"
+              status: passed
+          promotion_events:
+            - version: v2.4.1
+              sim_time: -1200
+              status: succeeded
+              note: "AutoPromote: canary healthy, smoke tests passed"
+            - version: v2.4.0
+              sim_time: -87000
+              status: succeeded
+              note: "AutoPromote: canary healthy, smoke tests passed"
 
     - id: pipeline-fraud
       name: "fraud-service"
@@ -445,7 +504,16 @@ cicd:
           deployed_at_sec: -7200
           commit_message: "fix: improve rule evaluation latency"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+          promotion_events:
+            - version: v1.7.3
+              sim_time: -7200
+              status: succeeded
+              note: "AutoPromote: unit tests passed"
 
         - id: staging
           name: "Staging"
@@ -456,7 +524,16 @@ cicd:
           deployed_at_sec: -7100
           commit_message: "fix: improve rule evaluation latency"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Integration tests"
+              status: passed
+          promotion_events:
+            - version: v1.7.3
+              sim_time: -7100
+              status: succeeded
+              note: "AutoPromote: integration tests passed"
 
         - id: preprod
           name: "Pre-Prod"
@@ -467,7 +544,16 @@ cicd:
           deployed_at_sec: -6900
           commit_message: "fix: improve rule evaluation latency"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Regression tests"
+              status: passed
+          promotion_events:
+            - version: v1.7.3
+              sim_time: -6900
+              status: succeeded
+              note: "AutoPromote: regression tests passed"
 
         - id: prod
           name: "Prod"
@@ -478,7 +564,16 @@ cicd:
           deployed_at_sec: -6800
           commit_message: "fix: improve rule evaluation latency"
           author: sara-chen
-          blocker: null
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Canary health check"
+              status: passed
+          promotion_events:
+            - version: v1.7.3
+              sim_time: -6800
+              status: succeeded
+              note: "AutoPromote: canary healthy"
 
   deployments:
     - service: payment-service

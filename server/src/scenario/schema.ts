@@ -179,7 +179,22 @@ const WikiSchema = z.object({
 
 const StageBlockerSchema = z.object({
   type:     z.enum(['alarm', 'time_window', 'manual_approval', 'test_failure']),
-  alarm_id: z.string().optional(),   // references alarms[].id — message derived from alarm.condition
+  alarm_id: z.string().optional(),
+  message:  z.string().optional(),   // if omitted, derived from alarm.condition or blocker type
+})
+
+const StageTestSchema = z.object({
+  name:   z.string().min(1),
+  status: z.enum(['pending', 'running', 'passed', 'failed', 'skipped']),
+  url:    z.string().optional(),
+  note:   z.string().optional(),
+})
+
+const PromotionEventSchema = z.object({
+  version:  z.string().min(1),
+  sim_time: z.number(),
+  status:   z.enum(['succeeded', 'failed', 'blocked']),
+  note:     z.string().min(1),
 })
 
 const PipelineStageSchema = z.object({
@@ -192,7 +207,14 @@ const PipelineStageSchema = z.object({
   deployed_at_sec:  z.number(),
   commit_message:   z.string().min(1),
   author:           z.string().min(1),
-  blocker:          StageBlockerSchema.nullable().optional(),
+  /** Static blockers present at scenario start (e.g. manual gate) */
+  blockers:         z.array(StageBlockerSchema).optional().default([]),
+  /** Alarm IDs that dynamically block next promotion when firing */
+  alarm_watches:    z.array(z.string()).optional().default([]),
+  /** Integration/regression test results at this stage */
+  tests:            z.array(StageTestSchema).optional().default([]),
+  /** Recent promotion history (shown in UI, newest first) */
+  promotion_events: z.array(PromotionEventSchema).optional().default([]),
 })
 
 const PipelineSchema = z.object({
