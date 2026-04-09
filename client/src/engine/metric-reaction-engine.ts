@@ -29,6 +29,18 @@ export interface MetricReactionEngine {
   react(context: StakeholderContext): Promise<void>;
 }
 
+// Actions that observe state but do not change the environment.
+// The metric reaction engine should not fire for these — no LLM call, no cost.
+const PASSIVE_ACTIONS = new Set<string>([
+  "open_tab",
+  "search_logs",
+  "view_metric",
+  "read_wiki_page",
+  "view_deployment_history",
+  "view_pipeline",
+  "monitor_recovery",
+]);
+
 export function createMetricReactionEngine(
   getLLMClient: () => LLMClient,
   scenario: LoadedScenario,
@@ -41,6 +53,10 @@ export function createMetricReactionEngine(
     async react(context: StakeholderContext): Promise<void> {
       if (tools.length === 0) return;
       if (!context.triggeredByAction) return;
+
+      // Skip if the triggering action was purely observational
+      const lastAction = context.auditLog[context.auditLog.length - 1];
+      if (lastAction && PASSIVE_ACTIONS.has(lastAction.action)) return;
 
       try {
         await _react(context);

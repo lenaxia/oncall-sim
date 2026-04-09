@@ -136,7 +136,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
 
     expect(spy).toHaveBeenCalledOnce();
@@ -176,7 +181,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(spy.mock.calls[0][2].targetValue).toBe(14);
   });
@@ -211,7 +221,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     // midpoint between currentValue(10) and resolvedValue(1) = 5.5
     expect(spy.mock.calls[0][2].targetValue).toBeCloseTo(5.5);
@@ -244,7 +259,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(spy.mock.calls[0][2].sustained).toBe(false);
   });
@@ -275,7 +295,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(spy.mock.calls[0][2].oscillationMode).toBe("damping");
   });
@@ -308,7 +333,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(spy.mock.calls[0][2].cycleSeconds).toBe(30);
   });
@@ -340,7 +370,12 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
     ]);
 
     // context.simTime = 60, but getSimTime() returns 120 (LLM returned later)
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 120);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 120,
+    );
     await engine.react(makeContext({ scenario, simTime: 60 }));
     expect(spy.mock.calls[0][2].startSimTime).toBe(120);
   });
@@ -413,7 +448,12 @@ describe("MetricReactionEngine — apply_metric_response error paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(spy).toHaveBeenCalledOnce();
     expect(spy.mock.calls[0][0]).toBe("fixture-service");
@@ -445,7 +485,12 @@ describe("MetricReactionEngine — apply_metric_response error paths", () => {
       },
     ]);
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(spy).not.toHaveBeenCalled();
   });
@@ -459,7 +504,12 @@ describe("MetricReactionEngine — apply_metric_response error paths", () => {
     const llm = makeMockLLM([]);
     const callSpy = vi.spyOn(llm, "call");
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario, triggeredByAction: false }));
     expect(callSpy).not.toHaveBeenCalled();
   });
@@ -482,7 +532,12 @@ describe("MetricReactionEngine — apply_metric_response error paths", () => {
     const llm = makeMockLLM([]);
     const callSpy = vi.spyOn(llm, "call");
 
-    const engine = createMetricReactionEngine(() => llm, scenario, store, () => 60);
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
     await engine.react(makeContext({ scenario }));
     expect(callSpy).not.toHaveBeenCalled();
   });
@@ -709,4 +764,82 @@ describe("MetricReactionEngine — prompt includes rich context", () => {
     expect(userMsg).toContain("scale_cluster");
     expect(userMsg).toContain("fixture-service");
   });
+});
+
+// ── passive action filtering ──────────────────────────────────────────────────
+
+describe("MetricReactionEngine — passive action filtering", () => {
+  const PASSIVE_ACTIONS = [
+    "open_tab",
+    "search_logs",
+    "view_metric",
+    "read_wiki_page",
+    "view_deployment_history",
+    "view_pipeline",
+    "monitor_recovery",
+  ] as const;
+
+  const ACTIVE_ACTIONS = [
+    "trigger_rollback",
+    "restart_service",
+    "scale_cluster",
+    "throttle_traffic",
+    "suppress_alarm",
+    "emergency_deploy",
+    "toggle_feature_flag",
+    "override_blocker",
+    "approve_gate",
+  ] as const;
+
+  for (const action of PASSIVE_ACTIONS) {
+    it(`${action} → LLM never called (passive/observational)`, async () => {
+      const scenario = makeScenarioWithApplyMetric(_fixture);
+      const store = createMetricStore(
+        { "fixture-service": { error_rate: makeHistorical() } },
+        { "fixture-service": { error_rate: makeRp() } },
+      );
+      const llm = makeMockLLM([]);
+      const callSpy = vi.spyOn(llm, "call");
+
+      const engine = createMetricReactionEngine(
+        () => llm,
+        scenario,
+        store,
+        () => 60,
+      );
+      await engine.react(
+        makeContext({
+          scenario,
+          auditLog: [{ action, params: {}, simTime: 55 }],
+        }),
+      );
+      expect(callSpy).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const action of ACTIVE_ACTIONS) {
+    it(`${action} → LLM called (active/environmental)`, async () => {
+      const scenario = makeScenarioWithApplyMetric(_fixture);
+      const store = createMetricStore(
+        { "fixture-service": { error_rate: makeHistorical() } },
+        { "fixture-service": { error_rate: makeRp() } },
+      );
+      const llm = makeMockLLM([]);
+      const callSpy = vi.spyOn(llm, "call");
+
+      const engine = createMetricReactionEngine(
+        () => llm,
+        scenario,
+        store,
+        () => 60,
+      );
+      await engine.react(
+        makeContext({
+          scenario,
+          auditLog: [{ action, params: {}, simTime: 55 }],
+        }),
+      );
+      expect(callSpy).toHaveBeenCalledOnce();
+    });
+  }
 });
