@@ -20,6 +20,8 @@ engine:
   tick_interval_seconds: 15
   default_tab: email
   llm_event_tools:
+    - tool: apply_metric_response
+      enabled: true
     - tool: inject_log_entry
       enabled: true
     - tool: fire_alarm
