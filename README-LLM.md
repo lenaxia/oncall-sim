@@ -1,8 +1,8 @@
 # On-Call Training Simulator — LLM Implementation Guide
 
-**Version:** 1.0
-**Last Updated:** 2026-04-07
-**Project Status:** Phases 1–6 Complete — Phase 7 Not Started
+**Version:** 1.2
+**Last Updated:** 2026-04-09
+**Project Status:** Phases 1–8 Complete, Phase 9 (debrief narrative) stub only
 
 ---
 
@@ -839,10 +839,11 @@ my_service: {
 
 
 
-| Version | Date       | Changes                                               |
-| ------- | ---------- | ----------------------------------------------------- |
-| 1.1     | 2026-04-08 | Log volume: `log_patterns` and `background_logs`      |
-| 1.0     | 2026-04-07 | Initial creation                                      |
+| Version | Date       | Changes                                                                      |
+| ------- | ---------- | ---------------------------------------------------------------------------- |
+| 1.2     | 2026-04-09 | Metric-aware personas; remediation controls (scale/bounce/deploy/flags)      |
+| 1.1     | 2026-04-08 | Log volume: `log_patterns` and `background_logs`                             |
+| 1.0     | 2026-04-07 | Initial creation                                                             |
 
 ---
 

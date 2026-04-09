@@ -113,8 +113,6 @@ export interface RemediationActionConfig {
   isCorrectFix:   boolean
   sideEffect?:    string
   targetVersion?: string
-  scaleDirection?: 'up' | 'down'
-  scaleCount?:    number
   flagId?:        string
   flagEnabled?:   boolean
   label?:         string

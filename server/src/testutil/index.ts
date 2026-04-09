@@ -132,6 +132,22 @@ function rawToLoadedScenario(raw: Record<string, unknown>): LoadedScenario {
       isCorrectFix: r.is_correct_fix as boolean,
       sideEffect: r.side_effect as string | undefined,
       targetVersion: r.target_version as string | undefined,
+      flagId: r.flag_id as string | undefined,
+      flagEnabled: r.flag_enabled as boolean | undefined,
+      label: r.label as string | undefined,
+    })),
+    featureFlags: ((raw.feature_flags ?? []) as Array<Record<string, unknown>>).map((f) => ({
+      id:          f.id as string,
+      label:       f.label as string,
+      defaultOn:   (f.default_on ?? false) as boolean,
+      description: f.description as string | undefined,
+    })),
+    hostGroups: ((raw.host_groups ?? []) as Array<Record<string, unknown>>).map((h) => ({
+      id:            h.id as string,
+      label:         h.label as string,
+      service:       h.service as string,
+      instanceCount: h.instance_count as number,
+      description:   h.description as string | undefined,
     })),
     evaluation: (() => {
       const e = raw.evaluation as Record<string, unknown>;

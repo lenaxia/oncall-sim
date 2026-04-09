@@ -3,6 +3,34 @@ import type { TabId } from './SessionContext'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface RemediationAction {
+  id:             string
+  type:           'rollback' | 'roll_forward' | 'restart_service' | 'scale_cluster'
+                | 'throttle_traffic' | 'emergency_deploy' | 'toggle_feature_flag'
+  service:        string
+  isCorrectFix:   boolean
+  sideEffect?:    string
+  targetVersion?: string
+  flagId?:        string
+  flagEnabled?:   boolean
+  label?:         string
+}
+
+export interface FeatureFlag {
+  id:          string
+  label:       string
+  defaultOn:   boolean
+  description?: string
+}
+
+export interface HostGroup {
+  id:            string
+  label:         string
+  service:       string
+  instanceCount: number
+  description?:  string
+}
+
 export interface PersonaConfig {
   id:           string
   displayName:  string
@@ -29,9 +57,11 @@ export interface ScenarioConfig {
     upstream:     string[]
     downstream:   string[]
   }
-  personas:     PersonaConfig[]
-  wikiPages:    Array<{ title: string; content: string }>
-  featureFlags: Array<{ id: string; label: string }>
+  personas:           PersonaConfig[]
+  wikiPages:          Array<{ title: string; content: string }>
+  featureFlags:       FeatureFlag[]
+  hostGroups:         HostGroup[]
+  remediationActions: RemediationAction[]
   cicd:         { pipelines: Array<{ service: string; steps: string[] }> }
   /** Metric display metadata keyed by service → metricId */
   metricsMeta:  Record<string, Record<string, MetricMeta>>
@@ -45,6 +75,7 @@ export interface ScenarioConfig {
     defaultTab:              TabId
     timelineDurationSeconds: number
     hasFeatureFlags:         boolean
+    hasHostGroups:           boolean
   }
 }
 
@@ -90,10 +121,39 @@ export function ScenarioProvider({ scenarioId, children }: ScenarioProviderProps
 // ScenarioConfig shape the client expects.
 
 function normalise(raw: Record<string, unknown>): ScenarioConfig {
-  const wiki         = (raw.wiki as { pages?: Array<{ title: string; content: string }> } | undefined)
-  const engine       = (raw.engine as { defaultTab?: string; tickIntervalSeconds?: number } | undefined)
-  const cicd         = (raw.cicd as { pipelines?: Array<{ service: string }> } | undefined)
-  const featureFlags = (raw.featureFlags as Array<{ id: string; label: string }> | undefined) ?? []
+  const wiki              = (raw.wiki as { pages?: Array<{ title: string; content: string }> } | undefined)
+  const engine            = (raw.engine as { defaultTab?: string; tickIntervalSeconds?: number } | undefined)
+  const cicd              = (raw.cicd as { pipelines?: Array<{ service: string }> } | undefined)
+  const rawFeatureFlags   = (raw.featureFlags as Array<Record<string, unknown>> | undefined) ?? []
+  const rawHostGroups     = (raw.hostGroups    as Array<Record<string, unknown>> | undefined) ?? []
+  const rawRemediations   = (raw.remediationActions as Array<Record<string, unknown>> | undefined) ?? []
+
+  const featureFlags: FeatureFlag[] = rawFeatureFlags.map(f => ({
+    id:          f['id'] as string,
+    label:       f['label'] as string,
+    defaultOn:   (f['defaultOn'] ?? false) as boolean,
+    description: f['description'] as string | undefined,
+  }))
+
+  const hostGroups: HostGroup[] = rawHostGroups.map(h => ({
+    id:            h['id'] as string,
+    label:         h['label'] as string,
+    service:       h['service'] as string,
+    instanceCount: h['instanceCount'] as number,
+    description:   h['description'] as string | undefined,
+  }))
+
+  const remediationActions: RemediationAction[] = rawRemediations.map(r => ({
+    id:             r['id'] as string,
+    type:           r['type'] as RemediationAction['type'],
+    service:        r['service'] as string,
+    isCorrectFix:   r['isCorrectFix'] as boolean,
+    sideEffect:     r['sideEffect'] as string | undefined,
+    targetVersion:  r['targetVersion'] as string | undefined,
+    flagId:         r['flagId'] as string | undefined,
+    flagEnabled:    r['flagEnabled'] as boolean | undefined,
+    label:          r['label'] as string | undefined,
+  }))
 
   // Extract metric threshold/label metadata from opsDashboard
   type RawMetric = { archetype: string; label?: string; unit?: string; warningThreshold?: number; criticalThreshold?: number }
@@ -126,9 +186,11 @@ function normalise(raw: Record<string, unknown>): ScenarioConfig {
     difficulty:  raw.difficulty as string,
     tags:        (raw.tags as string[]) ?? [],
     topology:    raw.topology as ScenarioConfig['topology'],
-    personas:    (raw.personas as PersonaConfig[]) ?? [],
-    wikiPages:   wiki?.pages ?? [],
+    personas:           (raw.personas as PersonaConfig[]) ?? [],
+    wikiPages:          wiki?.pages ?? [],
     featureFlags,
+    hostGroups,
+    remediationActions,
     metricsMeta,
     cicd: {
       pipelines: (cicd?.pipelines ?? []).map(p => ({ service: p.service, steps: [] })),
@@ -137,7 +199,8 @@ function normalise(raw: Record<string, unknown>): ScenarioConfig {
     engine: {
       defaultTab:              (engine?.defaultTab ?? 'email') as import('./SessionContext').TabId,
       timelineDurationSeconds: ((raw.timeline as { durationMinutes?: number } | undefined)?.durationMinutes ?? 10) * 60,
-      hasFeatureFlags:         featureFlags.length > 0,
+      hasFeatureFlags: featureFlags.length > 0,
+      hasHostGroups:   hostGroups.length > 0,
     },
   }
 }

@@ -35,6 +35,10 @@ export interface MetricStore {
     service: string,
     metricId: string,
   ): ResolvedMetricParams | null;
+  // Returns service→metricId key pairs without copying series data.
+  // Used by the game loop to iterate metrics for metric_update streaming
+  // without triggering the full deep-copy that getAllSeries() performs.
+  listMetrics(): Array<{ service: string; metricId: string }>;
 }
 
 // ── Factory ───────────────────────────────────────────────────────────────────
@@ -161,6 +165,16 @@ export function createMetricStore(
       metricId: string,
     ): ResolvedMetricParams | null {
       return _getState(service, metricId)?.resolvedParams ?? null;
+    },
+
+    listMetrics(): Array<{ service: string; metricId: string }> {
+      const result: Array<{ service: string; metricId: string }> = [];
+      for (const [service, serviceMap] of _state) {
+        for (const metricId of serviceMap.keys()) {
+          result.push({ service, metricId });
+        }
+      }
+      return result;
     },
   };
 }

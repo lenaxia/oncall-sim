@@ -131,6 +131,15 @@ function _buildFallbackStore(
     getResolvedParams() {
       return null;
     },
+    listMetrics() {
+      const result: Array<{ service: string; metricId: string }> = [];
+      for (const [service, metricMap] of Object.entries(metrics)) {
+        for (const metricId of Object.keys(metricMap)) {
+          result.push({ service, metricId });
+        }
+      }
+      return result;
+    },
   };
 }
 
@@ -498,21 +507,19 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent());
 
-    // Step 4b: stream newly-visible reactive overlay points
+    // Step 4b: stream newly-visible reactive overlay points.
+    // Uses metricStore.listMetrics() — returns key pairs only, no series data —
+    // instead of getAllSeries() which deep-copies every array on every tick.
     if (metricStore) {
-      for (const [service, metricMap] of Object.entries(
-        metricStore.getAllSeries(),
-      )) {
-        for (const metricId of Object.keys(metricMap)) {
-          const newPoints = metricStore.getPointsInWindow(
-            service,
-            metricId,
-            previousSimTime,
-            simTime,
-          );
-          for (const point of newPoints) {
-            emit({ type: "metric_update", service, metricId, point });
-          }
+      for (const { service, metricId } of metricStore.listMetrics()) {
+        const newPoints = metricStore.getPointsInWindow(
+          service,
+          metricId,
+          previousSimTime,
+          simTime,
+        );
+        for (const point of newPoints) {
+          emit({ type: "metric_update", service, metricId, point });
         }
       }
     }
@@ -721,134 +728,161 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         // so the trainee sees realistic feedback in the Logs tab.
 
         case "emergency_deploy": {
-          const actionId = params["remediationActionId"] as string | undefined
+          const actionId = params["remediationActionId"] as string | undefined;
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
-            : scenario.remediationActions.find((r) => r.type === "emergency_deploy" && r.service === (params["service"] as string | undefined))
+            : scenario.remediationActions.find(
+                (r) =>
+                  r.type === "emergency_deploy" &&
+                  r.service === (params["service"] as string | undefined),
+              );
           if (ra) {
-            const version = ra.targetVersion ?? "hotfix"
+            const version = ra.targetVersion ?? "hotfix";
             const deployment: import("@shared/types/events").Deployment = {
               version,
               deployedAtSec: clock.getSimTime(),
-              status:        "active",
+              status: "active",
               commitMessage: ra.label ?? `Emergency deploy: ${version}`,
-              author:        "trainee",
-            }
-            store.addDeployment(ra.service, deployment)
-            emit({ type: "deployment_update", service: ra.service, deployment })
+              author: "trainee",
+            };
+            store.addDeployment(ra.service, deployment);
+            emit({
+              type: "deployment_update",
+              service: ra.service,
+              deployment,
+            });
             if (ra.sideEffect) {
               const entry: import("@shared/types/events").LogEntry = {
-                id:      randomUUID(),
+                id: randomUUID(),
                 simTime: clock.getSimTime(),
-                level:   "INFO",
+                level: "INFO",
                 service: ra.service,
                 message: ra.sideEffect,
-              }
-              store.addLogEntry(entry)
-              emit({ type: "log_entry", entry })
+              };
+              store.addLogEntry(entry);
+              emit({ type: "log_entry", entry });
             }
           }
-          break
+          break;
         }
 
         case "restart_service": {
-          const actionId = params["remediationActionId"] as string | undefined
-          const service  = params["service"] as string | undefined
+          const actionId = params["remediationActionId"] as string | undefined;
+          const service = params["service"] as string | undefined;
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
-            : scenario.remediationActions.find((r) => r.type === "restart_service" && r.service === service)
-          const targetService = ra?.service ?? service
+            : scenario.remediationActions.find(
+                (r) => r.type === "restart_service" && r.service === service,
+              );
+          const targetService = ra?.service ?? service;
           if (targetService) {
             const restartEntry: import("@shared/types/events").LogEntry = {
-              id:      randomUUID(),
+              id: randomUUID(),
               simTime: clock.getSimTime(),
-              level:   "INFO",
+              level: "INFO",
               service: targetService,
               message: ra?.sideEffect ?? `Service restart initiated`,
-            }
-            store.addLogEntry(restartEntry)
-            emit({ type: "log_entry", entry: restartEntry })
+            };
+            store.addLogEntry(restartEntry);
+            emit({ type: "log_entry", entry: restartEntry });
             // Brief in_progress then back to active to show the bounce
-            const existingDeployments = store.snapshot().deployments[targetService]
-            const current = existingDeployments?.[0]
+            const existingDeployments =
+              store.snapshot().deployments[targetService];
+            const current = existingDeployments?.[0];
             if (current) {
               const bouncing: import("@shared/types/events").Deployment = {
-                ...current, status: "in_progress", deployedAtSec: clock.getSimTime(),
+                ...current,
+                status: "active",
+                deployedAtSec: clock.getSimTime(),
                 commitMessage: `Restart: ${current.version}`,
-              }
-              store.addDeployment(targetService, bouncing)
-              emit({ type: "deployment_update", service: targetService, deployment: bouncing })
+              };
+              store.addDeployment(targetService, bouncing);
+              emit({
+                type: "deployment_update",
+                service: targetService,
+                deployment: bouncing,
+              });
             }
           }
-          break
+          break;
         }
 
         case "scale_cluster": {
-          const actionId   = params["remediationActionId"] as string | undefined
-          const service    = params["service"] as string | undefined
-          const direction  = (params["direction"] as "up" | "down" | undefined) ?? "up"
+          const actionId  = params["remediationActionId"] as string | undefined;
+          const service   = params["service"] as string | undefined;
+          const direction = (params["direction"] as "up" | "down" | undefined) ?? "up";
+          const count     = (params["count"] as number | undefined) ?? 1;
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
-            : scenario.remediationActions.find((r) => r.type === "scale_cluster" && r.service === service)
-          const targetService = ra?.service ?? service
+            : scenario.remediationActions.find(
+                (r) => r.type === "scale_cluster" && r.service === service,
+              );
+          const targetService = ra?.service ?? service;
           if (targetService) {
-            const resolvedDir = ra?.scaleDirection ?? direction
-            const count = ra?.scaleCount ?? 2
             const scaleEntry: import("@shared/types/events").LogEntry = {
               id:      randomUUID(),
               simTime: clock.getSimTime(),
               level:   "INFO",
               service: targetService,
-              message: ra?.sideEffect ?? `Scaling ${resolvedDir}: +${count} instances requested`,
-            }
-            store.addLogEntry(scaleEntry)
-            emit({ type: "log_entry", entry: scaleEntry })
+              message: ra?.sideEffect ??
+                `Scale ${direction}: ${count} instance(s) requested for ${targetService}`,
+            };
+            store.addLogEntry(scaleEntry);
+            emit({ type: "log_entry", entry: scaleEntry });
           }
-          break
+          break;
         }
 
         case "throttle_traffic": {
-          const actionId = params["remediationActionId"] as string | undefined
-          const service  = params["service"] as string | undefined
+          const actionId = params["remediationActionId"] as string | undefined;
+          const service = params["service"] as string | undefined;
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
-            : scenario.remediationActions.find((r) => r.type === "throttle_traffic" && r.service === service)
-          const targetService = ra?.service ?? service
+            : scenario.remediationActions.find(
+                (r) => r.type === "throttle_traffic" && r.service === service,
+              );
+          const targetService = ra?.service ?? service;
           if (targetService) {
             const throttleEntry: import("@shared/types/events").LogEntry = {
-              id:      randomUUID(),
+              id: randomUUID(),
               simTime: clock.getSimTime(),
-              level:   "WARN",
+              level: "WARN",
               service: targetService,
-              message: ra?.sideEffect ?? `Traffic throttle applied — rate limiting active`,
-            }
-            store.addLogEntry(throttleEntry)
-            emit({ type: "log_entry", entry: throttleEntry })
+              message:
+                ra?.sideEffect ??
+                `Traffic throttle applied — rate limiting active`,
+            };
+            store.addLogEntry(throttleEntry);
+            emit({ type: "log_entry", entry: throttleEntry });
           }
-          break
+          break;
         }
 
         case "toggle_feature_flag": {
-          const actionId = params["remediationActionId"] as string | undefined
-          const flagId   = params["flagId"] as string | undefined
-          const enabled  = params["enabled"] as boolean | undefined
+          const actionId = params["remediationActionId"] as string | undefined;
+          const flagId = params["flagId"] as string | undefined;
+          const enabled = params["enabled"] as boolean | undefined;
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
-            : scenario.remediationActions.find((r) => r.type === "toggle_feature_flag" && r.flagId === flagId)
-          const resolvedFlagId = ra?.flagId ?? flagId
-          const resolvedEnabled = ra?.flagEnabled ?? enabled ?? false
+            : scenario.remediationActions.find(
+                (r) => r.type === "toggle_feature_flag" && r.flagId === flagId,
+              );
+          const resolvedFlagId = ra?.flagId ?? flagId;
+          const resolvedEnabled = ra?.flagEnabled ?? enabled ?? false;
           if (resolvedFlagId) {
             const flagEntry: import("@shared/types/events").LogEntry = {
-              id:      randomUUID(),
+              id: randomUUID(),
               simTime: clock.getSimTime(),
-              level:   "INFO",
+              level: "INFO",
               service: ra?.service ?? "system",
-              message: ra?.sideEffect ?? `Feature flag '${resolvedFlagId}' set to ${resolvedEnabled ? "enabled" : "disabled"}`,
-            }
-            store.addLogEntry(flagEntry)
-            emit({ type: "log_entry", entry: flagEntry })
+              message:
+                ra?.sideEffect ??
+                `Feature flag '${resolvedFlagId}' set to ${resolvedEnabled ? "enabled" : "disabled"}`,
+            };
+            store.addLogEntry(flagEntry);
+            emit({ type: "log_entry", entry: flagEntry });
           }
-          break
+          break;
         }
 
         case "suppress_alarm": {

@@ -40,9 +40,6 @@ const RemediationActionSchema = z.object({
   is_correct_fix: z.boolean(),
   side_effect:    z.string().optional(),
   target_version: z.string().optional(),   // required for emergency_deploy / roll_forward
-  // For scale_cluster: direction and instance delta
-  scale_direction: z.enum(['up', 'down']).optional(),
-  scale_count:     z.number().int().positive().optional(),
   // For toggle_feature_flag: flag id and desired enabled state
   flag_id:         z.string().optional(),
   flag_enabled:    z.boolean().optional(),

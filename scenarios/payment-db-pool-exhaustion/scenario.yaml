@@ -287,6 +287,45 @@ logs:
     service: payment-service
     message: "Config loaded: MAX_DB_CONNECTIONS=5, MIN_IDLE=5, CONNECTION_TIMEOUT=30000"
 
+# Repeated connection-timeout errors fire every ~15s for the duration of the incident.
+# jitter_seconds keeps them from looking metronomic; no seed so each session differs.
+log_patterns:
+  - id: pool-timeout
+    level: ERROR
+    service: payment-service
+    message: "HikariCP - Connection is not available, request timed out after 30000ms"
+    interval_seconds: 15
+    from_second: 15
+    to_second: 840
+    jitter_seconds: 4
+
+  - id: pool-stats
+    level: WARN
+    service: payment-service
+    message: "HikariPool-1 - Pool stats (total=5, active=5, idle=0, waiting={n})"
+    interval_seconds: 30
+    from_second: 20
+    to_second: 840
+    jitter_seconds: 6
+
+  - id: http-500
+    level: ERROR
+    service: payment-service
+    message: "POST /v1/charges - 500 Internal Server Error - duration: 30041ms"
+    interval_seconds: 12
+    from_second: 75
+    to_second: 840
+    jitter_seconds: 3
+
+# Ambient background noise — normal Java service traffic that was happening before
+# and during the incident. Gives the log stream depth without authoring individual lines.
+background_logs:
+  - profile: java_web_service
+    service: payment-service
+    from_second: -300
+    to_second: 840
+    density: medium
+
 wiki:
   pages:
     - title: "payment-service Runbook"
@@ -595,6 +634,23 @@ cicd:
       commit_message: "fix: handle 3DS authentication timeout edge case"
       author: sara-chen
 
+host_groups:
+  - id: payment-service-us-east-1
+    label: "payment-service (us-east-1)"
+    service: payment-service
+    instance_count: 4
+    description: "4 instances across 2 AZs — us-east-1a, us-east-1b"
+
+feature_flags:
+  - id: payment_circuit_breaker
+    label: "Payment Circuit Breaker"
+    default_on: false
+    description: "Fail fast on DB unavailability instead of queueing. Reduces p99 but increases error rate."
+  - id: payment_request_queue
+    label: "Request Queuing"
+    default_on: true
+    description: "Queue requests when pool is exhausted. Disable to shed load immediately."
+
 remediation_actions:
   - id: rollback_payment_v2_4_0
     type: rollback
@@ -607,6 +663,8 @@ remediation_actions:
     type: emergency_deploy
     service: payment-service
     is_correct_fix: true
+    target_version: v2.4.2
+    label: "Deploy v2.4.2 (config fix)"
     side_effect: "Deploys corrected config (MAX_DB_CONNECTIONS=50). Pool recovers within 30s."
 
   - id: restart_service
@@ -614,6 +672,38 @@ remediation_actions:
     service: payment-service
     is_correct_fix: false
     side_effect: "Service restarts with same bad config — pool exhausts again immediately."
+
+  - id: scale_up_payment
+    type: scale_cluster
+    service: payment-service
+    is_correct_fix: false
+    label: "Scale payment-service"
+    side_effect: "Each new instance starts with the same misconfigured pool size of 5 — adds connections but does not fix the root cause."
+
+  - id: throttle_payment
+    type: throttle_traffic
+    service: payment-service
+    is_correct_fix: false
+    label: "Throttle payment-service traffic"
+    side_effect: "Drops inbound RPS by 75%. Reduces pool pressure but customers see rate-limit errors."
+
+  - id: disable_request_queue
+    type: toggle_feature_flag
+    service: payment-service
+    is_correct_fix: false
+    flag_id: payment_request_queue
+    flag_enabled: false
+    label: "Disable request queuing"
+    side_effect: "Requests fail immediately instead of queuing — error rate spikes but p99 improves."
+
+  - id: enable_circuit_breaker
+    type: toggle_feature_flag
+    service: payment-service
+    is_correct_fix: false
+    flag_id: payment_circuit_breaker
+    flag_enabled: true
+    label: "Enable circuit breaker"
+    side_effect: "Circuit breaker opens — DB calls fail fast. Error rate stays high but latency drops."
 
 evaluation:
   root_cause: >
@@ -644,7 +734,11 @@ evaluation:
     - action: suppress_alarm
       why: "Silencing alarms without investigating delays diagnosis and leaves the incident unresolved."
     - action: scale_cluster
-      why: "Adding more instances doesn't help — each instance has only 5 connections, so scaling 4x gives 20 total (vs the normal single-instance pool of 20)."
+      why: "Adding more instances doesn't help — each instance has only 5 connections, so scaling 4x gives 40 total (vs the normal single-instance pool of 20). Partial relief only."
+    - action: throttle_traffic
+      why: "Throttling reduces load but doesn't fix the root cause — error rate stays high and customers are still affected."
+    - action: toggle_feature_flag
+      why: "Toggling the circuit breaker or request queue changes symptom behavior but doesn't fix the misconfigured pool size."
 
   debrief_context: |
     This scenario tests the ability to diagnose a config regression under time pressure.

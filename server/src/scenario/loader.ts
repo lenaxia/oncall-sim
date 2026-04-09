@@ -570,8 +570,6 @@ async function transform(
       isCorrectFix:   r.is_correct_fix,
       sideEffect:     r.side_effect,
       targetVersion:  r.target_version,
-      scaleDirection: r.scale_direction,
-      scaleCount:     r.scale_count,
       flagId:         r.flag_id,
       flagEnabled:    r.flag_enabled,
       label:          r.label,

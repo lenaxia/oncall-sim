@@ -23,6 +23,7 @@ function nullMetricStore(): MetricStore {
     },
     getPointsInWindow: () => [],
     getResolvedParams: () => null,
+    listMetrics: () => [],
   };
 }
 

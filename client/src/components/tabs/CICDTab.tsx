@@ -6,6 +6,7 @@ import { EmptyState } from '../EmptyState'
 import { WallTimestamp } from '../Timestamp'
 import { Button } from '../Button'
 import { Modal } from '../Modal'
+import { RemediationsPanel } from './RemediationsPanel'
 import type { Pipeline, PipelineStage, StageStatus, TestStatus } from '@shared/types/events'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -173,65 +174,82 @@ export function CICDTab() {
         </table>
       </div>
 
-      {/* Stage flow + detail */}
-      {selectedPipeline ? (
-        <div className="flex-1 overflow-auto p-4 flex flex-col gap-4">
-          <div className="text-xs font-semibold text-sim-text-muted uppercase tracking-wide">
-            {selectedPipeline.name}
-          </div>
+      {/* Stage detail + remediation controls — scrollable region */}
+      <div className="flex-1 overflow-auto">
+        {selectedPipeline ? (
+          <div className="p-4 flex flex-col gap-4">
+            <div className="text-xs font-semibold text-sim-text-muted uppercase tracking-wide">
+              {selectedPipeline.name}
+            </div>
 
-          {/* Stage flow */}
-          <div data-testid="stage-flow" className="flex items-stretch gap-0 overflow-x-auto">
-            {selectedPipeline.stages.map((stage, idx) => (
-              <div key={stage.id} className="flex items-stretch">
-                {idx > 0 && (
-                  <div className="flex items-center">
-                    <div className={`w-6 h-px ${stage.status === 'not_started' ? 'bg-sim-border' : 'bg-sim-text-faint'}`} />
-                  </div>
-                )}
-                <button
-                  data-testid={`stage-pill-${stage.id}`}
-                  onClick={() => setSelectedStageId(stage.id === selectedStageId ? null : stage.id)}
-                  className={[
-                    'flex flex-col items-center gap-0.5 px-3 py-2 rounded text-xs font-medium transition-colors duration-75 min-w-[80px]',
-                    STAGE_STATUS_COLOURS[stage.status],
-                    selectedStageId === stage.id ? 'ring-2 ring-white ring-offset-1 ring-offset-sim-bg' : '',
-                  ].join(' ')}
-                >
-                  <span className="text-base leading-none">{STAGE_STATUS_LABEL[stage.status]}</span>
-                  <span>{stage.name}</span>
-                  <span className="font-mono text-[10px] opacity-75">{stage.currentVersion}</span>
-                  {stage.blockers.length > 0 && (
-                    <span className="text-[10px]">{stage.blockers.map(b => BLOCKER_ICON[b.type]).join('')}</span>
+            {/* Stage flow */}
+            <div data-testid="stage-flow" className="flex items-stretch gap-0 overflow-x-auto">
+              {selectedPipeline.stages.map((stage, idx) => (
+                <div key={stage.id} className="flex items-stretch">
+                  {idx > 0 && (
+                    <div className="flex items-center">
+                      <div className={`w-6 h-px ${stage.status === 'not_started' ? 'bg-sim-border' : 'bg-sim-text-faint'}`} />
+                    </div>
                   )}
-                </button>
-              </div>
-            ))}
-          </div>
+                  <button
+                    data-testid={`stage-pill-${stage.id}`}
+                    onClick={() => setSelectedStageId(stage.id === selectedStageId ? null : stage.id)}
+                    className={[
+                      'flex flex-col items-center gap-0.5 px-3 py-2 rounded text-xs font-medium transition-colors duration-75 min-w-[80px]',
+                      STAGE_STATUS_COLOURS[stage.status],
+                      selectedStageId === stage.id ? 'ring-2 ring-white ring-offset-1 ring-offset-sim-bg' : '',
+                    ].join(' ')}
+                  >
+                    <span className="text-base leading-none">{STAGE_STATUS_LABEL[stage.status]}</span>
+                    <span>{stage.name}</span>
+                    <span className="font-mono text-[10px] opacity-75">{stage.currentVersion}</span>
+                    {stage.blockers.length > 0 && (
+                      <span className="text-[10px]">{stage.blockers.map(b => BLOCKER_ICON[b.type]).join('')}</span>
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
 
-          {/* Stage detail */}
-          {selectedStage && (
-            <StageDetail
-              pipeline={selectedPipeline}
-              stage={selectedStage}
-              simTime={simTime}
-              inactive={inactive}
-              onRollback={() => setConfirmRollback({
-                pipelineId: selectedPipeline.id,
-                stageId:    selectedStage.id,
-                version:    selectedStage.previousVersion ?? '',
-              })}
-              onOverride={() => setConfirmOverride({ pipelineId: selectedPipeline.id, stageId: selectedStage.id })}
-              onApproveGate={() => dispatchAction('approve_gate', { pipelineId: selectedPipeline.id, stageId: selectedStage.id })}
-              onBlockPromotion={() => dispatchAction('block_promotion', { pipelineId: selectedPipeline.id, stageId: selectedStage.id })}
-            />
-          )}
+            {/* Stage detail */}
+            {selectedStage && (
+              <StageDetail
+                pipeline={selectedPipeline}
+                stage={selectedStage}
+                simTime={simTime}
+                inactive={inactive}
+                onRollback={() => setConfirmRollback({
+                  pipelineId: selectedPipeline.id,
+                  stageId:    selectedStage.id,
+                  version:    selectedStage.previousVersion ?? '',
+                })}
+                onOverride={() => setConfirmOverride({ pipelineId: selectedPipeline.id, stageId: selectedStage.id })}
+                onApproveGate={() => dispatchAction('approve_gate', { pipelineId: selectedPipeline.id, stageId: selectedStage.id })}
+                onBlockPromotion={() => dispatchAction('block_promotion', { pipelineId: selectedPipeline.id, stageId: selectedStage.id })}
+              />
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-32">
+            <EmptyState title="Select a pipeline" message="Click a pipeline above to view its stages." />
+          </div>
+        )}
+
+        {/* Remediation controls — emergency deploy, bounce, scale, throttle, flags */}
+        <div className="border-t border-sim-border">
+          <details className="group">
+            <summary className="flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none
+                                hover:bg-sim-surface-2 text-xs font-semibold text-sim-text-faint
+                                uppercase tracking-wide list-none">
+              <span className="group-open:rotate-90 transition-transform duration-100 text-sim-text-faint">▶</span>
+              Remediation Controls
+            </summary>
+            <div className="px-4 py-3 flex flex-col gap-4">
+              <RemediationsPanel inactive={inactive} />
+            </div>
+          </details>
         </div>
-      ) : (
-        <div className="flex-1 flex items-center justify-center">
-          <EmptyState title="Select a pipeline" message="Click a pipeline above to view its stages." />
-        </div>
-      )}
+      </div>
 
       {/* Rollback confirmation */}
       <Modal
