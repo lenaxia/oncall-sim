@@ -30,7 +30,7 @@ const log = logger.child({ component: "stakeholder-engine" });
 const CHARS_PER_TOKEN = 4;
 const DEFAULT_TOKEN_BUDGET = 80_000; // configurable via env
 const TOKEN_BUDGET = (() => {
-  const env = parseInt(process.env.STAKEHOLDER_TOKEN_BUDGET ?? "", 10);
+  const env = parseInt(import.meta.env.VITE_TOKEN_BUDGET ?? "", 10);
   return isNaN(env) ? DEFAULT_TOKEN_BUDGET : env;
 })();
 
