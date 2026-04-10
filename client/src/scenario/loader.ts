@@ -320,6 +320,67 @@ function expandBackgroundLogs(
 
 // ── deriveTrafficProfile ──────────────────────────────────────────────────────
 
+/**
+ * Derives a sensible alarm threshold for a metric based on its archetype,
+ * baseline value, and capacity ceiling (for saturation-type metrics).
+ *
+ * The threshold represents "clearly in incident territory" — not a warning,
+ * just one threshold. Rules per archetype family:
+ *
+ *  Capacity-capped (saturation):
+ *    write_capacity_used / read_capacity_used / concurrent_executions
+ *    connection_pool_used → ceiling × 0.85
+ *
+ *  Rate / error metrics → baseline × 3
+ *    (error_rate, fault_rate, write_throttles, queue_depth, queue_age_ms,
+ *     memory_jvm, memory_system, throughput_bytes)
+ *
+ *  CPU-style (hard %) → 85
+ *    (cpu_utilization)
+ *
+ *  Latency → baseline × 3
+ *    (p50/p95/p99_latency_ms)
+ *
+ *  Traffic / request_rate → baseline × 2
+ *    (request_rate — spike in traffic is worth watching but not alarming hard)
+ *
+ * Returns null when baseline is 0 and there is no ceiling (threshold would be 0,
+ * which would fire immediately on any noise).
+ */
+function deriveCriticalThreshold(
+  archetype: string,
+  baseline: number,
+  ceiling: number | null,
+): number | null {
+  // Capacity-based: alarm at 85% of ceiling
+  if (
+    archetype === "write_capacity_used" ||
+    archetype === "read_capacity_used" ||
+    archetype === "concurrent_executions" ||
+    archetype === "connection_pool_used"
+  ) {
+    const cap = ceiling ?? baseline * 2;
+    return Math.round(cap * 0.85 * 100) / 100;
+  }
+
+  // Hard-capped percentage metrics
+  if (archetype === "cpu_utilization") return 85;
+
+  // Throttle / queue depth — baseline is 0 so use fixed thresholds
+  if (archetype === "write_throttles") return 5;
+  if (archetype === "queue_depth") return 50;
+  if (archetype === "queue_age_ms")
+    return baseline > 0 ? Math.round(baseline * 5 * 100) / 100 : 500;
+
+  // Traffic rate — 2× baseline
+  if (archetype === "request_rate") {
+    return baseline > 0 ? Math.round(baseline * 2 * 100) / 100 : null;
+  }
+
+  // Everything else: 3× baseline (latency, error/fault rate, memory, throttles, queues)
+  return baseline > 0 ? Math.round(baseline * 3 * 100) / 100 : null;
+}
+
 function deriveTrafficProfile(entrypointType: ComponentType): TrafficProfile {
   switch (entrypointType) {
     case "load_balancer":
@@ -391,13 +452,20 @@ function deriveFocalServiceConfig(node: ServiceNode): FocalServiceConfig {
     for (const spec of specs) {
       const baseline = spec.deriveBaseline(component as never, typicalRps);
       const resolved = spec.resolvedValue(component as never, typicalRps);
+      const ceiling = spec.ceiling(component as never);
 
       // Register metric config if not yet seen (entrypoint-closest wins)
       if (!metricByArchetype.has(spec.archetype)) {
+        const criticalThreshold = deriveCriticalThreshold(
+          spec.archetype,
+          baseline,
+          ceiling,
+        );
         metricByArchetype.set(spec.archetype, {
           archetype: spec.archetype,
           baselineValue: baseline,
           resolvedValue: resolved,
+          ...(criticalThreshold != null ? { criticalThreshold } : {}),
         });
         overlaysByArchetype.set(spec.archetype, []);
       }
@@ -668,6 +736,20 @@ async function transform(
     return resolveFile(fileRef);
   }
 
+  // Build topology + opsDashboard early so auto-alarm generation can use them
+  const topology = {
+    focalService: transformServiceNode(raw.topology.focal_service),
+    upstream: raw.topology.upstream.map(transformServiceNode),
+    downstream: raw.topology.downstream.map(transformServiceNode),
+  };
+
+  const opsDashboard = deriveOpsDashboard(
+    topology.focalService,
+    raw.timeline.pre_incident_seconds,
+    raw.timeline.resolution_seconds,
+    topology.downstream,
+  );
+
   const emails: ScriptedEmail[] = await Promise.all(
     raw.email.map(async (e, i) => ({
       id: e.id,
@@ -722,6 +804,27 @@ async function transform(
     autoPage: a.auto_page ?? false,
     pageMessage: a.page_message,
   }));
+
+  // Auto-generate alarms for every MetricConfig that has a criticalThreshold,
+  // unless the author has already defined an alarm for that service+metric pair.
+  const authoredAlarmKeys = new Set(
+    alarms.map((a) => `${a.service}:${a.metricId}`),
+  );
+  for (const metric of opsDashboard.focalService.metrics) {
+    if (metric.criticalThreshold == null) continue;
+    const key = `${opsDashboard.focalService.name}:${metric.archetype}`;
+    if (authoredAlarmKeys.has(key)) continue;
+    alarms.push({
+      id: `auto-${opsDashboard.focalService.name}-${metric.archetype}`,
+      service: opsDashboard.focalService.name,
+      metricId: metric.archetype,
+      condition: `${metric.archetype} > ${metric.criticalThreshold}${metric.unit ? " " + metric.unit : ""}`,
+      severity: "SEV2",
+      threshold: metric.criticalThreshold,
+      autoFire: true,
+      autoPage: false,
+    });
+  }
 
   const scriptedLogs: ScriptedLogEntry[] = raw.logs.map((l) => ({
     id: l.id,
@@ -865,19 +968,6 @@ async function transform(
     })),
     debriefContext: raw.evaluation.debrief_context,
   };
-
-  const topology = {
-    focalService: transformServiceNode(raw.topology.focal_service),
-    upstream: raw.topology.upstream.map(transformServiceNode),
-    downstream: raw.topology.downstream.map(transformServiceNode),
-  };
-
-  const opsDashboard = deriveOpsDashboard(
-    topology.focalService,
-    raw.timeline.pre_incident_seconds,
-    raw.timeline.resolution_seconds,
-    topology.downstream,
-  );
 
   return {
     id: raw.id,
