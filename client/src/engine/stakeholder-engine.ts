@@ -109,7 +109,7 @@ export function createStakeholderEngine(
     const events: SimEvent[] = [];
     const callCounts: Record<string, number> = {};
     const activeAlarmIds = new Set(
-      context.conversations.alarms.map((a) => a.id),
+      context.simState.alarms.map((a) => a.id),
     );
 
     for (const toolCall of response.toolCalls) {
@@ -238,7 +238,7 @@ export function createStakeholderEngine(
     ].join("\n");
 
     // Build full conversation history lines (chronological)
-    const allChats = Object.values(context.conversations.chatChannels).flat();
+    const allChats = Object.values(context.simState.chatChannels).flat();
     allChats.sort((a, b) => a.simTime - b.simTime);
 
     const chatLines = allChats.map(
@@ -246,7 +246,7 @@ export function createStakeholderEngine(
         `[t=${msg.simTime}] ${msg.channel} | ${msg.persona}: ${msg.text}`,
     );
 
-    const emails = [...context.conversations.emails].sort(
+    const emails = [...context.simState.emails].sort(
       (a, b) => a.simTime - b.simTime,
     );
     const emailLines = emails.map(

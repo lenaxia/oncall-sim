@@ -24,6 +24,7 @@ import type {
   AuditEntry,
   TimeSeriesPoint,
   DebriefResult,
+  ActiveThrottle,
 } from "@shared/types/events";
 import type { LoadedScenario } from "../scenario/types";
 import type { GameLoop } from "../engine/game-loop";
@@ -31,7 +32,7 @@ import { createGameLoop } from "../engine/game-loop";
 import { createSimClock } from "../engine/sim-clock";
 import { createEventScheduler } from "../engine/event-scheduler";
 import { createAuditLog } from "../engine/audit-log";
-import { createConversationStore } from "../engine/conversation-store";
+import { createSimStateStore } from "../engine/sim-state-store";
 import { createEvaluator } from "../engine/evaluator";
 import { generateAllMetrics } from "../metrics/generator";
 import { createMetricStore } from "../metrics/metric-store";
@@ -74,6 +75,7 @@ export interface SessionState {
   pages: PageAlert[];
   auditLog: AuditEntry[];
   coachMessages: CoachMessage[];
+  throttles: ActiveThrottle[];
 }
 
 const INITIAL_STATE: SessionState = {
@@ -96,6 +98,7 @@ const INITIAL_STATE: SessionState = {
   pages: [],
   auditLog: [],
   coachMessages: [],
+  throttles: [],
 };
 
 // ── Reducer ───────────────────────────────────────────────────────────────────
@@ -157,6 +160,7 @@ function reducer(state: SessionState, action: Action): SessionState {
             pages: snap.pages ?? [],
             auditLog: snap.auditLog,
             coachMessages: snap.coachMessages,
+            throttles: snap.throttles ?? [],
           };
         }
 
@@ -347,7 +351,7 @@ function createSession(
   const clock = createSimClock(scenario.timeline.defaultSpeed);
   const scheduler = createEventScheduler(scenario);
   const auditLog = createAuditLog();
-  const store = createConversationStore();
+  const store = createSimStateStore();
   const evaluator = createEvaluator();
 
   // Pre-generate all metrics and wire the MetricStore

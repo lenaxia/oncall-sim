@@ -8,7 +8,7 @@ import {
 } from "../../src/testutil/index";
 import type { MockLLMResponses } from "../../src/llm/mock-provider";
 import type { StakeholderContext } from "../../src/engine/game-loop";
-import type { ConversationStoreSnapshot } from "../../src/engine/conversation-store";
+import type { SimStateStoreSnapshot } from "../../src/engine/sim-state-store";
 import type { MetricStore } from "../../src/metrics/metric-store";
 
 beforeEach(() => clearFixtureCache());
@@ -27,7 +27,7 @@ function nullMetricStore(): MetricStore {
   };
 }
 
-function emptySnapshot(): ConversationStoreSnapshot {
+function emptySnapshot(): SimStateStoreSnapshot {
   return {
     emails: [],
     chatChannels: {},
@@ -38,19 +38,20 @@ function emptySnapshot(): ConversationStoreSnapshot {
     deployments: {},
     pipelines: [],
     pages: [],
+    throttles: [],
   };
 }
 
 function makeContext(
   overrides: Partial<StakeholderContext> = {},
 ): StakeholderContext {
-  const scenario = _fixture
+  const scenario = _fixture;
   return {
     sessionId: "test-session",
     scenario,
     simTime: 60,
     auditLog: [],
-    conversations: emptySnapshot(),
+    simState: emptySnapshot(),
     personaCooldowns: {},
     directlyAddressed: new Set<string>(),
     metricSummary: { simTime: 60, narratives: [] },
@@ -73,16 +74,15 @@ function makeResponses(
 // ── Happy paths ───────────────────────────────────────────────────────────────
 
 // ── Fixture loaded once via beforeAll ────────────────────────────────────────
-let _fixture: import("../../src/scenario/types").LoadedScenario
+let _fixture: import("../../src/scenario/types").LoadedScenario;
 
 beforeAll(async () => {
-  _fixture = await getFixtureScenario()
-})
-
+  _fixture = await getFixtureScenario();
+});
 
 describe("StakeholderEngine.tick — happy paths", () => {
   it("send_message via tick_1 → returns chat_message SimEvent", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(
       makeResponses({
         stakeholder_responses: [
@@ -113,7 +113,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
   });
 
   it("fire_alarm via tick_1 → returns alarm_fired SimEvent", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(
       makeResponses({
         stakeholder_responses: [
@@ -144,7 +144,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
   });
 
   it("inject_log_entry via tick_1 → returns log_entry SimEvent", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(
       makeResponses({
         stakeholder_responses: [
@@ -174,7 +174,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
   });
 
   it("silent_until_contacted persona not in eligible list before engagement", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     // Make the fixture persona silent_until_contacted
     const modifiedScenario = {
       ...scenario,
@@ -214,7 +214,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
   });
 
   it("silent_until_contacted persona IS eligible after being engaged", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const modifiedScenario = {
       ...scenario,
       personas: scenario.personas.map((p) => ({
@@ -257,7 +257,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
   });
 
   it("persona cooldown respected — persona not eligible until cooldown elapsed", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     // Each time the LLM is called, tick_N fires.
     // Fixture persona has cooldownSeconds: 60.
     const provider = buildMockLLMProvider(
@@ -312,7 +312,7 @@ describe("StakeholderEngine.tick — happy paths", () => {
   });
 
   it("no eligible personas → empty response → no SimEvents returned", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(makeResponses()); // no tick_1 response
     const engine = createStakeholderEngine(
       () => provider,
@@ -343,7 +343,7 @@ describe("StakeholderEngine.tick — error paths", () => {
   });
 
   it("invalid tool call params → skipped, other valid calls still executed", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(
       makeResponses({
         stakeholder_responses: [
@@ -378,7 +378,7 @@ describe("StakeholderEngine.tick — error paths", () => {
   });
 
   it("trigger_metric_recovery in response → skipped with log, does not crash", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(
       makeResponses({
         stakeholder_responses: [
@@ -406,7 +406,7 @@ describe("StakeholderEngine.tick — context building", () => {
   it("conversation history included in correct order (verified via mock matching)", async () => {
     // The mock provider sees the actual prompt built by the engine.
     // We verify that after_action triggers work, which proves audit log is in context.
-    const scenario = _fixture
+    const scenario = _fixture;
     const provider = buildMockLLMProvider(
       makeResponses({
         stakeholder_responses: [
@@ -447,7 +447,7 @@ describe("StakeholderEngine.tick — context building", () => {
   });
 
   it("persona cooldowns included in context snapshot", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     // Verify cooldowns are tracked: speak, then check cooldown prevents repeat
     const provider = buildMockLLMProvider(
       makeResponses({
@@ -498,7 +498,7 @@ describe("StakeholderEngine.tick — context building", () => {
 
 describe("StakeholderEngine — context window truncation", () => {
   it("prompt is built without truncation when history is small", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     let capturedMessages: import("../../src/llm/llm-client").LLMMessage[] = [];
     const provider = buildMockLLMProvider({
       stakeholder_responses: [{ trigger: "tick_1", tool_calls: [] }],
@@ -520,7 +520,7 @@ describe("StakeholderEngine — context window truncation", () => {
       nullMetricStore(),
     );
     const ctx = makeContext({
-      conversations: {
+      simState: {
         ...emptySnapshot(),
         chatChannels: {
           "#incidents": [
@@ -545,7 +545,7 @@ describe("StakeholderEngine — context window truncation", () => {
   });
 
   it("truncation fires when history exceeds token budget and inserts summary prefix", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
 
     let capturedUserContent = "";
     const spyProvider = {
@@ -573,7 +573,7 @@ describe("StakeholderEngine — context window truncation", () => {
     );
     const ctx = makeContext({
       simTime: 200,
-      conversations: {
+      simState: {
         ...emptySnapshot(),
         chatChannels: { "#incidents": manyMessages },
       },
@@ -588,7 +588,7 @@ describe("StakeholderEngine — context window truncation", () => {
   });
 
   it("audit log is always preserved in full even when truncation fires", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
 
     let capturedUserContent = "";
     const spyProvider = {
@@ -629,7 +629,7 @@ describe("StakeholderEngine — context window truncation", () => {
           simTime: 100,
         },
       ],
-      conversations: {
+      simState: {
         ...emptySnapshot(),
         chatChannels: { "#incidents": manyMessages },
       },
@@ -643,7 +643,7 @@ describe("StakeholderEngine — context window truncation", () => {
   });
 
   it("system prompt is never truncated", async () => {
-    const scenario = _fixture
+    const scenario = _fixture;
 
     let capturedSystemContent = "";
     const spyProvider = {
@@ -670,7 +670,7 @@ describe("StakeholderEngine — context window truncation", () => {
     );
     const ctx = makeContext({
       simTime: 200,
-      conversations: {
+      simState: {
         ...emptySnapshot(),
         chatChannels: { "#incidents": manyMessages },
       },

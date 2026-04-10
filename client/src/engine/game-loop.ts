@@ -23,10 +23,7 @@ import {
 import { logger } from "../logger";
 
 const log = logger.child({ component: "game-loop" });
-import type {
-  ConversationStore,
-  ConversationStoreSnapshot,
-} from "./conversation-store";
+import type { SimStateStore, SimStateStoreSnapshot } from "./sim-state-store";
 import type { Evaluator, EvaluationState } from "./evaluator";
 
 // ── StakeholderContext (Phase 5 consumes this) ────────────────────────────────
@@ -36,7 +33,7 @@ export interface StakeholderContext {
   scenario: LoadedScenario;
   simTime: number;
   auditLog: AuditEntry[];
-  conversations: ConversationStoreSnapshot;
+  simState: SimStateStoreSnapshot;
   personaCooldowns: Record<string, number>;
   directlyAddressed: Set<string>; // persona IDs directly messaged since last LLM tick
   metricSummary: MetricSummary; // grounded metric state — current values, trends, history
@@ -71,7 +68,7 @@ export interface GameLoop {
   handleAction(action: ActionType, params: Record<string, unknown>): void;
   handleChatMessage(channel: string, text: string): void;
   handleEmailReply(threadId: string, body: string): void;
-  getConversationSnapshot(): ConversationStoreSnapshot;
+  getSimStateSnapshot(): SimStateStoreSnapshot;
   handleCoachMessage(message: CoachMessage): void;
   getSnapshot(): SessionSnapshot;
   getEvaluationState(): EvaluationState;
@@ -86,7 +83,7 @@ export interface GameLoopDependencies {
   clock: SimClock;
   scheduler: EventScheduler;
   auditLog: AuditLog;
-  store: ConversationStore;
+  store: SimStateStore;
   evaluator: Evaluator;
   metrics: Record<string, Record<string, TimeSeriesPoint[]>>; // plain series for alarm detection
   metricStore?: MetricStore; // optional: when present, streams metric_update events and provides snapshot
@@ -196,7 +193,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       scenario,
       simTime: clock.getSimTime(),
       auditLog: auditLog.getAll(),
-      conversations: store.snapshot(),
+      simState: store.snapshot(),
       personaCooldowns: { ..._personaCooldowns },
       directlyAddressed: new Set(_directlyAddressed),
       metricSummary: computeMetricSummary(
@@ -846,21 +843,81 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         case "throttle_traffic": {
           const actionId = params["remediationActionId"] as string | undefined;
           const service = params["service"] as string | undefined;
+          const throttle = params["throttle"] as boolean | undefined;
+          const targetId = params["targetId"] as string | undefined;
+          const scope = params["scope"] as
+            | import("@shared/types/events").ThrottleScope
+            | undefined;
+          const label = params["label"] as string | undefined;
+          const unit = params["unit"] as
+            | import("@shared/types/events").ThrottleUnit
+            | undefined;
+          const limitRate = params["limitRate"] as number | undefined;
+          const customerId = params["customerId"] as string | undefined;
+
           const ra = actionId
             ? scenario.remediationActions.find((r) => r.id === actionId)
             : scenario.remediationActions.find(
                 (r) => r.type === "throttle_traffic" && r.service === service,
               );
           const targetService = ra?.service ?? service;
-          if (targetService) {
+
+          if (targetService && targetId && scope && unit && limitRate != null) {
+            const applying = throttle !== false; // default true when param absent
+
+            if (applying) {
+              const activeThrottle: import("@shared/types/events").ActiveThrottle =
+                {
+                  remediationActionId: ra?.id ?? actionId ?? "",
+                  targetId,
+                  scope,
+                  label: label ?? targetId,
+                  unit,
+                  limitRate,
+                  appliedAtSimTime: clock.getSimTime(),
+                  customerId,
+                };
+              store.applyThrottle(activeThrottle);
+              const customerClause = customerId ? ` for ${customerId}` : "";
+              const logMessage =
+                `Throttle applied${customerClause}: ${label ?? targetId} limited to ${limitRate} ${unit}` +
+                (ra?.sideEffect ? ` — ${ra.sideEffect}` : "");
+              const throttleEntry: import("@shared/types/events").LogEntry = {
+                id: randomUUID(),
+                simTime: clock.getSimTime(),
+                level: "WARN",
+                service: targetService,
+                message: logMessage,
+              };
+              store.addLogEntry(throttleEntry);
+              emit({ type: "log_entry", entry: throttleEntry });
+            } else {
+              store.removeThrottle(targetId, customerId);
+              const customerClause = customerId ? ` for ${customerId}` : "";
+              const logMessage = `Throttle removed${customerClause}: ${label ?? targetId} — full traffic resumed`;
+              const removeEntry: import("@shared/types/events").LogEntry = {
+                id: randomUUID(),
+                simTime: clock.getSimTime(),
+                level: "INFO",
+                service: targetService,
+                message: logMessage,
+              };
+              store.addLogEntry(removeEntry);
+              emit({ type: "log_entry", entry: removeEntry });
+            }
+          } else if (targetService) {
+            // Legacy path: old-style throttle without target detail
+            const applying = throttle !== false;
+            const logMessage = applying
+              ? (ra?.sideEffect ??
+                `Traffic throttle applied — rate limiting active`)
+              : `Traffic throttle removed`;
             const throttleEntry: import("@shared/types/events").LogEntry = {
               id: randomUUID(),
               simTime: clock.getSimTime(),
-              level: "WARN",
+              level: applying ? "WARN" : "INFO",
               service: targetService,
-              message:
-                ra?.sideEffect ??
-                `Traffic throttle applied — rate limiting active`,
+              message: logMessage,
             };
             store.addLogEntry(throttleEntry);
             emit({ type: "log_entry", entry: throttleEntry });
@@ -1011,7 +1068,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       triggerDirtyTick();
     },
 
-    getConversationSnapshot() {
+    getSimStateSnapshot() {
       return store.snapshot();
     },
 
@@ -1041,6 +1098,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         pages: storeSnap.pages,
         auditLog: auditLog.getAll(),
         coachMessages: [..._coachMessages],
+        throttles: storeSnap.throttles,
       };
     },
 

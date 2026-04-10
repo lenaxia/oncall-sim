@@ -3,7 +3,7 @@ import type { LoadedScenario } from "../../src/scenario/types";
 import { createGameLoop } from "../../src/engine/game-loop";
 import { createEventScheduler } from "../../src/engine/event-scheduler";
 import { createAuditLog } from "../../src/engine/audit-log";
-import { createConversationStore } from "../../src/engine/conversation-store";
+import { createSimStateStore } from "../../src/engine/sim-state-store";
 import { createEvaluator } from "../../src/engine/evaluator";
 import { generateAllMetrics } from "../../src/metrics/generator";
 import { createMetricStore } from "../../src/metrics/metric-store";
@@ -32,7 +32,7 @@ function makeDeps(
     clock,
     scheduler: createEventScheduler(scenario),
     auditLog: createAuditLog(),
-    store: createConversationStore(),
+    store: createSimStateStore(),
     evaluator: createEvaluator(),
     metrics: generateAllMetrics(scenario, "test-session").series,
     clockAnchorMs: 0,

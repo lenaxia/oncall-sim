@@ -24,7 +24,7 @@ import type {
 } from "@shared/types/events";
 import type { LoadedScenario } from "../scenario/types";
 import type { GameLoop } from "../engine/game-loop";
-import type { ConversationStoreSnapshot } from "../engine/conversation-store";
+import type { SimStateStoreSnapshot } from "../engine/sim-state-store";
 import type { EvaluationState } from "../engine/evaluator";
 import type { SimClock } from "../engine/sim-clock";
 
@@ -255,7 +255,7 @@ export function buildMockGameLoop(
     handleCoachMessage() {
       /* no-op */
     },
-    getConversationSnapshot(): ConversationStoreSnapshot {
+    getSimStateSnapshot(): SimStateStoreSnapshot {
       return {
         emails: [],
         chatChannels: {},
@@ -266,6 +266,7 @@ export function buildMockGameLoop(
         deployments: {},
         pipelines: [],
         pages: [],
+        throttles: [],
       };
     },
     getSnapshot(): SessionSnapshot {
@@ -317,6 +318,7 @@ export function buildTestSnapshot(
     pages: [],
     auditLog: [],
     coachMessages: [],
+    throttles: [],
     ...overrides,
   };
 }

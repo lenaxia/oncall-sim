@@ -67,7 +67,7 @@ function makeContext(
     scenario,
     simTime: 60,
     auditLog: [],
-    conversations: {
+    simState: {
       emails: [],
       chatChannels: {},
       tickets: [],
@@ -77,6 +77,7 @@ function makeContext(
       deployments: {},
       pipelines: [],
       pages: [],
+        throttles: [],
     },
     personaCooldowns: {},
     directlyAddressed: new Set(),
@@ -687,7 +688,7 @@ describe("MetricReactionEngine — prompt includes rich context", () => {
 
     const context = makeContext({
       scenario,
-      conversations: {
+      simState: {
         emails: [],
         chatChannels: {},
         tickets: [],
@@ -696,6 +697,7 @@ describe("MetricReactionEngine — prompt includes rich context", () => {
         deployments: {},
         pipelines: [],
         pages: [],
+        throttles: [],
         alarms: [
           {
             id: "alarm-001",

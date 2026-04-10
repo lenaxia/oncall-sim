@@ -260,6 +260,7 @@ export interface SessionSnapshot {
   pages: PageAlert[]; // pages sent by trainee
   auditLog: AuditEntry[];
   coachMessages: CoachMessage[];
+  throttles: ActiveThrottle[];
 }
 
 // ── Evaluation and debrief types ──────────────────────────────────────────────
@@ -285,6 +286,29 @@ export interface DebriefResult {
   auditLog: AuditEntry[];
   eventLog: SimEventLogEntry[];
   resolvedAtSimTime: number;
+}
+
+// ── Throttle state ────────────────────────────────────────────────────────────
+
+export type ThrottleScope =
+  | "endpoint" // HTTP path or named API surface
+  | "customer" // per-tenant / per-API-key (trainee supplies customer ID at apply time)
+  | "consumer" // queue consumer group or stream consumer
+  | "concurrent" // max simultaneous executions (Lambda, goroutines)
+  | "global"; // service-wide catch-all
+
+export type ThrottleUnit = "rps" | "msg_per_sec" | "concurrent";
+
+// An active throttle applied by the trainee during a session.
+export interface ActiveThrottle {
+  remediationActionId: string;
+  targetId: string; // matches ThrottleTargetConfig.id
+  scope: ThrottleScope;
+  label: string; // display label from scenario
+  unit: ThrottleUnit;
+  limitRate: number; // the limit the trainee set
+  appliedAtSimTime: number;
+  customerId?: string; // only for scope=customer
 }
 
 // ── SSE event discriminated union ─────────────────────────────────────────────

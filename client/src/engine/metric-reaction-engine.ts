@@ -365,7 +365,7 @@ export function createMetricReactionEngine(
     }
 
     // Active alarms
-    const alarms = context.conversations.alarms;
+    const alarms = context.simState.alarms;
     const alarmLines =
       alarms.length > 0
         ? alarms.map(

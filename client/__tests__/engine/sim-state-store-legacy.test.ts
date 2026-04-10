@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createConversationStore } from "../../src/engine/conversation-store";
+import { createSimStateStore } from "../../src/engine/sim-state-store";
 import {
   buildChatMessage,
   buildEmail,
@@ -13,16 +13,16 @@ import {
 
 beforeEach(() => resetIdCounter());
 
-describe("ConversationStore — chat", () => {
+describe("SimStateStore — chat", () => {
   it("addChatMessage adds to correct channel", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     const msg = buildChatMessage({ channel: "#incidents" });
     store.addChatMessage("#incidents", msg);
     expect(store.getChatChannel("#incidents").length).toBe(1);
   });
 
   it("getChatChannel returns messages in insertion order", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     const a = buildChatMessage({ channel: "#incidents", text: "first" });
     const b = buildChatMessage({ channel: "#incidents", text: "second" });
     store.addChatMessage("#incidents", a);
@@ -33,11 +33,11 @@ describe("ConversationStore — chat", () => {
   });
 
   it("getChatChannel on unknown channel returns empty array", () => {
-    expect(createConversationStore().getChatChannel("#unknown")).toEqual([]);
+    expect(createSimStateStore().getChatChannel("#unknown")).toEqual([]);
   });
 
   it("messages in different channels are independent", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addChatMessage(
       "#incidents",
       buildChatMessage({ channel: "#incidents" }),
@@ -46,7 +46,7 @@ describe("ConversationStore — chat", () => {
   });
 
   it("getAllChatChannels returns all channels", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addChatMessage("#incidents", buildChatMessage());
     store.addChatMessage("#general", buildChatMessage());
     const all = store.getAllChatChannels();
@@ -54,23 +54,23 @@ describe("ConversationStore — chat", () => {
   });
 });
 
-describe("ConversationStore — email", () => {
+describe("SimStateStore — email", () => {
   it("addEmail stored and retrievable by threadId", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     const email = buildEmail({ threadId: "thread-x" });
     store.addEmail(email);
     expect(store.getEmailThread("thread-x").length).toBe(1);
   });
 
   it("getAllEmails returns all emails", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addEmail(buildEmail({ threadId: "a" }));
     store.addEmail(buildEmail({ threadId: "b" }));
     expect(store.getAllEmails().length).toBe(2);
   });
 
   it("emails in same thread grouped correctly", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addEmail(buildEmail({ threadId: "thread-1" }));
     store.addEmail(buildEmail({ threadId: "thread-1" }));
     store.addEmail(buildEmail({ threadId: "thread-2" }));
@@ -79,9 +79,9 @@ describe("ConversationStore — email", () => {
   });
 });
 
-describe("ConversationStore — tickets", () => {
+describe("SimStateStore — tickets", () => {
   it("addTicket stored and retrievable", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     const ticket = buildTicket({ id: "ticket-001" });
     store.addTicket(ticket);
     expect(store.getTicket("ticket-001")).not.toBeNull();
@@ -89,7 +89,7 @@ describe("ConversationStore — tickets", () => {
   });
 
   it("updateTicket merges changes — does not replace entire ticket", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     const ticket = buildTicket({
       id: "ticket-001",
       severity: "SEV2",
@@ -104,12 +104,12 @@ describe("ConversationStore — tickets", () => {
 
   it("updateTicket on non-existent ticket is a no-op", () => {
     expect(() =>
-      createConversationStore().updateTicket("ghost", { status: "resolved" }),
+      createSimStateStore().updateTicket("ghost", { status: "resolved" }),
     ).not.toThrow();
   });
 
   it("addTicketComment stored under correct ticketId", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     const ticket = buildTicket({ id: "ticket-001" });
     store.addTicket(ticket);
     const comment = buildTicketComment("ticket-001");
@@ -118,22 +118,22 @@ describe("ConversationStore — tickets", () => {
   });
 
   it("getAllTickets returns all tickets", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addTicket(buildTicket({ id: "t1" }));
     store.addTicket(buildTicket({ id: "t2" }));
     expect(store.getAllTickets().length).toBe(2);
   });
 });
 
-describe("ConversationStore — logs", () => {
+describe("SimStateStore — logs", () => {
   it("addLogEntry stored and retrievable", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addLogEntry(buildLogEntry());
     expect(store.getAllLogs().length).toBe(1);
   });
 
   it("logs in insertion order", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addLogEntry(buildLogEntry({ message: "first" }));
     store.addLogEntry(buildLogEntry({ message: "second" }));
     const logs = store.getAllLogs();
@@ -142,9 +142,9 @@ describe("ConversationStore — logs", () => {
   });
 });
 
-describe("ConversationStore — alarms", () => {
+describe("SimStateStore — alarms", () => {
   it("addAlarm stores with status=firing", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addAlarm(buildAlarm({ id: "a1", status: "firing" }));
     const alarms = store.getAllAlarms();
     expect(alarms.length).toBe(1);
@@ -152,7 +152,7 @@ describe("ConversationStore — alarms", () => {
   });
 
   it("updateAlarmStatus changes status only", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addAlarm(
       buildAlarm({ id: "a1", severity: "SEV2", status: "firing" }),
     );
@@ -163,9 +163,9 @@ describe("ConversationStore — alarms", () => {
   });
 });
 
-describe("ConversationStore — deployments", () => {
+describe("SimStateStore — deployments", () => {
   it("addDeployment stored per service", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addDeployment("svc-a", buildDeployment({ version: "v1.0.0" }));
     store.addDeployment("svc-a", buildDeployment({ version: "v1.0.1" }));
     store.addDeployment("svc-b", buildDeployment({ version: "v2.0.0" }));
@@ -175,7 +175,7 @@ describe("ConversationStore — deployments", () => {
   });
 
   it("getAllDeployments returns all services", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addDeployment("svc-a", buildDeployment());
     store.addDeployment("svc-b", buildDeployment());
     const all = store.getAllDeployments();
@@ -183,9 +183,9 @@ describe("ConversationStore — deployments", () => {
   });
 });
 
-describe("ConversationStore — snapshot", () => {
+describe("SimStateStore — snapshot", () => {
   it("snapshot returns all state", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addChatMessage("#inc", buildChatMessage({ channel: "#inc" }));
     store.addEmail(buildEmail());
     store.addTicket(buildTicket({ id: "t1" }));
@@ -202,7 +202,7 @@ describe("ConversationStore — snapshot", () => {
   });
 
   it("snapshot is a deep copy — mutations to snapshot do not affect store", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addChatMessage("#inc", buildChatMessage({ channel: "#inc" }));
     const snap = store.snapshot();
     snap.chatChannels["#inc"].push(
@@ -212,7 +212,7 @@ describe("ConversationStore — snapshot", () => {
   });
 
   it("ticket comments included in snapshot", () => {
-    const store = createConversationStore();
+    const store = createSimStateStore();
     store.addTicket(buildTicket({ id: "ticket-001" }));
     store.addTicketComment("ticket-001", buildTicketComment("ticket-001"));
     const snap = store.snapshot();
