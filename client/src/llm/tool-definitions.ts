@@ -67,101 +67,105 @@ export const EVENT_TOOLS: LLMToolDefinition[] = [
   {
     name: "select_metric_reaction",
     description:
-      "Assess the cumulative effect of the trainee's recent actions on the incident " +
-      "and select an outcome category, transition pattern, and speed. " +
-      "The outcome reflects how much the actions helped or hurt. " +
-      "The pattern and speed model how the metrics will visibly change. " +
-      "Hints are provided in the prompt but are non-binding — choose what best fits " +
-      "the clinical picture.\n\n" +
-      "Outcomes: full_recovery = actions collectively resolve the root cause. " +
-      "partial_recovery = actions help but the root cause is not fully addressed. " +
-      "worsening = actions made the incident worse or introduced a new problem. " +
-      "no_effect = actions had no meaningful impact on metric trajectories.",
+      "Assess the cumulative effect of the trainee's recent actions on each active " +
+      "incident metric and declare a per-metric reaction. Only list metrics that actually " +
+      "change — omitted metrics are treated as no_effect. Hints are provided per metric " +
+      "in the prompt but are non-binding.\n\n" +
+      "Outcomes per metric:\n" +
+      "  full_recovery — metric returns to baseline (root cause resolved for this metric)\n" +
+      "  partial_recovery — metric improves but root cause not fully addressed\n" +
+      "  worsening — metric degrades further (wrong action or side effect)\n" +
+      "  no_effect — metric trajectory unchanged (action irrelevant to this metric)",
     parameters: {
       type: "object",
-      required: ["outcome", "pattern"],
+      required: ["metric_reactions"],
       properties: {
-        outcome: {
-          type: "string",
-          enum: ["full_recovery", "partial_recovery", "worsening", "no_effect"],
-          description:
-            "The net outcome of all actions taken since the last reaction. " +
-            "Consider the cumulative effect, not just the most recent action.",
-        },
-        pattern: {
-          type: "string",
-          enum: [
-            "smooth_decay",
-            "cliff",
-            "stepped",
-            "blip_then_decay",
-            "queue_burndown",
-            "oscillating",
-            "sawtooth_rebound",
-          ],
-          description:
-            "The visual shape of metric recovery or degradation. " +
-            "smooth_decay = gradual exponential. cliff = near-instant step. " +
-            "stepped = discrete steps. blip_then_decay = brief spike then decay. " +
-            "queue_burndown = flat then rapid. oscillating = cycles with damping. " +
-            "sawtooth_rebound = periodic bounces.",
-        },
-        speed: {
-          type: "string",
-          enum: ["1m", "5m", "15m", "30m", "60m"],
-          description:
-            "How quickly the transition completes. Defaults to 5m if omitted. " +
-            "Use 1m for immediate fixes (rollback, feature flag). " +
-            "Use 15m–30m for scaling or infra changes. " +
-            "Use 60m for slow organisational changes.",
-        },
-        scope: {
+        metric_reactions: {
           type: "array",
-          items: { type: "string" },
           description:
-            "Optional list of metric_ids to affect. " +
-            "Defaults to all active incident metrics when omitted. " +
-            "Use to restrict recovery to a subset when only some metrics are addressed.",
-        },
-        magnitude: {
-          type: "number",
-          minimum: 0,
-          maximum: 1,
-          description:
-            "How far toward the target to move (0.0–1.0). " +
-            "1.0 = full effect (default for full_recovery and worsening). " +
-            "0.5 = halfway (default for partial_recovery). " +
-            "Use 0.1–0.3 for barely-noticeable improvements, 0.7–0.9 for near-full recovery. " +
-            "Ignored for no_effect.",
-        },
-        sustained: {
-          type: "boolean",
-          description:
-            "Whether the overlay persists indefinitely (true, default) or " +
-            "reverts to scripted incident behavior after the transition completes (false). " +
-            "Use false for temporary effects: a restart that stabilises briefly then degrades again.",
-        },
-        oscillating_mode: {
-          type: "string",
-          enum: ["damping", "sustained"],
-          description:
-            "Only used when pattern=oscillating. " +
-            "damping (default) = oscillations decay toward target. " +
-            "sustained = oscillations continue indefinitely.",
-        },
-        cycle_seconds: {
-          type: "number",
-          minimum: 30,
-          maximum: 300,
-          description:
-            "Only used when pattern=oscillating. " +
-            "Period of one oscillation cycle in seconds. Defaults to 60.",
+            "One entry per metric whose trajectory changes. " +
+            "Omit a metric to leave it unaffected (implicit no_effect).",
+          items: {
+            type: "object",
+            required: ["metric_id", "outcome"],
+            properties: {
+              metric_id: {
+                type: "string",
+                description:
+                  "The metric_id as shown in the prompt (e.g. 'error_rate').",
+              },
+              outcome: {
+                type: "string",
+                enum: [
+                  "full_recovery",
+                  "partial_recovery",
+                  "worsening",
+                  "no_effect",
+                ],
+                description:
+                  "The net effect of the actions on this specific metric.",
+              },
+              pattern: {
+                type: "string",
+                enum: [
+                  "smooth_decay",
+                  "cliff",
+                  "stepped",
+                  "blip_then_decay",
+                  "queue_burndown",
+                  "oscillating",
+                  "sawtooth_rebound",
+                ],
+                description:
+                  "Visual shape of the transition. Hint is provided but non-binding. " +
+                  "smooth_decay = gradual exponential. cliff = near-instant. " +
+                  "stepped = discrete steps. blip_then_decay = spike then decay. " +
+                  "queue_burndown = flat then rapid. oscillating = cycles. " +
+                  "sawtooth_rebound = periodic bounces.",
+              },
+              speed: {
+                type: "string",
+                enum: ["1m", "5m", "15m", "30m", "60m"],
+                description:
+                  "How quickly the transition completes. Default: 5m. " +
+                  "1m for immediate fixes. 15m–30m for infra changes. 60m for slow recovery.",
+              },
+              magnitude: {
+                type: "number",
+                minimum: 0,
+                maximum: 1,
+                description:
+                  "How far toward the target to move (0.0–1.0). " +
+                  "Defaults: full_recovery=1.0, partial_recovery=0.5, worsening=1.0. " +
+                  "Use 0.2 for barely-improved, 0.8 for nearly-resolved.",
+              },
+              sustained: {
+                type: "boolean",
+                description:
+                  "true (default) = change persists. " +
+                  "false = reverts to scripted incident after transition (transient blip).",
+              },
+              oscillating_mode: {
+                type: "string",
+                enum: ["damping", "sustained"],
+                description:
+                  "Only for pattern=oscillating. damping (default) or sustained.",
+              },
+              cycle_seconds: {
+                type: "number",
+                minimum: 30,
+                maximum: 300,
+                description:
+                  "Only for pattern=oscillating. Period in seconds. Default: 60.",
+              },
+            },
+          },
         },
         reasoning: {
           type: "string",
           description:
-            "One sentence explaining the outcome assessment. " +
-            "Mention which actions in the window most influenced your choice.",
+            "One or two sentences explaining the per-metric decisions. " +
+            "Mention which actions drove each outcome.",
         },
       },
     },

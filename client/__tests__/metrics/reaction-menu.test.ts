@@ -239,7 +239,7 @@ describe("getMetricReactionTools — select_metric_reaction schema", () => {
     expect(tools[0].name).toBe("select_metric_reaction");
   });
 
-  it("outcome has all four values", async () => {
+  it("outcome has all four values (inside metric_reactions items)", async () => {
     const { getMetricReactionTools } =
       await import("../../src/llm/tool-definitions");
     const scenario = makeScenario({
@@ -250,16 +250,22 @@ describe("getMetricReactionTools — select_metric_reaction schema", () => {
       },
     });
     const tools = getMetricReactionTools(scenario);
-    const props = (
-      tools[0].parameters as { properties: Record<string, { enum?: string[] }> }
-    ).properties;
-    expect(props.outcome.enum).toContain("full_recovery");
-    expect(props.outcome.enum).toContain("partial_recovery");
-    expect(props.outcome.enum).toContain("worsening");
-    expect(props.outcome.enum).toContain("no_effect");
+    const items = (
+      tools[0].parameters as {
+        properties: {
+          metric_reactions: {
+            items: { properties: Record<string, { enum?: string[] }> };
+          };
+        };
+      }
+    ).properties.metric_reactions.items;
+    expect(items.properties.outcome.enum).toContain("full_recovery");
+    expect(items.properties.outcome.enum).toContain("partial_recovery");
+    expect(items.properties.outcome.enum).toContain("worsening");
+    expect(items.properties.outcome.enum).toContain("no_effect");
   });
 
-  it("pattern, speed, scope are present in schema", async () => {
+  it("pattern, speed are present in metric_reactions items (scope removed — superseded by per-metric design)", async () => {
     const { getMetricReactionTools } =
       await import("../../src/llm/tool-definitions");
     const scenario = makeScenario({
@@ -270,12 +276,17 @@ describe("getMetricReactionTools — select_metric_reaction schema", () => {
       },
     });
     const tools = getMetricReactionTools(scenario);
-    const props = (
-      tools[0].parameters as { properties: Record<string, unknown> }
-    ).properties;
-    expect(props).toHaveProperty("pattern");
-    expect(props).toHaveProperty("speed");
-    expect(props).toHaveProperty("scope");
+    const items = (
+      tools[0].parameters as {
+        properties: {
+          metric_reactions: { items: { properties: Record<string, unknown> } };
+        };
+      }
+    ).properties.metric_reactions.items;
+    expect(items.properties).toHaveProperty("pattern");
+    expect(items.properties).toHaveProperty("speed");
+    // scope is no longer needed — the LLM specifies metric_id per entry
+    expect(items.properties).not.toHaveProperty("scope");
   });
 });
 
@@ -364,9 +375,14 @@ describe("metric-reaction-engine — select_metric_reaction (templated)", () => 
           {
             tool: "select_metric_reaction",
             params: {
-              outcome: "full_recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
+              metric_reactions: [
+                {
+                  metric_id: "error_rate",
+                  outcome: "full_recovery",
+                  pattern: "smooth_decay",
+                  speed: "5m",
+                },
+              ],
             },
           },
         ],
@@ -400,7 +416,15 @@ describe("metric-reaction-engine — select_metric_reaction (templated)", () => 
         toolCalls: [
           {
             tool: "select_metric_reaction",
-            params: { outcome: "no_effect", pattern: "smooth_decay" },
+            params: {
+              metric_reactions: [
+                {
+                  metric_id: "error_rate",
+                  outcome: "no_effect",
+                  pattern: "smooth_decay",
+                },
+              ],
+            },
           },
         ],
       }),
@@ -445,9 +469,14 @@ describe("metric-reaction-engine — select_metric_reaction (templated)", () => 
           {
             tool: "select_metric_reaction",
             params: {
-              outcome: "full_recovery",
-              pattern: "cliff",
-              scope: ["error_rate"],
+              metric_reactions: [
+                {
+                  metric_id: "error_rate",
+                  outcome: "full_recovery",
+                  pattern: "cliff",
+                },
+                // cpu_utilization intentionally omitted — implicit no_effect
+              ],
             },
           },
         ],

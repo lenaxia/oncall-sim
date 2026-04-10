@@ -269,7 +269,7 @@ describe("validateToolCall", () => {
     expect(result.valid).toBe(false);
   });
 
-  it("select_metric_reaction with valid outcome+pattern → valid=true", () => {
+  it("select_metric_reaction with valid metric_reactions → valid=true", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
@@ -283,7 +283,15 @@ describe("validateToolCall", () => {
     const result = validateToolCall(
       {
         tool: "select_metric_reaction",
-        params: { outcome: "full_recovery", pattern: "smooth_decay" },
+        params: {
+          metric_reactions: [
+            {
+              metric_id: "error_rate",
+              outcome: "full_recovery",
+              pattern: "smooth_decay",
+            },
+          ],
+        },
       },
       scenario,
       {},

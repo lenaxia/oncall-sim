@@ -148,7 +148,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { outcome: "full_recovery", pattern: "smooth_decay" },
+        params: { metric_reactions: [{ metric_id: "error_rate", outcome: "full_recovery", pattern: "smooth_decay" }] },
       },
     ]);
 
@@ -171,7 +171,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      { tool: "select_metric_reaction", params: { outcome: "worsening", pattern: "blip_then_decay" } },
+      { tool: "select_metric_reaction", params: { metric_reactions: [{ metric_id: "error_rate", outcome: "worsening", pattern: "blip_then_decay" }] } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -213,7 +213,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { outcome: "partial_recovery", pattern: "smooth_decay" },
+        params: { metric_reactions: [{ metric_id: "error_rate", outcome: "partial_recovery", pattern: "smooth_decay" }] },
       },
     ]);
 
@@ -237,7 +237,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      { tool: "select_metric_reaction", params: { outcome: "no_effect", pattern: "smooth_decay" } },
+      { tool: "select_metric_reaction", params: { metric_reactions: [{ metric_id: "error_rate", outcome: "no_effect", pattern: "smooth_decay" }] } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -257,7 +257,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      { tool: "select_metric_reaction", params: { outcome: "invalid_id", pattern: "smooth_decay" } },
+      { tool: "select_metric_reaction", params: { metric_reactions: [{ metric_id: "error_rate", outcome: "invalid_id", pattern: "smooth_decay" }] } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -297,7 +297,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { outcome: "full_recovery", pattern: "smooth_decay" },
+        params: { metric_reactions: [{ metric_id: "error_rate", outcome: "full_recovery", pattern: "smooth_decay" }] },
       },
     ]);
 
@@ -400,7 +400,7 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { outcome: "full_recovery", pattern: "smooth_decay" },
+        params: { metric_reactions: [{ metric_id: "error_rate", outcome: "full_recovery", pattern: "smooth_decay" }] },
       },
     ]);
 
@@ -430,7 +430,7 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     const realLlm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { outcome: "full_recovery", pattern: "smooth_decay" },
+        params: { metric_reactions: [{ metric_id: "error_rate", outcome: "full_recovery", pattern: "smooth_decay" }] },
       },
     ]);
 
