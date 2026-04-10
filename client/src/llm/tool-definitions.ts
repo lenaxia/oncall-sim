@@ -123,6 +123,40 @@ export const EVENT_TOOLS: LLMToolDefinition[] = [
             "Defaults to all active incident metrics when omitted. " +
             "Use to restrict recovery to a subset when only some metrics are addressed.",
         },
+        magnitude: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description:
+            "How far toward the target to move (0.0–1.0). " +
+            "1.0 = full effect (default for full_recovery and worsening). " +
+            "0.5 = halfway (default for partial_recovery). " +
+            "Use 0.1–0.3 for barely-noticeable improvements, 0.7–0.9 for near-full recovery. " +
+            "Ignored for no_effect.",
+        },
+        sustained: {
+          type: "boolean",
+          description:
+            "Whether the overlay persists indefinitely (true, default) or " +
+            "reverts to scripted incident behavior after the transition completes (false). " +
+            "Use false for temporary effects: a restart that stabilises briefly then degrades again.",
+        },
+        oscillating_mode: {
+          type: "string",
+          enum: ["damping", "sustained"],
+          description:
+            "Only used when pattern=oscillating. " +
+            "damping (default) = oscillations decay toward target. " +
+            "sustained = oscillations continue indefinitely.",
+        },
+        cycle_seconds: {
+          type: "number",
+          minimum: 30,
+          maximum: 300,
+          description:
+            "Only used when pattern=oscillating. " +
+            "Period of one oscillation cycle in seconds. Defaults to 60.",
+        },
         reasoning: {
           type: "string",
           description:

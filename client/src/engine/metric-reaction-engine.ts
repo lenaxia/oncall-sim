@@ -160,11 +160,32 @@ export function createMetricReactionEngine(
       const scopeSet = Array.isArray(scope)
         ? new Set<string>(scope as string[])
         : null;
+      // magnitude: 0.0–1.0, defaults differ by outcome
+      const magnitudeRaw = toolCall.params["magnitude"];
+      const magnitude =
+        typeof magnitudeRaw === "number"
+          ? Math.max(0, Math.min(1, magnitudeRaw))
+          : undefined; // undefined = use outcome-specific default
+      const sustained = toolCall.params["sustained"] !== false; // default true
+      const oscillatingMode =
+        (toolCall.params["oscillating_mode"] as
+          | "damping"
+          | "sustained"
+          | undefined) ?? "damping";
+      const cycleSecondsRaw = toolCall.params["cycle_seconds"];
+      const cycleSeconds =
+        typeof cycleSecondsRaw === "number"
+          ? Math.min(300, Math.max(30, cycleSecondsRaw))
+          : 60;
       _applySelectedReaction(
         outcome as ReactionOutcome,
         pattern,
         speedTier,
         scopeSet,
+        magnitude,
+        sustained,
+        oscillatingMode,
+        cycleSeconds,
         template,
       );
       break;
@@ -176,6 +197,10 @@ export function createMetricReactionEngine(
     pattern: ActiveOverlayPattern,
     speedTier: ReactiveSpeedTier,
     scopeSet: Set<string> | null,
+    magnitude: number | undefined,
+    sustained: boolean,
+    oscillatingMode: "damping" | "sustained",
+    cycleSeconds: number,
     template: ReactionTemplate,
   ): void {
     const VALID_OUTCOMES = new Set([
@@ -202,7 +227,11 @@ export function createMetricReactionEngine(
       : template.activeMetrics;
 
     for (const m of metricsToApply) {
-      const targetValue = computeTargetValue(outcome, m, pattern);
+      const targetValue = computeTargetValue(
+        outcome as Exclude<ReactionOutcome, "no_effect">,
+        m,
+        magnitude,
+      );
 
       const overlay: ActiveOverlay = {
         startSimTime: applyAtSimTime,
@@ -210,7 +239,10 @@ export function createMetricReactionEngine(
         targetValue,
         pattern,
         speedSeconds,
-        sustained: true,
+        sustained,
+        ...(pattern === "oscillating"
+          ? { oscillationMode: oscillatingMode, cycleSeconds }
+          : {}),
       };
 
       metricStore.applyActiveOverlay(m.service, m.metricId, overlay);
@@ -221,6 +253,8 @@ export function createMetricReactionEngine(
           outcome,
           pattern,
           speed: speedTier,
+          magnitude,
+          sustained,
           targetValue,
         },
         "select_metric_reaction applied",
@@ -231,27 +265,24 @@ export function createMetricReactionEngine(
   function computeTargetValue(
     outcome: Exclude<ReactionOutcome, "no_effect">,
     m: ReactionTemplate["activeMetrics"][number],
-    _pattern: ActiveOverlayPattern,
+    magnitude: number | undefined,
   ): number {
     switch (outcome) {
-      case "full_recovery":
-        return m.resolvedValue;
-      case "partial_recovery":
-        return resolveReactiveTarget(
-          "recovery",
-          "partial",
-          m.currentValue,
-          m.resolvedValue,
-          m.peakValue,
-        );
-      case "worsening":
-        return resolveReactiveTarget(
-          "worsening",
-          "full",
-          m.currentValue,
-          m.resolvedValue,
-          m.peakValue,
-        );
+      case "full_recovery": {
+        // magnitude scales how far toward resolved: 1.0 = full, 0.5 = halfway
+        const mag = magnitude ?? 1.0;
+        return m.currentValue + (m.resolvedValue - m.currentValue) * mag;
+      }
+      case "partial_recovery": {
+        // magnitude scales how far toward resolved: default 0.5 (halfway)
+        const mag = magnitude ?? 0.5;
+        return m.currentValue + (m.resolvedValue - m.currentValue) * mag;
+      }
+      case "worsening": {
+        // magnitude scales how far toward peak: default 1.0 (full peak)
+        const mag = magnitude ?? 1.0;
+        return m.currentValue + (m.peakValue - m.currentValue) * mag;
+      }
     }
   }
 
