@@ -449,9 +449,14 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     expect(tempLlm.call).toHaveBeenCalledOnce();
     expect(realLlm.call).not.toHaveBeenCalled();
 
-    // After real client resolves
+    // After real client resolves — pass a context with a NEW action beyond
+    // what was already processed (otherwise engine skips as already reacted)
     currentClient = realLlm;
-    await engine.react(makeContext({ scenario }));
+    const newAuditLog = [
+      { action: "trigger_rollback" as const, params: {}, simTime: 55 },
+      { action: "restart_service" as const, params: {}, simTime: 58 },
+    ];
+    await engine.react(makeContext({ scenario, auditLog: newAuditLog }));
     expect(realLlm.call).toHaveBeenCalledOnce();
   });
 });

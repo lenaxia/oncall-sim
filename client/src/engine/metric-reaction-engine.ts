@@ -46,8 +46,18 @@ export function createMetricReactionEngine(
   metricStore: MetricStore,
   getSimTime: () => number,
 ): MetricReactionEngine {
-  // Re-evaluate tools per-invocation — the static schema doesn't change,
-  // but checking enablement on each react() is cleaner than caching at construction.
+  // ── Rate-limiting / batching state ─────────────────────────────────────────
+  // Only one LLM call is in-flight at a time. If a new react() arrives while
+  // one is in-flight, we store the latest context as pending. When the
+  // in-flight call completes, we drain the pending context with a single call
+  // so the LLM always reasons from the most up-to-date metric state.
+  //
+  // _lastProcessedAuditLength tracks how many audit entries were in the log
+  // when the most recently completed reaction was built. On the next call we
+  // show only the entries added since then, keeping the prompt focused.
+  let _isInFlight = false;
+  let _pendingContext: StakeholderContext | null = null;
+  let _lastProcessedAuditLength = 0;
 
   return {
     async react(context: StakeholderContext): Promise<void> {
@@ -55,14 +65,37 @@ export function createMetricReactionEngine(
       if (tools.length === 0) return;
       if (!context.triggeredByAction) return;
 
-      // Skip if the triggering action was purely observational
-      const lastAction = context.auditLog[context.auditLog.length - 1];
-      if (lastAction && PASSIVE_ACTIONS.has(lastAction.action)) return;
+      // Skip if ALL new actions since last reaction are passive
+      const newActions = context.auditLog.slice(_lastProcessedAuditLength);
+      const hasActiveAction = newActions.some(
+        (a) => !PASSIVE_ACTIONS.has(a.action),
+      );
+      if (!hasActiveAction) return;
+
+      if (_isInFlight) {
+        // Save the latest context — it will be used once the in-flight call
+        // finishes. We always overwrite with the newest context so the batched
+        // follow-up call has the most up-to-date metric snapshot and full
+        // action window.
+        _pendingContext = context;
+        return;
+      }
 
       try {
+        _isInFlight = true;
         await _react(context, tools);
       } catch (err) {
         log.error({ err }, "Unexpected error in metric reaction");
+      } finally {
+        _isInFlight = false;
+        // Drain any context that accumulated while we were in-flight.
+        if (_pendingContext !== null) {
+          const pending = _pendingContext;
+          _pendingContext = null;
+          // Fire-and-forget — the outer finally has already released the lock,
+          // and the recursive react() will re-acquire it.
+          void this.react(pending);
+        }
       }
     },
   };
@@ -71,8 +104,21 @@ export function createMetricReactionEngine(
     context: StakeholderContext,
     tools: ReturnType<typeof getMetricReactionTools>,
   ): Promise<void> {
-    const lastAction = context.auditLog[context.auditLog.length - 1];
-    if (!lastAction) return;
+    // Collect all active actions since the last completed reaction.
+    // These are shown in the prompt so the LLM reasons over the full action
+    // window, not just the single triggering action.
+    const newActions = context.auditLog
+      .slice(_lastProcessedAuditLength)
+      .filter((a) => !PASSIVE_ACTIONS.has(a.action));
+
+    if (newActions.length === 0) return;
+
+    // The most recent active action drives the reaction menu.
+    const lastAction = newActions[newActions.length - 1];
+
+    // Record how far into the audit log we've processed. The next call will
+    // only show actions appended after this point.
+    _lastProcessedAuditLength = context.auditLog.length;
 
     const menu = buildReactionMenu(
       lastAction,
@@ -87,7 +133,7 @@ export function createMetricReactionEngine(
     );
     if (!hasEffect) return;
 
-    const messages = _buildPrompt(context, menu);
+    const messages = _buildPrompt(context, menu, newActions);
 
     let response;
     try {
@@ -108,11 +154,9 @@ export function createMetricReactionEngine(
     for (const toolCall of response.toolCalls) {
       if (toolCall.tool !== "select_metric_reaction") continue;
       const reactionId = toolCall.params["reaction_id"];
-      // reaction_id is a required string field per tool schema; guard against
-      // malformed LLM responses that omit or mis-type it.
       if (typeof reactionId !== "string") continue;
       _applySelectedReaction(reactionId, menu);
-      break; // only the first valid call is honoured
+      break;
     }
   }
 
@@ -312,6 +356,7 @@ export function createMetricReactionEngine(
   function _buildPrompt(
     context: StakeholderContext,
     menu: ReactionMenu,
+    newActions: StakeholderContext["auditLog"],
   ): LLMMessage[] {
     const focalService = scenario.opsDashboard.focalService;
 
@@ -342,11 +387,21 @@ export function createMetricReactionEngine(
 
     // ── User message: live session state ─────────────────────────────────────
 
-    // Last trainee action (most important signal)
-    const lastAction = context.auditLog[context.auditLog.length - 1];
-    const actionSection = lastAction
-      ? `## Trainee Action\nt=${lastAction.simTime} ${lastAction.action} ${JSON.stringify(lastAction.params)}`
-      : "## Trainee Action\n(none)";
+    // Action window: all active actions taken since the last reaction.
+    // The most recent action is labelled PRIMARY — this drives the reaction menu.
+    // Earlier actions in the window provide context (the LLM should reason about
+    // the cumulative effect, not just the most recent one in isolation).
+    const lastAction = newActions[newActions.length - 1];
+    let actionSection: string;
+    if (newActions.length === 1) {
+      actionSection = `## Trainee Action\nt=${lastAction.simTime} ${lastAction.action} ${JSON.stringify(lastAction.params)}`;
+    } else {
+      const lines = newActions.map((a, i) => {
+        const tag = i === newActions.length - 1 ? " [PRIMARY]" : "";
+        return `  t=${a.simTime} ${a.action} ${JSON.stringify(a.params)}${tag}`;
+      });
+      actionSection = `## Trainee Actions (${newActions.length} since last reaction)\n${lines.join("\n")}`;
+    }
 
     // Current metric values for every tracked metric
     const metricLines: string[] = [];
