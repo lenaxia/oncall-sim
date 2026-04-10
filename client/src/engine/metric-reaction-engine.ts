@@ -7,10 +7,7 @@ import type { LoadedScenario } from "../scenario/types";
 import type { StakeholderContext } from "./game-loop";
 import type { LLMClient, LLMMessage } from "../llm/llm-client";
 import { LLMError } from "../llm/llm-client";
-import {
-  getMetricReactionTools,
-  validateToolCall,
-} from "../llm/tool-definitions";
+import { getMetricReactionTools } from "../llm/tool-definitions";
 import { logger } from "../logger";
 import type {
   MetricStore,
@@ -22,6 +19,8 @@ import {
   resolveReactiveTarget,
 } from "../metrics/patterns/reactive-overlay";
 import type { ReactiveSpeedTier } from "@shared/types/events";
+import { buildReactionMenu } from "../metrics/reaction-menu";
+import type { ReactionMenu } from "../metrics/types";
 
 const log = logger.child({ component: "metric-reaction-engine" });
 
@@ -47,10 +46,12 @@ export function createMetricReactionEngine(
   metricStore: MetricStore,
   getSimTime: () => number,
 ): MetricReactionEngine {
-  const tools = getMetricReactionTools(scenario);
+  // Re-evaluate tools per-invocation — the static schema doesn't change,
+  // but checking enablement on each react() is cleaner than caching at construction.
 
   return {
     async react(context: StakeholderContext): Promise<void> {
+      const tools = getMetricReactionTools(scenario);
       if (tools.length === 0) return;
       if (!context.triggeredByAction) return;
 
@@ -59,15 +60,34 @@ export function createMetricReactionEngine(
       if (lastAction && PASSIVE_ACTIONS.has(lastAction.action)) return;
 
       try {
-        await _react(context);
+        await _react(context, tools);
       } catch (err) {
         log.error({ err }, "Unexpected error in metric reaction");
       }
     },
   };
 
-  async function _react(context: StakeholderContext): Promise<void> {
-    const messages = _buildPrompt(context);
+  async function _react(
+    context: StakeholderContext,
+    tools: ReturnType<typeof getMetricReactionTools>,
+  ): Promise<void> {
+    const lastAction = context.auditLog[context.auditLog.length - 1];
+    if (!lastAction) return;
+
+    const menu = buildReactionMenu(
+      lastAction,
+      scenario,
+      metricStore,
+      getSimTime(),
+    );
+
+    // Skip LLM call if no non-no_effect reactions have overlays (no active incidents)
+    const hasEffect = menu.reactions.some(
+      (r) => r.id !== "no_effect" && r.overlays.length > 0,
+    );
+    if (!hasEffect) return;
+
+    const messages = _buildPrompt(context, menu);
 
     let response;
     try {
@@ -85,23 +105,29 @@ export function createMetricReactionEngine(
       throw err;
     }
 
-    const callCounts: Record<string, number> = {};
     for (const toolCall of response.toolCalls) {
-      const validation = validateToolCall(
-        toolCall,
-        scenario,
-        callCounts,
-        tools,
-      );
-      if (!validation.valid) {
-        log.warn(
-          { tool: toolCall.tool, reason: validation.reason },
-          "Invalid tool call",
-        );
-        continue;
-      }
-      callCounts[toolCall.tool] = (callCounts[toolCall.tool] ?? 0) + 1;
-      _applyMetricResponse(toolCall.params as Record<string, unknown>);
+      if (toolCall.tool !== "select_metric_reaction") continue;
+      const reactionId = toolCall.params["reaction_id"];
+      // reaction_id is a required string field per tool schema; guard against
+      // malformed LLM responses that omit or mis-type it.
+      if (typeof reactionId !== "string") continue;
+      _applySelectedReaction(reactionId, menu);
+      break; // only the first valid call is honoured
+    }
+  }
+
+  function _applySelectedReaction(
+    reactionId: string,
+    menu: ReactionMenu,
+  ): void {
+    const reaction = menu.reactions.find((r) => r.id === reactionId);
+    if (!reaction) {
+      log.warn({ reactionId }, "Unknown reaction_id — no overlay applied");
+      return;
+    }
+    for (const spec of reaction.overlays) {
+      metricStore.applyActiveOverlay(spec.service, spec.metricId, spec.overlay);
+      log.info({ service: spec.service, metricId: spec.metricId, reactionId });
     }
   }
 
@@ -283,7 +309,10 @@ export function createMetricReactionEngine(
     }
   }
 
-  function _buildPrompt(context: StakeholderContext): LLMMessage[] {
+  function _buildPrompt(
+    context: StakeholderContext,
+    menu: ReactionMenu,
+  ): LLMMessage[] {
     const focalService = scenario.opsDashboard.focalService;
 
     // ── System prompt: stable instructions ──────────────────────────────────
@@ -304,26 +333,11 @@ export function createMetricReactionEngine(
 
     const systemContent = [
       "You are the environment simulator for an on-call training scenario.",
-      "Your only job is to decide whether a recent trainee action warrants a change to metric behavior.",
-      "Use apply_metric_response if the action changed the incident trajectory. Otherwise respond with no tool calls.",
+      "Your only job is to select the pre-computed metric reaction that best reflects the outcome",
+      "of the most recent trainee action. Always call select_metric_reaction with exactly one reaction_id.",
       "",
       "Available services and metrics:",
       ...serviceLines,
-      "",
-      "Patterns: smooth_decay | stepped | queue_burndown | oscillating | blip_then_decay | cascade_clear | sawtooth_rebound | cliff",
-      "Speed: 1m | 5m | 15m | 30m | 60m — how long the transition takes",
-      "Direction: recovery (toward resolved state) | worsening (toward incident peak)",
-      "Magnitude: full (complete) | partial (halfway to resolved state)",
-      "Sustained: true (default) — new behavior persists indefinitely until overwritten.",
-      "           false — behavior reverts to scripted incident progression after the transition completes.",
-      "           Use sustained=false only for genuinely transient one-off effects.",
-      "",
-      "Rules:",
-      "- Only call apply_metric_response when a trainee action has actually changed the situation.",
-      "- Use direction=worsening when the action made things worse.",
-      "- Use magnitude=partial when the fix is incomplete or does not address root cause.",
-      "- Specify different patterns and speeds per metric in one call for asymmetric recovery.",
-      "- For oscillating: set oscillation_mode=sustained if root cause is not addressed.",
     ].join("\n");
 
     // ── User message: live session state ─────────────────────────────────────
@@ -357,9 +371,8 @@ export function createMetricReactionEngine(
         const currentStr =
           current !== null ? `${current.toFixed(2)}${unit}` : "no data";
         const baselineStr = rp ? `baseline=${rp.baselineValue}${unit}` : "";
-        const peakStr = rp ? `incident_peak=${rp.peakValue}${unit}` : "";
         metricLines.push(
-          `  ${svc.name}/${m.archetype} (${label}): current=${currentStr} ${baselineStr} ${peakStr}`.trimEnd(),
+          `  ${svc.name}/${m.archetype} (${label}): current=${currentStr} ${baselineStr}`.trimEnd(),
         );
       }
     }
@@ -387,7 +400,6 @@ export function createMetricReactionEngine(
     let activeThrottleSection: string | null = null;
     if (activeThrottles.length > 0) {
       const lines = activeThrottles.map((t) => {
-        // Find the matching throttle target in the scenario to get the llm_hint
         const ra = scenario.remediationActions.find(
           (r) => r.id === t.remediationActionId,
         );
@@ -395,11 +407,19 @@ export function createMetricReactionEngine(
           (tt) => tt.id === t.targetId,
         );
         const hint = targetConfig?.llmHint ? ` — ${targetConfig.llmHint}` : "";
-        const customerClause = t.customerId ? ` (customer: ${t.customerId})` : "";
+        const customerClause = t.customerId
+          ? ` (customer: ${t.customerId})`
+          : "";
         return `  [${t.scope.toUpperCase()}] ${t.label}${customerClause}: ${t.limitRate} ${t.unit}${hint}`;
       });
       activeThrottleSection = `## Active Throttles\n${lines.join("\n")}`;
     }
+
+    // Available reactions from the pre-computed menu
+    const reactionLines = menu.reactions.map(
+      (r) => `[${r.id}] ${r.label}\n  Use when: ${r.description}`,
+    );
+    const reactionsSection = `## Available Reactions\nSelect exactly one reaction_id.\n\n${reactionLines.join("\n\n")}`;
 
     const userContent = [
       `## Scenario\n${scenario.title}`,
@@ -409,6 +429,7 @@ export function createMetricReactionEngine(
       `## Active Alarms\n${alarmLines.join("\n")}`,
       `## Host Groups\n${hostLines.join("\n")}`,
       ...(activeThrottleSection ? [activeThrottleSection] : []),
+      reactionsSection,
     ].join("\n\n");
 
     return [

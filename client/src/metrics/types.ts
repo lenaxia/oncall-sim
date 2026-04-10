@@ -63,6 +63,36 @@ export interface ResolvedMetricParams {
   seed: number;
 }
 
+// ── Reaction menu types ───────────────────────────────────────────────────────
+
+import type { ActiveOverlay } from "./metric-store";
+import type { ActionType } from "@shared/types/events";
+
+/** A single metric overlay to apply when a reaction is selected. */
+export interface MetricOverlaySpec {
+  service: string;
+  metricId: string;
+  overlay: ActiveOverlay; // fully pre-computed; applied verbatim to MetricStore
+}
+
+export interface MetricReaction {
+  id: "full_recovery" | "partial_recovery" | "worsening" | "no_effect";
+  label: string; // shown to LLM
+  description: string; // when to select this reaction
+  overlays: MetricOverlaySpec[];
+}
+
+/** Invariant: exactly 4 reactions — one of each id, in the fixed tuple order. */
+export interface ReactionMenu {
+  actionType: ActionType;
+  reactions: [
+    MetricReaction & { id: "full_recovery" },
+    MetricReaction & { id: "partial_recovery" },
+    MetricReaction & { id: "worsening" },
+    MetricReaction & { id: "no_effect" },
+  ];
+}
+
 export interface ResolvedReactiveParams {
   service: string;
   metricId: string;

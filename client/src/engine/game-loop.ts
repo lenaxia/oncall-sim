@@ -846,6 +846,70 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           break;
         }
 
+        case "scale_capacity": {
+          // params: { componentId: string; writeCapacity?: number; readCapacity?: number;
+          //            shardCount?: number; reservedConcurrency?: number }
+          // Records the action in the audit log (done by handleAction wrapper).
+          // MetricStore updates (updateResolvedValue, clearScriptedOverlays) are
+          // done here so buildReactionMenu() sees updated targets in the next tick.
+          const componentId = params["componentId"] as string | undefined;
+          if (componentId) {
+            const writeCapacity = params["writeCapacity"] as number | undefined;
+            const readCapacity = params["readCapacity"] as number | undefined;
+            const shardCount = params["shardCount"] as number | undefined;
+            const reservedConcurrency = params["reservedConcurrency"] as
+              | number
+              | undefined;
+            const service = scenario.opsDashboard.focalService.name;
+            // Update MetricStore resolved values for the affected metrics
+            if (writeCapacity != null && metricStore) {
+              const newResolved =
+                writeCapacity *
+                (scenario.opsDashboard.focalService.metrics.find(
+                  (m) => m.archetype === "write_capacity_used",
+                )?.resolvedValue ?? 0.6);
+              metricStore.updateResolvedValue(
+                service,
+                "write_capacity_used",
+                newResolved,
+              );
+              // Switch to on_demand: remove saturation ceiling
+              if (params["billingMode"] === "on_demand") {
+                metricStore.clearScriptedOverlays(
+                  service,
+                  "write_capacity_used",
+                );
+              }
+            }
+            if (readCapacity != null && metricStore) {
+              metricStore.updateResolvedValue(
+                service,
+                "read_capacity_used",
+                readCapacity *
+                  (scenario.opsDashboard.focalService.metrics.find(
+                    (m) => m.archetype === "read_capacity_used",
+                  )?.resolvedValue ?? 0.2),
+              );
+            }
+            if (shardCount != null && metricStore) {
+              metricStore.updateResolvedValue(
+                service,
+                "throughput_bytes",
+                shardCount * 1500,
+              );
+            }
+            if (reservedConcurrency != null && metricStore) {
+              metricStore.updateResolvedValue(
+                service,
+                "concurrent_executions",
+                reservedConcurrency * 0.35,
+              );
+            }
+            void componentId; // acknowledged
+          }
+          break;
+        }
+
         case "throttle_traffic": {
           const actionId = params["remediationActionId"] as string | undefined;
           const service = params["service"] as string | undefined;

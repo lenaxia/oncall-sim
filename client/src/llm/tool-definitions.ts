@@ -65,6 +65,30 @@ export const COMMUNICATION_TOOLS: LLMToolDefinition[] = [
 
 export const EVENT_TOOLS: LLMToolDefinition[] = [
   {
+    name: "select_metric_reaction",
+    description:
+      "Select the pre-computed metric reaction that best represents the outcome " +
+      "of the trainee's action. Always select exactly one. " +
+      "full_recovery = action fully resolves the incident. " +
+      "partial_recovery = action helps but does not fully fix it. " +
+      "worsening = action made things worse. " +
+      "no_effect = action had no impact on the incident.",
+    parameters: {
+      type: "object",
+      required: ["reaction_id"],
+      properties: {
+        reaction_id: {
+          type: "string",
+          enum: ["full_recovery", "partial_recovery", "worsening", "no_effect"],
+        },
+        reasoning: {
+          type: "string",
+          description: "One sentence explaining why this reaction is correct.",
+        },
+      },
+    },
+  },
+  {
     name: "apply_metric_response",
     description: `Mutate live metric trajectories in response to a trainee action.
       Use this when the trainee has done something that changes the incident trajectory —
@@ -201,7 +225,7 @@ export const COACH_TOOLS: LLMToolDefinition[] = [
  * Returns stakeholder tool definitions for the scenario.
  * COMMUNICATION_TOOLS always included.
  * EVENT_TOOLS filtered by scenario.engine.llmEventTools config,
- * excluding apply_metric_response (handled by metric-reaction-engine).
+ * excluding select_metric_reaction (handled by metric-reaction-engine).
  */
 export function getStakeholderTools(
   scenario: LoadedScenario,
@@ -212,23 +236,27 @@ export function getStakeholderTools(
       .map((t) => t.tool),
   );
   const eventTools = EVENT_TOOLS.filter(
-    (t) => enabledTools.has(t.name) && t.name !== "apply_metric_response",
+    (t) =>
+      enabledTools.has(t.name) &&
+      t.name !== "select_metric_reaction" &&
+      t.name !== "apply_metric_response",
   );
   return [...COMMUNICATION_TOOLS, ...eventTools];
 }
 
 /**
- * Returns the tool list for the metric reaction engine — apply_metric_response only.
- * Enabled when the scenario has it in llm_event_tools; otherwise returns [].
+ * Returns the tool list for the metric reaction engine — select_metric_reaction only.
+ * Schema is static; no dynamic population needed.
+ * Enabled when the scenario has select_metric_reaction in llm_event_tools.
  */
 export function getMetricReactionTools(
   scenario: LoadedScenario,
 ): LLMToolDefinition[] {
   const enabled = scenario.engine.llmEventTools.some(
-    (t) => t.tool === "apply_metric_response" && t.enabled !== false,
+    (t) => t.tool === "select_metric_reaction" && t.enabled !== false,
   );
   if (!enabled) return [];
-  const tool = EVENT_TOOLS.find((t) => t.name === "apply_metric_response");
+  const tool = EVENT_TOOLS.find((t) => t.name === "select_metric_reaction");
   return tool ? [tool] : [];
 }
 
@@ -289,32 +317,8 @@ export function validateToolCall(
 
   // Tool-specific constraints
 
-  if (tool === "apply_metric_response") {
-    const entries = params["affected_metrics"];
-    if (!Array.isArray(entries) || entries.length === 0) {
-      return {
-        valid: false,
-        reason:
-          "apply_metric_response: affected_metrics must be a non-empty array",
-      };
-    }
-    for (const entry of entries as Record<string, unknown>[]) {
-      if (
-        !entry["service"] ||
-        !entry["metric_id"] ||
-        !entry["direction"] ||
-        !entry["pattern"] ||
-        !entry["speed"] ||
-        !entry["magnitude"]
-      ) {
-        return {
-          valid: false,
-          reason:
-            "apply_metric_response: each entry requires service, metric_id, direction, pattern, speed, magnitude",
-        };
-      }
-    }
-  }
+  // select_metric_reaction: reaction_id is validated by required-field check above
+  // and the static enum in the tool schema. No additional validation needed.
 
   if (tool === "fire_alarm") {
     const toolConfig = scenario.engine.llmEventTools.find(

@@ -339,7 +339,7 @@ describe("metric-reaction-engine prompt — throttle context", () => {
       engine: {
         tickIntervalSeconds: 15,
         defaultTab: "email",
-        llmEventTools: [{ tool: "apply_metric_response", enabled: true }],
+        llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
       personas: [],
       emails: [],
@@ -430,6 +430,22 @@ describe("metric-reaction-engine prompt — throttle context", () => {
     const { series, resolvedParams } = (
       await import("../../src/metrics/generator")
     ).generateAllMetrics(scenario, "s");
+    // Inject an active incident overlay so hasEffect=true and LLM is called
+    const errRp = resolvedParams["svc"]?.["error_rate"];
+    if (errRp) {
+      errRp.overlayApplications = [
+        {
+          overlay:
+            "spike_and_sustain" as import("../../src/metrics/types").OverlayType,
+          onsetSecond: 0,
+          peakValue: 10,
+          dropFactor: 10,
+          ceiling: 10,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
+        },
+      ];
+    }
     const metricStore = createMetricStore(series, resolvedParams);
     const simStateStore = createSimStateStore();
     simStateStore.applyThrottle({
@@ -493,6 +509,22 @@ describe("metric-reaction-engine prompt — throttle context", () => {
     const { series, resolvedParams } = (
       await import("../../src/metrics/generator")
     ).generateAllMetrics(scenario, "s");
+    // Inject incident overlay so LLM is called
+    const errRp = resolvedParams["svc"]?.["error_rate"];
+    if (errRp) {
+      errRp.overlayApplications = [
+        {
+          overlay:
+            "spike_and_sustain" as import("../../src/metrics/types").OverlayType,
+          onsetSecond: 0,
+          peakValue: 10,
+          dropFactor: 10,
+          ceiling: 10,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
+        },
+      ];
+    }
     const metricStore = createMetricStore(series, resolvedParams);
     const simStateStore = createSimStateStore();
     simStateStore.applyThrottle({

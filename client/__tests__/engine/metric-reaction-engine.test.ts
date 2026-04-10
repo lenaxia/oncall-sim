@@ -67,7 +67,9 @@ function makeContext(
     sessionId: "test-session",
     scenario,
     simTime: 60,
-    auditLog: [],
+    auditLog: [
+      { action: "trigger_rollback" as const, params: {}, simTime: 55 },
+    ],
     simState: {
       emails: [],
       chatChannels: {},
@@ -94,47 +96,59 @@ function makeMockLLM(
   return { call: vi.fn().mockResolvedValue({ toolCalls }) };
 }
 
-function makeScenarioWithApplyMetric(scenario: LoadedScenario): LoadedScenario {
+function makeScenarioWithSelectMetricReaction(
+  scenario: LoadedScenario,
+): LoadedScenario {
   return {
     ...scenario,
     engine: {
       ...scenario.engine,
       llmEventTools: [
         ...scenario.engine.llmEventTools.filter(
-          (t) => t.tool !== "apply_metric_response",
+          (t) =>
+            t.tool !== "apply_metric_response" &&
+            t.tool !== "select_metric_reaction",
         ),
-        { tool: "apply_metric_response", enabled: true },
+        { tool: "select_metric_reaction", enabled: true },
       ],
     },
   };
 }
+// Keep old name as alias for now to minimize diff
+const makeScenarioWithApplyMetric = makeScenarioWithSelectMetricReaction;
 
 // ── happy paths ───────────────────────────────────────────────────────────────
 
-describe("MetricReactionEngine — apply_metric_response happy paths", () => {
-  it("valid call → applyActiveOverlay called with correct params", async () => {
-    const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
+describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
+  function makeStoreWithIncident() {
+    const rp = makeRp({
+      overlayApplications: [
+        {
+          overlay: "spike_and_sustain" as const,
+          onsetSecond: 0,
+          peakValue: 14,
+          dropFactor: 14,
+          ceiling: 14,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
+        },
+      ],
+    });
+    return createMetricStore(
       { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
+      { "fixture-service": { error_rate: rp } },
     );
+  }
+
+  it("full_recovery → applyActiveOverlay called when incident overlays exist", async () => {
+    const scenario = makeScenarioWithApplyMetric(_fixture);
+    const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
       {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
+        tool: "select_metric_reaction",
+        params: { reaction_id: "full_recovery" },
       },
     ]);
 
@@ -146,40 +160,60 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
     );
     await engine.react(makeContext({ scenario }));
 
-    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalled();
     const overlay = spy.mock.calls[0][2];
     expect(overlay.pattern).toBe("smooth_decay");
-    expect(overlay.speedSeconds).toBe(300);
-    expect(overlay.sustained).toBe(true); // default
   });
 
-  it("direction=worsening → targetValue resolves toward incidentPeak", async () => {
+  it("worsening → applyActiveOverlay called with targetValue > currentValue", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(5) } },
-      {
-        "fixture-service": {
-          error_rate: makeRp({ peakValue: 14, resolvedValue: 1 }),
+    const store = makeStoreWithIncident();
+    const spy = vi.spyOn(store, "applyActiveOverlay");
+
+    const llm = makeMockLLM([
+      { tool: "select_metric_reaction", params: { reaction_id: "worsening" } },
+    ]);
+
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
+    await engine.react(makeContext({ scenario }));
+
+    expect(spy).toHaveBeenCalled();
+    const overlay = spy.mock.calls[0][2];
+    // worsening target is above current value (10)
+    expect(overlay.targetValue).toBeGreaterThan(10);
+  });
+
+  it("partial_recovery → applyActiveOverlay called with targetValue between current and resolved", async () => {
+    const scenario = makeScenarioWithApplyMetric(_fixture);
+    const rp = makeRp({
+      resolvedValue: 1.0,
+      overlayApplications: [
+        {
+          overlay: "spike_and_sustain" as const,
+          onsetSecond: 0,
+          peakValue: 14,
+          dropFactor: 14,
+          ceiling: 14,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
         },
-      },
+      ],
+    });
+    const store = createMetricStore(
+      { "fixture-service": { error_rate: makeHistorical(10) } },
+      { "fixture-service": { error_rate: rp } },
     );
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
       {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "worsening",
-              pattern: "smooth_decay",
-              speed: "1m",
-              magnitude: "full",
-            },
-          ],
-        },
+        tool: "select_metric_reaction",
+        params: { reaction_id: "partial_recovery" },
       },
     ]);
 
@@ -190,37 +224,20 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       () => 60,
     );
     await engine.react(makeContext({ scenario }));
-    expect(spy.mock.calls[0][2].targetValue).toBe(14);
+
+    expect(spy).toHaveBeenCalled();
+    const overlay = spy.mock.calls[0][2];
+    // midpoint between current (10) and resolved (1) = 5.5
+    expect(overlay.targetValue).toBeCloseTo(5.5, 0);
   });
 
-  it("magnitude=partial → targetValue is midpoint between current and resolved", async () => {
+  it("no_effect → applyActiveOverlay not called", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      {
-        "fixture-service": {
-          error_rate: makeRp({ peakValue: 14, resolvedValue: 1 }),
-        },
-      },
-    );
+    const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "partial",
-            },
-          ],
-        },
-      },
+      { tool: "select_metric_reaction", params: { reaction_id: "no_effect" } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -230,35 +247,17 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       () => 60,
     );
     await engine.react(makeContext({ scenario }));
-    // midpoint between currentValue(10) and resolvedValue(1) = 5.5
-    expect(spy.mock.calls[0][2].targetValue).toBeCloseTo(5.5);
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
-  it("sustained=false is passed through to overlay", async () => {
+  it("unknown reaction_id → applyActiveOverlay not called", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
+    const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "worsening",
-              pattern: "blip_then_decay",
-              speed: "1m",
-              magnitude: "full",
-              sustained: false,
-            },
-          ],
-        },
-      },
+      { tool: "select_metric_reaction", params: { reaction_id: "invalid_id" } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -268,34 +267,16 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       () => 60,
     );
     await engine.react(makeContext({ scenario }));
-    expect(spy.mock.calls[0][2].sustained).toBe(false);
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
-  it("oscillating with no oscillation_mode → defaults to damping", async () => {
+  it("reaction_id missing → applyActiveOverlay not called", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
+    const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
-    const llm = makeMockLLM([
-      {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "oscillating",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
-      },
-    ]);
+    const llm = makeMockLLM([{ tool: "select_metric_reaction", params: {} }]);
 
     const engine = createMetricReactionEngine(
       () => llm,
@@ -304,199 +285,40 @@ describe("MetricReactionEngine — apply_metric_response happy paths", () => {
       () => 60,
     );
     await engine.react(makeContext({ scenario }));
-    expect(spy.mock.calls[0][2].oscillationMode).toBe("damping");
+
+    expect(spy).not.toHaveBeenCalled();
   });
 
-  it("cycle_seconds clamped to [30, 300]", async () => {
+  it("applyActiveOverlay uses getSimTime() — startSimTime matches current sim time", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
+    const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
       {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "oscillating",
-              speed: "5m",
-              magnitude: "full",
-              oscillation_mode: "sustained",
-              cycle_seconds: 5,
-            },
-          ],
-        },
+        tool: "select_metric_reaction",
+        params: { reaction_id: "full_recovery" },
       },
     ]);
 
-    const engine = createMetricReactionEngine(
-      () => llm,
-      scenario,
-      store,
-      () => 60,
-    );
-    await engine.react(makeContext({ scenario }));
-    expect(spy.mock.calls[0][2].cycleSeconds).toBe(30);
-  });
-
-  it("applyActiveOverlay uses getSimTime() not context.simTime", async () => {
-    const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
-    const spy = vi.spyOn(store, "applyActiveOverlay");
-
-    const llm = makeMockLLM([
-      {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
-      },
-    ]);
-
-    // context.simTime = 60, but getSimTime() returns 120 (LLM returned later)
+    // getSimTime returns 120 — this should be the startSimTime in the overlay
     const engine = createMetricReactionEngine(
       () => llm,
       scenario,
       store,
       () => 120,
     );
-    await engine.react(makeContext({ scenario, simTime: 60 }));
-    expect(spy.mock.calls[0][2].startSimTime).toBe(120);
+    await engine.react(makeContext({ scenario }));
+
+    expect(spy).toHaveBeenCalled();
+    const overlay = spy.mock.calls[0][2];
+    expect(overlay.startSimTime).toBe(120);
   });
 });
 
-// ── error paths ───────────────────────────────────────────────────────────────
+// ── error paths / no-op scenarios ────────────────────────────────────────────
 
-describe("MetricReactionEngine — apply_metric_response error paths", () => {
-  it("unknown service → skipped, other entries still applied", async () => {
-    const baseScenario = _fixture;
-    const scenario = makeScenarioWithApplyMetric({
-      ...baseScenario,
-      opsDashboard: {
-        ...baseScenario.opsDashboard,
-        focalService: {
-          ...baseScenario.opsDashboard.focalService,
-          metrics: [
-            { archetype: "error_rate", baselineValue: 1, resolvedValue: 1 },
-            {
-              archetype: "p99_latency_ms",
-              baselineValue: 100,
-              resolvedValue: 100,
-            },
-          ],
-        },
-      },
-    });
-    const store = createMetricStore(
-      {
-        "fixture-service": {
-          error_rate: makeHistorical(10),
-          p99_latency_ms: makeHistorical(500),
-        },
-      },
-      {
-        "fixture-service": {
-          error_rate: makeRp({ metricId: "error_rate" }),
-          p99_latency_ms: makeRp({
-            metricId: "p99_latency_ms",
-            peakValue: 2000,
-          }),
-        },
-      },
-    );
-    const spy = vi.spyOn(store, "applyActiveOverlay");
-
-    const llm = makeMockLLM([
-      {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "no-such-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
-      },
-    ]);
-
-    const engine = createMetricReactionEngine(
-      () => llm,
-      scenario,
-      store,
-      () => 60,
-    );
-    await engine.react(makeContext({ scenario }));
-    expect(spy).toHaveBeenCalledOnce();
-    expect(spy.mock.calls[0][0]).toBe("fixture-service");
-  });
-
-  it("unknown metric_id → skipped, does not crash", async () => {
-    const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
-    const spy = vi.spyOn(store, "applyActiveOverlay");
-
-    const llm = makeMockLLM([
-      {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "no_such_metric",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
-      },
-    ]);
-
-    const engine = createMetricReactionEngine(
-      () => llm,
-      scenario,
-      store,
-      () => 60,
-    );
-    await engine.react(makeContext({ scenario }));
-    expect(spy).not.toHaveBeenCalled();
-  });
-
+describe("MetricReactionEngine — no-op scenarios", () => {
   it("triggeredByAction=false → LLM never called", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
     const store = createMetricStore(
@@ -516,14 +338,16 @@ describe("MetricReactionEngine — apply_metric_response error paths", () => {
     expect(callSpy).not.toHaveBeenCalled();
   });
 
-  it("apply_metric_response disabled in scenario → LLM never called", async () => {
+  it("select_metric_reaction disabled in scenario → LLM never called", async () => {
     const baseScenario = _fixture;
     const scenario = {
       ...baseScenario,
       engine: {
         ...baseScenario.engine,
         llmEventTools: baseScenario.engine.llmEventTools.filter(
-          (t) => t.tool !== "apply_metric_response",
+          (t) =>
+            t.tool !== "select_metric_reaction" &&
+            t.tool !== "apply_metric_response",
         ),
       },
     };
@@ -548,29 +372,35 @@ describe("MetricReactionEngine — apply_metric_response error paths", () => {
 // ── getter-based LLM client ───────────────────────────────────────────────────
 
 describe("MetricReactionEngine — getLLMClient getter", () => {
+  function makeStoreWithIncident() {
+    const rp = makeRp({
+      overlayApplications: [
+        {
+          overlay: "spike_and_sustain" as const,
+          onsetSecond: 0,
+          peakValue: 14,
+          dropFactor: 14,
+          ceiling: 14,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
+        },
+      ],
+    });
+    return createMetricStore(
+      { "fixture-service": { error_rate: makeHistorical(10) } },
+      { "fixture-service": { error_rate: rp } },
+    );
+  }
+
   it("accepts () => LLMClient getter and calls the client it returns", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
+    const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
       {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
+        tool: "select_metric_reaction",
+        params: { reaction_id: "full_recovery" },
       },
     ]);
 
@@ -585,16 +415,13 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     await engine.react(makeContext({ scenario }));
 
     // The getter must have been called and the actual LLM client used
-    expect(spy).toHaveBeenCalledOnce();
+    expect(spy).toHaveBeenCalled();
     expect(llm.call).toHaveBeenCalledOnce();
   });
 
   it("getter called at react() time, not at construction time — picks up late-resolving client", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
-    const store = createMetricStore(
-      { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
-    );
+    const store = makeStoreWithIncident();
 
     // Simulate the real pattern: tempLlm at construction, real client available later
     const tempLlm: LLMClient = {
@@ -602,19 +429,8 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     };
     const realLlm = makeMockLLM([
       {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "fixture-service",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
+        tool: "select_metric_reaction",
+        params: { reaction_id: "full_recovery" },
       },
     ]);
 
@@ -643,11 +459,26 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
 // ── prompt context ────────────────────────────────────────────────────────────
 
 describe("MetricReactionEngine — prompt includes rich context", () => {
+  const activeRp = () =>
+    makeRp({
+      overlayApplications: [
+        {
+          overlay: "spike_and_sustain" as const,
+          onsetSecond: 0,
+          peakValue: 14,
+          dropFactor: 14,
+          ceiling: 14,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
+        },
+      ],
+    });
+
   it("prompt includes current metric values", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
     const store = createMetricStore(
       { "fixture-service": { error_rate: makeHistorical(12.5) } },
-      { "fixture-service": { error_rate: makeRp() } },
+      { "fixture-service": { error_rate: activeRp() } },
     );
 
     let capturedMessages: import("../../src/llm/llm-client").LLMMessage[] = [];
@@ -676,7 +507,7 @@ describe("MetricReactionEngine — prompt includes rich context", () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
     const store = createMetricStore(
       { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
+      { "fixture-service": { error_rate: activeRp() } },
     );
 
     let capturedMessages: import("../../src/llm/llm-client").LLMMessage[] = [];
@@ -732,7 +563,7 @@ describe("MetricReactionEngine — prompt includes rich context", () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
     const store = createMetricStore(
       { "fixture-service": { error_rate: makeHistorical(10) } },
-      { "fixture-service": { error_rate: makeRp() } },
+      { "fixture-service": { error_rate: activeRp() } },
     );
 
     let capturedMessages: import("../../src/llm/llm-client").LLMMessage[] = [];
@@ -821,11 +652,25 @@ describe("MetricReactionEngine — passive action filtering", () => {
   }
 
   for (const action of ACTIVE_ACTIONS) {
-    it(`${action} → LLM called (active/environmental)`, async () => {
+    it(`${action} → LLM called when incidents are active`, async () => {
       const scenario = makeScenarioWithApplyMetric(_fixture);
+      // Store with active incident overlay so hasEffect = true
+      const rp = makeRp({
+        overlayApplications: [
+          {
+            overlay: "spike_and_sustain" as const,
+            onsetSecond: 0,
+            peakValue: 14,
+            dropFactor: 14,
+            ceiling: 14,
+            rampDurationSeconds: 0,
+            saturationDurationSeconds: 60,
+          },
+        ],
+      });
       const store = createMetricStore(
-        { "fixture-service": { error_rate: makeHistorical() } },
-        { "fixture-service": { error_rate: makeRp() } },
+        { "fixture-service": { error_rate: makeHistorical(10) } },
+        { "fixture-service": { error_rate: rp } },
       );
       const llm = makeMockLLM([]);
       const callSpy = vi.spyOn(llm, "call");

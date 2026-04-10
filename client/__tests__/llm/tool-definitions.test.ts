@@ -26,7 +26,7 @@ beforeEach(() => clearFixtureCache());
 
 describe("getStakeholderTools", () => {
   it("includes all COMMUNICATION_TOOLS always", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const tools = getStakeholderTools(scenario);
     for (const commTool of COMMUNICATION_TOOLS) {
       expect(tools.find((t) => t.name === commTool.name)).toBeDefined();
@@ -34,7 +34,7 @@ describe("getStakeholderTools", () => {
   });
 
   it("includes only EVENT_TOOLS enabled in llm_event_tools config", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const tools = getStakeholderTools(scenario);
     const names = tools.map((t) => t.name);
     expect(names).toContain("fire_alarm");
@@ -53,6 +53,21 @@ describe("getStakeholderTools", () => {
     const tools = getStakeholderTools(scenario);
     expect(
       tools.find((t) => t.name === "apply_metric_response"),
+    ).toBeUndefined();
+  });
+
+  it("select_metric_reaction excluded from stakeholder tools (handled by metric-reaction-engine)", () => {
+    const scenario: LoadedScenario = {
+      ..._fixture,
+      engine: {
+        tickIntervalSeconds: 10,
+        defaultTab: "email" as const,
+        llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
+      },
+    };
+    const tools = getStakeholderTools(scenario);
+    expect(
+      tools.find((t) => t.name === "select_metric_reaction"),
     ).toBeUndefined();
   });
 
@@ -99,7 +114,7 @@ describe("getCoachTools", () => {
 
 describe("validateToolCall", () => {
   it("valid send_message call → valid=true", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const result = validateToolCall(
       {
         tool: "send_message",
@@ -112,7 +127,7 @@ describe("validateToolCall", () => {
   });
 
   it("send_message with missing params → valid=false with reason", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const result = validateToolCall(
       { tool: "send_message", params: { persona: "p1" } },
       scenario,
@@ -123,7 +138,7 @@ describe("validateToolCall", () => {
   });
 
   it("fire_alarm within max_calls → valid=true", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const activeTools = getStakeholderTools(scenario);
     const result = validateToolCall(
       {
@@ -143,7 +158,7 @@ describe("validateToolCall", () => {
   });
 
   it("fire_alarm exceeding max_calls → valid=false", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const activeTools = getStakeholderTools(scenario);
     const result = validateToolCall(
       {
@@ -254,31 +269,21 @@ describe("validateToolCall", () => {
     expect(result.valid).toBe(false);
   });
 
-  it("apply_metric_response with valid structural params → valid=true", () => {
+  it("select_metric_reaction with valid reaction_id → valid=true", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
         tickIntervalSeconds: 10,
         defaultTab: "email" as const,
-        llmEventTools: [{ tool: "apply_metric_response", enabled: true }],
+        llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
     };
     const activeTools = getMetricReactionTools(scenario);
+    expect(activeTools).toHaveLength(1);
     const result = validateToolCall(
       {
-        tool: "apply_metric_response",
-        params: {
-          affected_metrics: [
-            {
-              service: "any-svc",
-              metric_id: "error_rate",
-              direction: "recovery",
-              pattern: "smooth_decay",
-              speed: "5m",
-              magnitude: "full",
-            },
-          ],
-        },
+        tool: "select_metric_reaction",
+        params: { reaction_id: "full_recovery" },
       },
       scenario,
       {},
@@ -288,7 +293,7 @@ describe("validateToolCall", () => {
   });
 
   it("silence_alarm for non-existent alarm → valid=false", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const activeAlarms = new Set<string>(["existing-alarm"]);
     const activeToolsWithSilence = [
       ...getStakeholderTools(scenario),
@@ -314,7 +319,7 @@ describe("validateToolCall", () => {
   });
 
   it("tool not in active tools → valid=false", () => {
-    const scenario = _fixture
+    const scenario = _fixture;
     const result = validateToolCall(
       { tool: "nonexistent_tool", params: {} },
       scenario,
