@@ -17,6 +17,11 @@ Three tightly related changes:
    adding a new union member and a new `COMPONENT_METRICS` entry — no existing
    code changes.
 
+   `ServiceCategory` (`service_type` in YAML) is **removed entirely** — it is
+   not rendered in the UI, not used by the metric pipeline, and not sent to the
+   LLM. The component graph expresses service structure more precisely. `tags`
+   and `difficulty` on the scenario remain for ScenarioPicker filtering.
+
 2. **Auto-generated ops dashboard** — `ops_dashboard` is removed from YAML
    entirely. The loader derives the equivalent `FocalServiceConfig` (and
    correlated service configs) from the component graph at load time.
@@ -55,9 +60,9 @@ client/src/scenario/types.ts
   - TopologyConfig (flat strings)
   - FocalServiceConfig, CorrelatedServiceConfig, OpsDashboardConfig, ServiceScale
     (remain as internal/derived types; removed from authored types)
-  - service_type: ServiceType (replaced by ServiceNode.category: ServiceCategory = string)
+  - service_type: ServiceType  ← REMOVED ENTIRELY (not rendered, not used in logic)
+  - ServiceCategory type         ← REMOVED ENTIRELY
   + ComponentType, ServiceComponent (discriminated union), IncidentConfig
-  + ServiceCategory = string (open, not enum)
   + ServiceNode, TopologyConfig (object form)
   ~ TimelineConfig: add preIncidentSeconds, resolutionSeconds
 
@@ -67,6 +72,7 @@ client/src/scenario/schema.ts
   ~ topology: replace flat-string form with ServiceNodeSchema objects
   ~ timeline: add pre_incident_seconds, resolution_seconds
   - ops_dashboard, ops_dashboard_file, service_type
+    (all removed from ScenarioSchema)
 
 client/src/scenario/loader.ts
   ~ transform(): topology objects replace flat strings; ops_dashboard derived
@@ -140,19 +146,22 @@ client/__tests__/tabs/RemediationsPanel.test.tsx         extend
 
 ## 1. Types
 
-### 1.1 `ServiceCategory` — open string
+### 1.1 `ServiceCategory` — removed
 
-`ServiceCategory` drives display and LLM prompt text only. Nothing in the metric
-pipeline switches on it. It must not constrain future scenario authors.
+`ServiceCategory` (`service_type` in YAML) is removed. Audit of the codebase:
 
-```typescript
-// Well-known values: "api" | "worker" | "pipeline" | "console"
-// Any string is valid. The system uses it as display text in the UI and LLM prompts.
-// The metric derivation pipeline is driven entirely by components[], not category.
-export type ServiceCategory = string;
-```
+- Not rendered in any UI component (ScenarioPicker renders `difficulty` and `tags`)
+- Not read by the metric pipeline
+- Not included in any LLM prompt
+- Tested only for its own schema presence, not for any downstream effect
 
-Schema: `z.string().min(1)` — no enum.
+The component graph (`ServiceNode.components[]`) expresses what kind of service
+this is more precisely than a string label. `tags` on the scenario remains for
+ScenarioPicker filtering and search.
+
+`ServiceType`, `ServiceCategory`, and `service_type` are deleted from:
+`scenario/types.ts`, `scenario/schema.ts`, `scenario/loader.ts`,
+`context/ScenarioContext.tsx`, `testutil/index.tsx`, and both scenario YAML files.
 
 ### 1.2 `ComponentType` — closed discriminant
 
@@ -320,12 +329,11 @@ export interface IncidentConfig {
 ```typescript
 export interface ServiceNode {
   name: string;
-  category?: ServiceCategory; // display/prompt only; required on focal_service
   description: string;
-  owner?: string; // persona id or team name for "who to page" context
-  typicalRps?: number; // required on focal_service when components present;
+  owner?: string; // persona id or team name; for "who to page" context
+  typicalRps?: number; // required on focal_service when components defined;
   // primary traffic volume signal for baseline derivation
-  trafficProfile?: TrafficProfile; // default: "always_on_api" for api, "none" otherwise
+  trafficProfile?: TrafficProfile; // default derived from entrypoint component type (§6.2)
   health?: HealthLevel; // default: "healthy"; drives noise multiplier
   correlation?: CorrelationType; // downstream nodes only; default: "independent"
   lagSeconds?: number; // downstream nodes with upstream_impact correlation
@@ -523,7 +531,6 @@ const IncidentConfigSchema = z.object({
 ```typescript
 const ServiceNodeSchema = z.object({
   name: z.string().min(1),
-  category: z.string().min(1).optional(),
   description: z.string().min(1),
   owner: z.string().optional(),
   typical_rps: z.number().positive().optional(),
@@ -547,8 +554,6 @@ const ServiceNodeSchema = z.object({
   incidents: z.array(IncidentConfigSchema).optional().default([]),
 });
 ```
-
-`category` is `z.string().min(1)` — open string, not enum.
 
 ### 2.4 `TimelineSchema` additions
 
@@ -578,7 +583,7 @@ topology: z.object({
 
 ### 2.6 Removals from `ScenarioSchema`
 
-- `service_type` field — replaced by `topology.focal_service.category`
+- `service_type` field — removed entirely (not used in any logic)
 - `ops_dashboard` field — removed entirely
 - `ops_dashboard_file` field — removed entirely
 
@@ -591,18 +596,16 @@ New rules added to `validateCrossReferences()`:
 1. **`typical_rps` required.** If `focal_service.components.length > 0` and
    `focal_service.typical_rps` is absent, emit error.
 
-2. **`category` required on `focal_service`.** Emit error if absent.
-
-3. **Entrypoint uniqueness.** For any service with `components.length > 0`:
+2. **Entrypoint uniqueness.** For any service with `components.length > 0`:
    exactly one component must have `inputs: []`. Zero → error. Multiple → error.
 
-4. **Input id validity.** Every id in `component.inputs[]` must reference an id
+3. **Input id validity.** Every id in `component.inputs[]` must reference an id
    that exists in the same service's `components[]`. Validated after full parse
    (ids resolved first).
 
-5. **No cycles.** The component graph must be a DAG. Detect via DFS.
+4. **No cycles.** The component graph must be a DAG. Detect via DFS.
 
-6. **Incident component validity.** Every `incident.affected_component` must be
+5. **Incident component validity.** Every `incident.affected_component` must be
    a component id in `focal_service.components`.
 
 ---
@@ -951,7 +954,9 @@ function deriveOpsDashboard(
 4. Produce `FocalServiceConfig`:
    - `name`: node.name
    - `scale.typicalRps`: node.typicalRps
-   - `trafficProfile`: node.trafficProfile ?? (node.category === "api" ? "always_on_api" : "none")
+   - `trafficProfile`: node.trafficProfile ?? deriveTrafficProfile(entrypoint.type)
+     where deriveTrafficProfile: load_balancer|api_gateway→'always_on_api';
+     kinesis_stream|sqs_queue→'none'; scheduler→'batch_nightly'; default→'none'
    - `health`: node.health ?? "healthy"
    - `incidentType`: `"component_derived"` (sentinel; bypasses `INCIDENT_TYPE_REGISTRY` lookup)
    - `metrics`: derived `MetricConfig[]`
@@ -1385,7 +1390,6 @@ Minimal migration — fixture only needs enough structure for tests:
 topology:
   focal_service:
     name: fixture-service
-    category: api
     description: "Minimal fixture service for automated tests."
     typical_rps: 100
     traffic_profile: always_on_api
@@ -1447,7 +1451,6 @@ engine:
 topology:
   focal_service:
     name: payment-service
-    category: api
     description: "Payment processing microservice."
     owner: sara-chen
     typical_rps: 200
