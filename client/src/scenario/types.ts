@@ -97,6 +97,22 @@ export interface AlarmConfig {
   pageMessage?: string;
 }
 
+import type { ThrottleScope, ThrottleUnit } from "@shared/types/events";
+
+export type { ThrottleScope, ThrottleUnit };
+
+// A throttle target defined by the scenario author.
+// Describes one lever the trainee can pull in the Traffic Throttling panel.
+export interface ThrottleTargetConfig {
+  id: string;
+  scope: ThrottleScope;
+  label: string; // shown to trainee — arbitrary string, e.g. "POST /v1/charges"
+  description: string; // shown to trainee — factual description only
+  llmHint?: string; // LLM-only — causal context; NEVER shown to trainee
+  unit: ThrottleUnit;
+  baselineRate: number; // normal operating rate, shown as reference in UI
+}
+
 export interface RemediationActionConfig {
   id: string;
   type: RemediationActionType;
@@ -107,6 +123,8 @@ export interface RemediationActionConfig {
   flagId?: string;
   flagEnabled?: boolean;
   label?: string;
+  // Only present on type === 'throttle_traffic'
+  throttleTargets?: ThrottleTargetConfig[];
 }
 
 export interface FeatureFlagConfig {

@@ -382,6 +382,25 @@ export function createMetricReactionEngine(
           )
         : ["  (not configured)"];
 
+    // Active throttles with llm_hint from scenario config
+    const activeThrottles = context.simState.throttles;
+    let activeThrottleSection: string | null = null;
+    if (activeThrottles.length > 0) {
+      const lines = activeThrottles.map((t) => {
+        // Find the matching throttle target in the scenario to get the llm_hint
+        const ra = scenario.remediationActions.find(
+          (r) => r.id === t.remediationActionId,
+        );
+        const targetConfig = ra?.throttleTargets?.find(
+          (tt) => tt.id === t.targetId,
+        );
+        const hint = targetConfig?.llmHint ? ` — ${targetConfig.llmHint}` : "";
+        const customerClause = t.customerId ? ` (customer: ${t.customerId})` : "";
+        return `  [${t.scope.toUpperCase()}] ${t.label}${customerClause}: ${t.limitRate} ${t.unit}${hint}`;
+      });
+      activeThrottleSection = `## Active Throttles\n${lines.join("\n")}`;
+    }
+
     const userContent = [
       `## Scenario\n${scenario.title}`,
       `## Sim Time\nt=${context.simTime}`,
@@ -389,6 +408,7 @@ export function createMetricReactionEngine(
       `## Current Metric Values\n${metricLines.join("\n")}`,
       `## Active Alarms\n${alarmLines.join("\n")}`,
       `## Host Groups\n${hostLines.join("\n")}`,
+      ...(activeThrottleSection ? [activeThrottleSection] : []),
     ].join("\n\n");
 
     return [

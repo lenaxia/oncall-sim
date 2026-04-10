@@ -560,6 +560,15 @@ async function transform(
       flagId: r.flag_id,
       flagEnabled: r.flag_enabled,
       label: r.label,
+      throttleTargets: r.throttle_targets?.map((t) => ({
+        id: t.id,
+        scope: t.scope,
+        label: t.label,
+        description: t.description,
+        llmHint: t.llm_hint,
+        unit: t.unit,
+        baselineRate: t.baseline_rate,
+      })),
     }));
 
   const featureFlags: FeatureFlagConfig[] = raw.feature_flags.map((f) => ({

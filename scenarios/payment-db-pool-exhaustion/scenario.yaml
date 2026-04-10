@@ -687,7 +687,39 @@ remediation_actions:
     service: payment-service
     is_correct_fix: false
     label: "Throttle payment-service traffic"
-    side_effect: "Drops inbound RPS by 75%. Reduces pool pressure but customers see rate-limit errors."
+    side_effect: "Rate limiting active — pool pressure reduces but customers see 429 errors."
+    throttle_targets:
+      - id: global
+        scope: global
+        label: "All traffic"
+        description: "Service-wide rate limit across all callers and endpoints"
+        llm_hint: "Blunt instrument. Sheds load uniformly but affects all customers. Pool pressure reduces proportionally to shed percentage. Does not fix MAX_DB_CONNECTIONS root cause."
+        unit: rps
+        baseline_rate: 200
+
+      - id: checkout
+        scope: endpoint
+        label: "POST /v1/charges"
+        description: "Payment checkout — creates a new charge against a payment method"
+        llm_hint: "Accounts for ~60% of DB pool connections and ~60% of total RPS. Throttling this endpoint provides significant pool relief. Still does not fix the root cause."
+        unit: rps
+        baseline_rate: 120
+
+      - id: payment_methods
+        scope: endpoint
+        label: "GET /v1/payment-methods"
+        description: "Returns saved payment methods for a customer"
+        llm_hint: "Read-only operation with low DB pool usage (~1 connection per request, no writes). Throttling this has minimal impact on pool exhaustion."
+        unit: rps
+        baseline_rate: 50
+
+      - id: per_customer
+        scope: customer
+        label: "Per-customer rate limit"
+        description: "Apply a rate limit to a specific customer by their account ID"
+        llm_hint: "The high-volume caller causing pool exhaustion is acme-payments (account ID: acme-payments). They are sending ~80 RPS, all to POST /v1/charges. Throttling acme-payments specifically will reduce pool pressure without affecting other customers. If the trainee throttles any other customer ID, there is no meaningful metric impact."
+        unit: rps
+        baseline_rate: 200
 
   - id: disable_request_queue
     type: toggle_feature_flag

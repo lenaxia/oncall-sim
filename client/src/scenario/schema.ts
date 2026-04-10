@@ -28,6 +28,16 @@ const AlarmConfigSchema = z.object({
   page_message: z.string().optional(),
 });
 
+const ThrottleTargetSchema = z.object({
+  id: z.string().min(1),
+  scope: z.enum(["endpoint", "customer", "consumer", "concurrent", "global"]),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  llm_hint: z.string().optional(),
+  unit: z.enum(["rps", "msg_per_sec", "concurrent"]),
+  baseline_rate: z.number().positive(),
+});
+
 const RemediationActionSchema = z.object({
   id: z.string().min(1),
   type: z.enum([
@@ -46,6 +56,7 @@ const RemediationActionSchema = z.object({
   flag_id: z.string().optional(),
   flag_enabled: z.boolean().optional(),
   label: z.string().optional(),
+  throttle_targets: z.array(ThrottleTargetSchema).optional(),
 });
 
 const EvaluationSchema = z.object({

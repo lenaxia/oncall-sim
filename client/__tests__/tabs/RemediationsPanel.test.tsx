@@ -314,3 +314,237 @@ describe("ThrottleSection — toggle UI", () => {
     ).toBeInTheDocument();
   });
 });
+
+// ── ThrottleSection — throttle_targets UX ────────────────────────────────────
+
+function makeScenarioWithTargets() {
+  return buildLoadedScenario({
+    serviceType: "api",
+    remediationActions: [
+      {
+        id: "throttle_payment",
+        type: "throttle_traffic",
+        service: "payment-service",
+        isCorrectFix: false,
+        label: "Throttle payment-service",
+        throttleTargets: [
+          {
+            id: "global",
+            scope: "global",
+            label: "All traffic",
+            description: "Service-wide rate limit",
+            unit: "rps",
+            baselineRate: 200,
+          },
+          {
+            id: "checkout",
+            scope: "endpoint",
+            label: "POST /v1/charges",
+            description: "Payment checkout processing",
+            llmHint: "Accounts for 60% of pool connections.",
+            unit: "rps",
+            baselineRate: 120,
+          },
+          {
+            id: "per_customer",
+            scope: "customer",
+            label: "Per-customer limit",
+            description: "Rate-limit a specific customer account",
+            unit: "rps",
+            baselineRate: 200,
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function renderThrottlePanel() {
+  const mockLoop = buildMockGameLoop();
+  const scenario = makeScenarioWithTargets();
+  const result = renderWithProviders(<RemediationsPanel inactive={false} />, {
+    scenario,
+    mockLoop,
+  });
+  act(() => {
+    mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() });
+  });
+  return { ...result, mockLoop };
+}
+
+describe("ThrottleSection — throttle_targets table", () => {
+  it("renders a row for each throttle target", () => {
+    renderThrottlePanel();
+    expect(screen.getByText("All traffic")).toBeInTheDocument();
+    expect(screen.getByText("POST /v1/charges")).toBeInTheDocument();
+    expect(screen.getByText("Per-customer limit")).toBeInTheDocument();
+  });
+
+  it("shows scope badge for each target", () => {
+    renderThrottlePanel();
+    expect(screen.getByText("GLOBAL")).toBeInTheDocument();
+    expect(screen.getByText("ENDPOINT")).toBeInTheDocument();
+    expect(screen.getByText("CUSTOMER")).toBeInTheDocument();
+  });
+
+  it("shows description for each target", () => {
+    renderThrottlePanel();
+    expect(screen.getByText("Service-wide rate limit")).toBeInTheDocument();
+    expect(screen.getByText("Payment checkout processing")).toBeInTheDocument();
+  });
+
+  it("shows baseline rate for each target", () => {
+    renderThrottlePanel();
+    // 200 rps appears twice (global + customer), 120 rps appears once (endpoint)
+    const rps200 = screen.getAllByText(/200 rps/);
+    expect(rps200.length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/120 rps/)).toBeInTheDocument();
+  });
+
+  it("shows Set limit button initially for non-customer targets", () => {
+    renderThrottlePanel();
+    const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
+    // global + endpoint have Set limit; customer has inline form
+    expect(setLimitBtns.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("customer row always shows freeform input and limit input", () => {
+    renderThrottlePanel();
+    expect(screen.getByPlaceholderText(/customer id/i)).toBeInTheDocument();
+  });
+});
+
+describe("ThrottleSection — endpoint/global apply flow", () => {
+  it("clicking Set limit shows inline limit input", async () => {
+    const user = userEvent.setup();
+    renderThrottlePanel();
+    const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
+    await user.click(setLimitBtns[0]);
+    // Multiple limit inputs may exist (customer row is always visible)
+    const limitInputs = screen.getAllByPlaceholderText(/limit/i);
+    expect(limitInputs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("applying a limit dispatches throttle_traffic with correct params", async () => {
+    const user = userEvent.setup();
+    const mockLoop = buildMockGameLoop();
+    const handleAction = vi.spyOn(mockLoop, "handleAction");
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithTargets(),
+      mockLoop,
+    });
+    act(() => { mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() }) });
+
+    const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
+    // Click the endpoint (POST /v1/charges) set limit button
+    const checkoutBtn = setLimitBtns.find((btn) => {
+      const row = btn.closest("[data-throttle-target]");
+      return row?.textContent?.includes("POST /v1/charges");
+    });
+    await user.click(checkoutBtn!);
+
+    // The inline limit input appears after clicking Set limit
+    const limitInputs = screen.getAllByPlaceholderText(/^limit$/i);
+    fireEvent.input(limitInputs[0], { target: { value: "80" } });
+
+    const applyBtns = screen.getAllByRole("button", { name: /^apply$/i });
+    await user.click(applyBtns[0]);
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(handleAction).toHaveBeenCalledWith("throttle_traffic", expect.objectContaining({
+      targetId: "checkout",
+      scope: "endpoint",
+      limitRate: 80,
+      throttle: true,
+    }));
+  });
+
+  it("after applying a limit, row shows ACTIVE badge and Edit/Remove buttons", async () => {
+    const user = userEvent.setup();
+    renderThrottlePanel();
+
+    const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
+    await user.click(setLimitBtns[0]);
+    const limitInputs = screen.getAllByPlaceholderText(/^limit$/i);
+    fireEvent.input(limitInputs[0], { target: { value: "150" } });
+    const applyBtns = screen.getAllByRole("button", { name: /^apply$/i });
+    await user.click(applyBtns[0]);
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(screen.getAllByText(/active/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: /remove/i }).length).toBeGreaterThan(0);
+  });
+
+  it("removing a limit dispatches throttle_traffic with throttle=false", async () => {
+    const user = userEvent.setup();
+    const mockLoop = buildMockGameLoop();
+    const handleAction = vi.spyOn(mockLoop, "handleAction");
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithTargets(),
+      mockLoop,
+    });
+    act(() => { mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() }) });
+
+    // Apply then remove
+    const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
+    await user.click(setLimitBtns[0]);
+    const limitInputs = screen.getAllByPlaceholderText(/^limit$/i);
+    fireEvent.input(limitInputs[0], { target: { value: "150" } });
+    const applyBtns = screen.getAllByRole("button", { name: /^apply$/i });
+    await user.click(applyBtns[0]);
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    const removeBtns = screen.getAllByRole("button", { name: /remove/i });
+    await user.click(removeBtns[0]);
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(handleAction).toHaveBeenLastCalledWith("throttle_traffic", expect.objectContaining({
+      throttle: false,
+    }));
+  });
+});
+
+describe("ThrottleSection — customer scope", () => {
+  it("customer row has always-visible customer ID input and limit input", () => {
+    renderThrottlePanel();
+    expect(screen.getByPlaceholderText(/customer id/i)).toBeInTheDocument();
+  });
+
+  it("applying customer throttle requires both customer ID and limit", async () => {
+    const user = userEvent.setup();
+    const mockLoop = buildMockGameLoop();
+    const handleAction = vi.spyOn(mockLoop, "handleAction");
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithTargets(),
+      mockLoop,
+    });
+    act(() => { mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() }) });
+
+    // Find the customer row's limit input (not the endpoint inline input)
+    const customerIdInput = screen.getByPlaceholderText(/customer id/i);
+    fireEvent.input(customerIdInput, { target: { value: "acme_corp" } });
+
+    const customerLimitInput = screen.getByPlaceholderText(/limit.*rps/i);
+    fireEvent.input(customerLimitInput, { target: { value: "50" } });
+
+    const applyBtns = screen.getAllByRole("button", { name: /^apply$/i });
+    const customerApplyBtn = applyBtns[applyBtns.length - 1];
+    await user.click(customerApplyBtn);
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(handleAction).toHaveBeenCalledWith("throttle_traffic", expect.objectContaining({
+      targetId: "per_customer",
+      scope: "customer",
+      customerId: "acme_corp",
+      limitRate: 50,
+      throttle: true,
+    }));
+  });
+
+  it("customer apply button is disabled when customer ID is empty", () => {
+    renderThrottlePanel();
+    const applyBtns = screen.getAllByRole("button", { name: /^apply$/i });
+    const customerApplyBtn = applyBtns[applyBtns.length - 1];
+    expect(customerApplyBtn).toBeDisabled();
+  });
+});

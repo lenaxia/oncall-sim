@@ -22,6 +22,7 @@ import type {
   FeatureFlag,
   HostGroup,
 } from "../../context/ScenarioContext";
+import type { ThrottleTargetConfig, ThrottleUnit } from "../../scenario/types";
 
 // ── Confirm modal state ───────────────────────────────────────────────────────
 
@@ -320,73 +321,285 @@ function ScaleSection({
 }
 
 // ── Throttle section ──────────────────────────────────────────────────────────
+// Each throttle_traffic action with throttle_targets renders a table of levers.
+// Each row = one ThrottleTargetConfig.
+//   - endpoint/consumer/concurrent/global: "Set limit" → inline form → active state
+//   - customer: always-visible freeform Customer ID + limit input
+
+interface ActiveThrottleState {
+  limitRate: number;
+  customerId?: string;
+}
+
+function scopeBadgeClass(scope: ThrottleTargetConfig["scope"]): string {
+  switch (scope) {
+    case "global":     return "bg-sim-red/20 text-sim-red";
+    case "endpoint":   return "bg-sim-blue/20 text-sim-blue";
+    case "customer":   return "bg-sim-purple/20 text-sim-purple";
+    case "consumer":   return "bg-sim-yellow/20 text-sim-yellow";
+    case "concurrent": return "bg-sim-green/20 text-sim-green";
+  }
+}
+
+function unitLabel(unit: ThrottleUnit): string {
+  switch (unit) {
+    case "rps":         return "rps";
+    case "msg_per_sec": return "msg/s";
+    case "concurrent":  return "concurrent";
+  }
+}
+
+// A single throttle target row.
+function ThrottleTargetRow({
+  target,
+  inactive,
+  onApply,
+  onRemove,
+}: {
+  target:   ThrottleTargetConfig;
+  inactive: boolean;
+  onApply:  (limitRate: number, customerId?: string) => void;
+  onRemove: (customerId?: string) => void;
+}) {
+  const [activeThrottle, setActiveThrottle] = useState<ActiveThrottleState | null>(null);
+  const [editing, setEditing]   = useState(false);
+  const [limitInput, setLimitInput]   = useState("");
+  const [customerInput, setCustomerInput] = useState("");
+
+  const isCustomer = target.scope === "customer";
+  const uLabel = unitLabel(target.unit);
+
+  function handleApply(limitRate: number, customerId?: string) {
+    setActiveThrottle({ limitRate, customerId });
+    setEditing(false);
+    setLimitInput("");
+    onApply(limitRate, customerId);
+  }
+
+  function handleRemove(customerId?: string) {
+    setActiveThrottle(null);
+    setCustomerInput("");
+    onRemove(customerId);
+  }
+
+  return (
+    <div
+      data-throttle-target={target.id}
+      className="flex flex-col gap-1.5 py-2.5 border-b border-sim-border last:border-0"
+    >
+      {/* Header row: scope badge + label + baseline + active badge */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-0.5 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-[9px] px-1 py-0.5 rounded font-mono uppercase font-semibold flex-shrink-0 ${scopeBadgeClass(target.scope)}`}>
+              {target.scope.toUpperCase()}
+            </span>
+            <span className="text-xs font-medium text-sim-text">{target.label}</span>
+            {activeThrottle && (
+              <span className="text-[9px] px-1 py-0.5 rounded font-mono bg-sim-yellow/20 text-sim-yellow flex-shrink-0">
+                ACTIVE
+              </span>
+            )}
+          </div>
+          <span className="text-xs text-sim-text-muted">{target.description}</span>
+          <span className="text-xs text-sim-text-faint">
+            Baseline: {target.baselineRate} {uLabel}
+            {activeThrottle && (
+              <> &nbsp;·&nbsp; <strong className="text-sim-yellow">Limit: {activeThrottle.limitRate} {uLabel}{activeThrottle.customerId ? ` (${activeThrottle.customerId})` : ""}</strong></>
+            )}
+          </span>
+        </div>
+
+        {/* Right-side controls for non-customer, non-editing state */}
+        {!isCustomer && !editing && !activeThrottle && (
+          <Button variant="secondary" size="sm" disabled={inactive}
+            onClick={() => { setEditing(true); setLimitInput(""); }}>
+            Set limit
+          </Button>
+        )}
+        {!isCustomer && !editing && activeThrottle && (
+          <div className="flex gap-1.5 flex-shrink-0">
+            <Button variant="secondary" size="sm" disabled={inactive}
+              onClick={() => { setEditing(true); setLimitInput(String(activeThrottle.limitRate)); }}>
+              Edit
+            </Button>
+            <Button variant="danger" size="sm" disabled={inactive}
+              onClick={() => handleRemove(undefined)}>
+              Remove
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Inline limit form — for endpoint/consumer/concurrent/global after clicking Set limit */}
+      {!isCustomer && editing && (
+        <div className="flex items-center gap-2 mt-0.5">
+          <input
+            type="number"
+            min={1}
+            placeholder="Limit"
+            value={limitInput}
+            disabled={inactive}
+            onChange={(e) => setLimitInput(e.target.value)}
+            className="w-20 text-xs text-center bg-sim-surface border border-sim-border rounded px-1 py-0.5
+                       text-sim-text focus:outline-none focus:border-sim-accent disabled:opacity-50"
+          />
+          <span className="text-xs text-sim-text-faint">{uLabel}</span>
+          <Button variant="primary" size="sm"
+            disabled={inactive || !limitInput || parseInt(limitInput) < 1}
+            onClick={() => handleApply(parseInt(limitInput))}>
+            Apply
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancel</Button>
+        </div>
+      )}
+
+      {/* Customer scope — always-visible freeform inputs */}
+      {isCustomer && (
+        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+          <input
+            type="text"
+            placeholder="Customer ID"
+            value={customerInput}
+            disabled={inactive}
+            onChange={(e) => setCustomerInput(e.target.value)}
+            className="w-32 text-xs bg-sim-surface border border-sim-border rounded px-2 py-0.5
+                       text-sim-text focus:outline-none focus:border-sim-accent disabled:opacity-50"
+          />
+          <input
+            type="number"
+            min={1}
+            placeholder={`Limit (${uLabel})`}
+            value={limitInput}
+            disabled={inactive}
+            onChange={(e) => setLimitInput(e.target.value)}
+            className="w-24 text-xs text-center bg-sim-surface border border-sim-border rounded px-1 py-0.5
+                       text-sim-text focus:outline-none focus:border-sim-accent disabled:opacity-50"
+          />
+          <Button variant="primary" size="sm"
+            disabled={inactive || !customerInput.trim() || !limitInput || parseInt(limitInput) < 1}
+            onClick={() => handleApply(parseInt(limitInput), customerInput.trim())}>
+            Apply
+          </Button>
+          {activeThrottle && (
+            <Button variant="danger" size="sm" disabled={inactive}
+              onClick={() => handleRemove(activeThrottle.customerId)}>
+              Remove
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ThrottleSection({
   actions,
   inactive,
   onConfirm,
 }: {
-  actions: RemediationAction[];
-  inactive: boolean;
+  actions:   RemediationAction[];
+  inactive:  boolean;
   onConfirm: (s: ConfirmState) => void;
 }) {
   const { dispatchAction } = useSession();
-  // Track active throttle state per action id
-  const [throttled, setThrottled] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(actions.map((a) => [a.id, false])),
-  );
 
-  function handleToggle(ra: RemediationAction) {
-    const isCurrentlyThrottled = throttled[ra.id] ?? false;
-    const next = !isCurrentlyThrottled;
-    onConfirm({
-      title: next
-        ? `Apply throttle: ${ra.label ?? ra.service}`
-        : `Remove throttle: ${ra.label ?? ra.service}`,
-      body: next
-        ? `Apply traffic throttling to ${ra.service}. ${ra.sideEffect ?? "Load will be shed."}`
-        : `Remove traffic throttling from ${ra.service}. Full traffic will resume.`,
-      action: () => {
-        setThrottled((prev) => ({ ...prev, [ra.id]: next }));
-        dispatchAction("throttle_traffic", {
-          remediationActionId: ra.id,
-          service: ra.service,
-          throttle: next,
-        });
-      },
+  function dispatchThrottle(
+    ra:           RemediationAction,
+    target:       ThrottleTargetConfig,
+    throttle:     boolean,
+    limitRate:    number,
+    customerId?:  string,
+  ) {
+    dispatchAction("throttle_traffic", {
+      remediationActionId: ra.id,
+      service:    ra.service,
+      throttle,
+      targetId:   target.id,
+      scope:      target.scope,
+      label:      target.label,
+      unit:       target.unit,
+      limitRate,
+      customerId,
     });
   }
 
   return (
     <Section title="Traffic Throttling">
       {actions.map((ra) => {
-        const isActive = throttled[ra.id] ?? false;
+        // If the action has throttle_targets use the rich table, else the simple toggle
+        if (!ra.throttleTargets || ra.throttleTargets.length === 0) {
+          // Simple toggle (backwards compat for actions without targets)
+          return <SimpleLegacyThrottle key={ra.id} ra={ra} inactive={inactive} onConfirm={onConfirm} />;
+        }
         return (
-          <div key={ra.id} className="flex items-center justify-between gap-4">
-            <div className="flex flex-col gap-0.5 min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-sim-text truncate">
-                  {ra.label ?? ra.service}
-                </span>
-                {isActive && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-mono flex-shrink-0 bg-sim-yellow/20 text-sim-yellow">
-                    ACTIVE
-                  </span>
-                )}
-              </div>
-            </div>
-            <Button
-              variant={isActive ? "danger" : "secondary"}
-              size="sm"
-              disabled={inactive}
-              onClick={() => handleToggle(ra)}
-            >
-              {isActive ? "Remove throttle" : "Apply throttle"}
-            </Button>
+          <div key={ra.id} className="flex flex-col">
+            {ra.throttleTargets.map((target) => (
+              <ThrottleTargetRow
+                key={target.id}
+                target={target}
+                inactive={inactive}
+                onApply={(limitRate, customerId) =>
+                  onConfirm({
+                    title: `Apply throttle: ${target.label}${customerId ? ` (${customerId})` : ""}`,
+                    body:  `Limit ${target.label}${customerId ? ` for ${customerId}` : ""} to ${limitRate} ${unitLabel(target.unit)}.`,
+                    action: () => dispatchThrottle(ra, target, true, limitRate, customerId),
+                  })
+                }
+                onRemove={(customerId) =>
+                  onConfirm({
+                    title: `Remove throttle: ${target.label}${customerId ? ` (${customerId})` : ""}`,
+                    body:  `Remove rate limit on ${target.label}${customerId ? ` for ${customerId}` : ""}. Full traffic resumes.`,
+                    action: () => dispatchThrottle(ra, target, false, 0, customerId),
+                  })
+                }
+              />
+            ))}
           </div>
         );
       })}
     </Section>
+  );
+}
+
+// Simple legacy toggle used when throttle_targets is absent
+function SimpleLegacyThrottle({
+  ra, inactive, onConfirm,
+}: {
+  ra: RemediationAction;
+  inactive: boolean;
+  onConfirm: (s: ConfirmState) => void;
+}) {
+  const { dispatchAction } = useSession();
+  const [throttled, setThrottled] = useState(false);
+
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-sim-text truncate">{ra.label ?? ra.service}</span>
+          {throttled && (
+            <span className="text-[9px] px-1 py-0.5 rounded font-mono bg-sim-yellow/20 text-sim-yellow">ACTIVE</span>
+          )}
+        </div>
+      </div>
+      <Button
+        variant={throttled ? "danger" : "secondary"}
+        size="sm"
+        disabled={inactive}
+        onClick={() => onConfirm({
+          title:  throttled ? `Remove throttle: ${ra.label ?? ra.service}` : `Apply throttle: ${ra.label ?? ra.service}`,
+          body:   throttled ? `Remove throttle from ${ra.service}. Full traffic will resume.` : `Apply throttle to ${ra.service}. ${ra.sideEffect ?? "Load will be shed."}`,
+          action: () => {
+            const next = !throttled;
+            setThrottled(next);
+            dispatchAction("throttle_traffic", { remediationActionId: ra.id, service: ra.service, throttle: next });
+          },
+        })}
+      >
+        {throttled ? "Remove throttle" : "Apply throttle"}
+      </Button>
+    </div>
   );
 }
 
