@@ -716,6 +716,24 @@ describe("validateCrossReferences — cycle detection", () => {
     expect(errors.some((e) => e.field.includes("cycle"))).toBe(true);
   });
 
+  it("errors when a component self-references via inputs", () => {
+    const config = parseFixture();
+    config.topology.focal_service.typical_rps = 100;
+    config.topology.focal_service.components = [
+      { id: "a", type: "load_balancer", label: "A", inputs: [] },
+      {
+        id: "b",
+        type: "ecs_cluster",
+        label: "B",
+        instance_count: 2,
+        utilization: 0.5,
+        inputs: ["a", "b"],
+      },
+    ];
+    const errors = validateCrossReferences(config);
+    expect(errors.some((e) => e.field.includes("cycle"))).toBe(true);
+  });
+
   it("no error for a valid linear chain", () => {
     const config = parseFixture();
     config.topology.focal_service.typical_rps = 100;
