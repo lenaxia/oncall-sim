@@ -22,7 +22,58 @@ import type {
   FeatureFlag,
   HostGroup,
 } from "../../context/ScenarioContext";
-import type { ThrottleTargetConfig, ThrottleUnit } from "../../scenario/types";
+import type {
+  ThrottleTargetConfig,
+  ThrottleUnit,
+  ServiceComponent,
+  DynamoDbComponent,
+  LambdaComponent,
+  KinesisStreamComponent,
+} from "../../scenario/types";
+
+// ── ServiceCapabilities ───────────────────────────────────────────────────────
+
+export interface ServiceCapabilities {
+  canRestart: boolean; // ecs_cluster | ec2_fleet | rds | elasticache
+  canScaleHosts: boolean; // ecs_cluster | ec2_fleet
+  canScaleConcurrency: boolean; // lambda
+  canScaleCapacity: boolean; // dynamodb | kinesis_stream
+  canSwitchBillingMode: boolean; // dynamodb where billingMode !== "on_demand"
+  canThrottle: boolean; // load_balancer | api_gateway
+}
+
+/**
+ * Derives which control surfaces to show based on the component graph.
+ * Uses Array.some() with type narrowing — no switch needed.
+ */
+export function getComponentCapabilities(
+  components: ServiceComponent[],
+): ServiceCapabilities {
+  return {
+    canRestart: components.some(
+      (c) =>
+        c.type === "ecs_cluster" ||
+        c.type === "ec2_fleet" ||
+        c.type === "rds" ||
+        c.type === "elasticache",
+    ),
+    canScaleHosts: components.some(
+      (c) => c.type === "ecs_cluster" || c.type === "ec2_fleet",
+    ),
+    canScaleConcurrency: components.some((c) => c.type === "lambda"),
+    canScaleCapacity: components.some(
+      (c) => c.type === "dynamodb" || c.type === "kinesis_stream",
+    ),
+    canSwitchBillingMode: components.some(
+      (c) =>
+        c.type === "dynamodb" &&
+        (c as DynamoDbComponent).billingMode !== "on_demand",
+    ),
+    canThrottle: components.some(
+      (c) => c.type === "load_balancer" || c.type === "api_gateway",
+    ),
+  };
+}
 
 // ── Confirm modal state ───────────────────────────────────────────────────────
 
@@ -333,19 +384,27 @@ interface ActiveThrottleState {
 
 function scopeBadgeClass(scope: ThrottleTargetConfig["scope"]): string {
   switch (scope) {
-    case "global":     return "bg-sim-red/20 text-sim-red";
-    case "endpoint":   return "bg-sim-blue/20 text-sim-blue";
-    case "customer":   return "bg-sim-purple/20 text-sim-purple";
-    case "consumer":   return "bg-sim-yellow/20 text-sim-yellow";
-    case "concurrent": return "bg-sim-green/20 text-sim-green";
+    case "global":
+      return "bg-sim-red/20 text-sim-red";
+    case "endpoint":
+      return "bg-sim-blue/20 text-sim-blue";
+    case "customer":
+      return "bg-sim-purple/20 text-sim-purple";
+    case "consumer":
+      return "bg-sim-yellow/20 text-sim-yellow";
+    case "concurrent":
+      return "bg-sim-green/20 text-sim-green";
   }
 }
 
 function unitLabel(unit: ThrottleUnit): string {
   switch (unit) {
-    case "rps":         return "rps";
-    case "msg_per_sec": return "msg/s";
-    case "concurrent":  return "concurrent";
+    case "rps":
+      return "rps";
+    case "msg_per_sec":
+      return "msg/s";
+    case "concurrent":
+      return "concurrent";
   }
 }
 
@@ -356,14 +415,15 @@ function ThrottleTargetRow({
   onApply,
   onRemove,
 }: {
-  target:   ThrottleTargetConfig;
+  target: ThrottleTargetConfig;
   inactive: boolean;
-  onApply:  (limitRate: number, customerId?: string) => void;
+  onApply: (limitRate: number, customerId?: string) => void;
   onRemove: (customerId?: string) => void;
 }) {
-  const [activeThrottle, setActiveThrottle] = useState<ActiveThrottleState | null>(null);
-  const [editing, setEditing]   = useState(false);
-  const [limitInput, setLimitInput]   = useState("");
+  const [activeThrottle, setActiveThrottle] =
+    useState<ActiveThrottleState | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [limitInput, setLimitInput] = useState("");
   const [customerInput, setCustomerInput] = useState("");
 
   const isCustomer = target.scope === "customer";
@@ -391,40 +451,73 @@ function ThrottleTargetRow({
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className={`text-[9px] px-1 py-0.5 rounded font-mono uppercase font-semibold flex-shrink-0 ${scopeBadgeClass(target.scope)}`}>
+            <span
+              className={`text-[9px] px-1 py-0.5 rounded font-mono uppercase font-semibold flex-shrink-0 ${scopeBadgeClass(target.scope)}`}
+            >
               {target.scope.toUpperCase()}
             </span>
-            <span className="text-xs font-medium text-sim-text">{target.label}</span>
+            <span className="text-xs font-medium text-sim-text">
+              {target.label}
+            </span>
             {activeThrottle && (
               <span className="text-[9px] px-1 py-0.5 rounded font-mono bg-sim-yellow/20 text-sim-yellow flex-shrink-0">
                 ACTIVE
               </span>
             )}
           </div>
-          <span className="text-xs text-sim-text-muted">{target.description}</span>
+          <span className="text-xs text-sim-text-muted">
+            {target.description}
+          </span>
           <span className="text-xs text-sim-text-faint">
             Baseline: {target.baselineRate} {uLabel}
             {activeThrottle && (
-              <> &nbsp;·&nbsp; <strong className="text-sim-yellow">Limit: {activeThrottle.limitRate} {uLabel}{activeThrottle.customerId ? ` (${activeThrottle.customerId})` : ""}</strong></>
+              <>
+                {" "}
+                &nbsp;·&nbsp;{" "}
+                <strong className="text-sim-yellow">
+                  Limit: {activeThrottle.limitRate} {uLabel}
+                  {activeThrottle.customerId
+                    ? ` (${activeThrottle.customerId})`
+                    : ""}
+                </strong>
+              </>
             )}
           </span>
         </div>
 
         {/* Right-side controls for non-customer, non-editing state */}
         {!isCustomer && !editing && !activeThrottle && (
-          <Button variant="secondary" size="sm" disabled={inactive}
-            onClick={() => { setEditing(true); setLimitInput(""); }}>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={inactive}
+            onClick={() => {
+              setEditing(true);
+              setLimitInput("");
+            }}
+          >
             Set limit
           </Button>
         )}
         {!isCustomer && !editing && activeThrottle && (
           <div className="flex gap-1.5 flex-shrink-0">
-            <Button variant="secondary" size="sm" disabled={inactive}
-              onClick={() => { setEditing(true); setLimitInput(String(activeThrottle.limitRate)); }}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={inactive}
+              onClick={() => {
+                setEditing(true);
+                setLimitInput(String(activeThrottle.limitRate));
+              }}
+            >
               Edit
             </Button>
-            <Button variant="danger" size="sm" disabled={inactive}
-              onClick={() => handleRemove(undefined)}>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={inactive}
+              onClick={() => handleRemove(undefined)}
+            >
               Remove
             </Button>
           </div>
@@ -445,12 +538,17 @@ function ThrottleTargetRow({
                        text-sim-text focus:outline-none focus:border-sim-accent disabled:opacity-50"
           />
           <span className="text-xs text-sim-text-faint">{uLabel}</span>
-          <Button variant="primary" size="sm"
+          <Button
+            variant="primary"
+            size="sm"
             disabled={inactive || !limitInput || parseInt(limitInput) < 1}
-            onClick={() => handleApply(parseInt(limitInput))}>
+            onClick={() => handleApply(parseInt(limitInput))}
+          >
             Apply
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancel</Button>
+          <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
         </div>
       )}
 
@@ -476,14 +574,28 @@ function ThrottleTargetRow({
             className="w-24 text-xs text-center bg-sim-surface border border-sim-border rounded px-1 py-0.5
                        text-sim-text focus:outline-none focus:border-sim-accent disabled:opacity-50"
           />
-          <Button variant="primary" size="sm"
-            disabled={inactive || !customerInput.trim() || !limitInput || parseInt(limitInput) < 1}
-            onClick={() => handleApply(parseInt(limitInput), customerInput.trim())}>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={
+              inactive ||
+              !customerInput.trim() ||
+              !limitInput ||
+              parseInt(limitInput) < 1
+            }
+            onClick={() =>
+              handleApply(parseInt(limitInput), customerInput.trim())
+            }
+          >
             Apply
           </Button>
           {activeThrottle && (
-            <Button variant="danger" size="sm" disabled={inactive}
-              onClick={() => handleRemove(activeThrottle.customerId)}>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={inactive}
+              onClick={() => handleRemove(activeThrottle.customerId)}
+            >
               Remove
             </Button>
           )}
@@ -498,27 +610,27 @@ function ThrottleSection({
   inactive,
   onConfirm,
 }: {
-  actions:   RemediationAction[];
-  inactive:  boolean;
+  actions: RemediationAction[];
+  inactive: boolean;
   onConfirm: (s: ConfirmState) => void;
 }) {
   const { dispatchAction } = useSession();
 
   function dispatchThrottle(
-    ra:           RemediationAction,
-    target:       ThrottleTargetConfig,
-    throttle:     boolean,
-    limitRate:    number,
-    customerId?:  string,
+    ra: RemediationAction,
+    target: ThrottleTargetConfig,
+    throttle: boolean,
+    limitRate: number,
+    customerId?: string,
   ) {
     dispatchAction("throttle_traffic", {
       remediationActionId: ra.id,
-      service:    ra.service,
+      service: ra.service,
       throttle,
-      targetId:   target.id,
-      scope:      target.scope,
-      label:      target.label,
-      unit:       target.unit,
+      targetId: target.id,
+      scope: target.scope,
+      label: target.label,
+      unit: target.unit,
       limitRate,
       customerId,
     });
@@ -530,7 +642,14 @@ function ThrottleSection({
         // If the action has throttle_targets use the rich table, else the simple toggle
         if (!ra.throttleTargets || ra.throttleTargets.length === 0) {
           // Simple toggle (backwards compat for actions without targets)
-          return <SimpleLegacyThrottle key={ra.id} ra={ra} inactive={inactive} onConfirm={onConfirm} />;
+          return (
+            <SimpleLegacyThrottle
+              key={ra.id}
+              ra={ra}
+              inactive={inactive}
+              onConfirm={onConfirm}
+            />
+          );
         }
         return (
           <div key={ra.id} className="flex flex-col">
@@ -542,15 +661,17 @@ function ThrottleSection({
                 onApply={(limitRate, customerId) =>
                   onConfirm({
                     title: `Apply throttle: ${target.label}${customerId ? ` (${customerId})` : ""}`,
-                    body:  `Limit ${target.label}${customerId ? ` for ${customerId}` : ""} to ${limitRate} ${unitLabel(target.unit)}.`,
-                    action: () => dispatchThrottle(ra, target, true, limitRate, customerId),
+                    body: `Limit ${target.label}${customerId ? ` for ${customerId}` : ""} to ${limitRate} ${unitLabel(target.unit)}.`,
+                    action: () =>
+                      dispatchThrottle(ra, target, true, limitRate, customerId),
                   })
                 }
                 onRemove={(customerId) =>
                   onConfirm({
                     title: `Remove throttle: ${target.label}${customerId ? ` (${customerId})` : ""}`,
-                    body:  `Remove rate limit on ${target.label}${customerId ? ` for ${customerId}` : ""}. Full traffic resumes.`,
-                    action: () => dispatchThrottle(ra, target, false, 0, customerId),
+                    body: `Remove rate limit on ${target.label}${customerId ? ` for ${customerId}` : ""}. Full traffic resumes.`,
+                    action: () =>
+                      dispatchThrottle(ra, target, false, 0, customerId),
                   })
                 }
               />
@@ -564,7 +685,9 @@ function ThrottleSection({
 
 // Simple legacy toggle used when throttle_targets is absent
 function SimpleLegacyThrottle({
-  ra, inactive, onConfirm,
+  ra,
+  inactive,
+  onConfirm,
 }: {
   ra: RemediationAction;
   inactive: boolean;
@@ -577,9 +700,13 @@ function SimpleLegacyThrottle({
     <div className="flex items-center justify-between gap-4">
       <div className="flex flex-col gap-0.5 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-sim-text truncate">{ra.label ?? ra.service}</span>
+          <span className="text-xs font-medium text-sim-text truncate">
+            {ra.label ?? ra.service}
+          </span>
           {throttled && (
-            <span className="text-[9px] px-1 py-0.5 rounded font-mono bg-sim-yellow/20 text-sim-yellow">ACTIVE</span>
+            <span className="text-[9px] px-1 py-0.5 rounded font-mono bg-sim-yellow/20 text-sim-yellow">
+              ACTIVE
+            </span>
           )}
         </div>
       </div>
@@ -587,15 +714,25 @@ function SimpleLegacyThrottle({
         variant={throttled ? "danger" : "secondary"}
         size="sm"
         disabled={inactive}
-        onClick={() => onConfirm({
-          title:  throttled ? `Remove throttle: ${ra.label ?? ra.service}` : `Apply throttle: ${ra.label ?? ra.service}`,
-          body:   throttled ? `Remove throttle from ${ra.service}. Full traffic will resume.` : `Apply throttle to ${ra.service}. ${ra.sideEffect ?? "Load will be shed."}`,
-          action: () => {
-            const next = !throttled;
-            setThrottled(next);
-            dispatchAction("throttle_traffic", { remediationActionId: ra.id, service: ra.service, throttle: next });
-          },
-        })}
+        onClick={() =>
+          onConfirm({
+            title: throttled
+              ? `Remove throttle: ${ra.label ?? ra.service}`
+              : `Apply throttle: ${ra.label ?? ra.service}`,
+            body: throttled
+              ? `Remove throttle from ${ra.service}. Full traffic will resume.`
+              : `Apply throttle to ${ra.service}. ${ra.sideEffect ?? "Load will be shed."}`,
+            action: () => {
+              const next = !throttled;
+              setThrottled(next);
+              dispatchAction("throttle_traffic", {
+                remediationActionId: ra.id,
+                service: ra.service,
+                throttle: next,
+              });
+            },
+          })
+        }
       >
         {throttled ? "Remove throttle" : "Apply throttle"}
       </Button>
@@ -676,6 +813,249 @@ function FeatureFlagsSection({
   );
 }
 
+// ── ScaleConcurrencySection ───────────────────────────────────────────────────
+
+function ScaleConcurrencySection({
+  components,
+  inactive,
+}: {
+  components: ServiceComponent[];
+  inactive: boolean;
+}) {
+  const { dispatchAction } = useSession();
+  const lambdaComponents = components.filter(
+    (c): c is LambdaComponent => c.type === "lambda",
+  );
+
+  const [values, setValues] = useState<Record<string, number>>(
+    Object.fromEntries(
+      lambdaComponents.map((c) => [c.id, c.reservedConcurrency]),
+    ),
+  );
+
+  if (lambdaComponents.length === 0) return null;
+
+  return (
+    <Section title="Concurrency">
+      {lambdaComponents.map((c) => (
+        <div key={c.id} className="flex flex-col gap-2">
+          <span className="text-xs text-sim-text-muted">{c.label}</span>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              value={values[c.id] ?? c.reservedConcurrency}
+              disabled={inactive}
+              className="w-24 px-2 py-1 text-xs border border-sim-border rounded bg-sim-surface text-sim-text"
+              onChange={(e) =>
+                setValues((prev) => ({
+                  ...prev,
+                  [c.id]: parseInt(e.target.value, 10) || 0,
+                }))
+              }
+            />
+            <span className="text-xs text-sim-text-faint">
+              reserved executions
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={inactive}
+              onClick={() =>
+                dispatchAction("scale_capacity", {
+                  componentId: c.id,
+                  reservedConcurrency: values[c.id] ?? c.reservedConcurrency,
+                })
+              }
+            >
+              Apply
+            </Button>
+          </div>
+        </div>
+      ))}
+    </Section>
+  );
+}
+
+// ── ScaleCapacitySection ──────────────────────────────────────────────────────
+
+function ScaleCapacitySection({
+  components,
+  inactive,
+}: {
+  components: ServiceComponent[];
+  inactive: boolean;
+}) {
+  const { dispatchAction } = useSession();
+
+  const dynamoComponents = components.filter(
+    (c): c is DynamoDbComponent => c.type === "dynamodb",
+  );
+  const kinesisComponents = components.filter(
+    (c): c is KinesisStreamComponent => c.type === "kinesis_stream",
+  );
+
+  const [ddbValues, setDdbValues] = useState<
+    Record<
+      string,
+      {
+        writeCapacity: number;
+        readCapacity: number;
+        billingMode: "provisioned" | "on_demand";
+      }
+    >
+  >(
+    Object.fromEntries(
+      dynamoComponents.map((c) => [
+        c.id,
+        {
+          writeCapacity: c.writeCapacity,
+          readCapacity: c.readCapacity,
+          billingMode: c.billingMode,
+        },
+      ]),
+    ),
+  );
+
+  const [kinesisValues, setKinesisValues] = useState<Record<string, number>>(
+    Object.fromEntries(kinesisComponents.map((c) => [c.id, c.shardCount])),
+  );
+
+  if (dynamoComponents.length === 0 && kinesisComponents.length === 0)
+    return null;
+
+  return (
+    <Section title="Capacity">
+      {dynamoComponents.map((c) => {
+        const vals = ddbValues[c.id] ?? {
+          writeCapacity: c.writeCapacity,
+          readCapacity: c.readCapacity,
+          billingMode: c.billingMode,
+        };
+        return (
+          <div key={c.id} className="flex flex-col gap-2">
+            <span className="text-xs text-sim-text-muted">{c.label}</span>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-sim-text-faint">Write (WCU)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={vals.writeCapacity}
+                  disabled={inactive || vals.billingMode === "on_demand"}
+                  className="w-full px-2 py-1 text-xs border border-sim-border rounded bg-sim-surface text-sim-text disabled:opacity-50"
+                  onChange={(e) =>
+                    setDdbValues((prev) => ({
+                      ...prev,
+                      [c.id]: {
+                        ...vals,
+                        writeCapacity: parseInt(e.target.value, 10) || 1,
+                      },
+                    }))
+                  }
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-sim-text-faint">Read (RCU)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={vals.readCapacity}
+                  disabled={inactive || vals.billingMode === "on_demand"}
+                  className="w-full px-2 py-1 text-xs border border-sim-border rounded bg-sim-surface text-sim-text disabled:opacity-50"
+                  onChange={(e) =>
+                    setDdbValues((prev) => ({
+                      ...prev,
+                      [c.id]: {
+                        ...vals,
+                        readCapacity: parseInt(e.target.value, 10) || 1,
+                      },
+                    }))
+                  }
+                />
+              </div>
+            </div>
+            {c.billingMode === "provisioned" && (
+              <label className="flex items-center gap-2 text-xs text-sim-text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={vals.billingMode === "on_demand"}
+                  disabled={inactive}
+                  onChange={(e) =>
+                    setDdbValues((prev) => ({
+                      ...prev,
+                      [c.id]: {
+                        ...vals,
+                        billingMode: e.target.checked
+                          ? "on_demand"
+                          : "provisioned",
+                      },
+                    }))
+                  }
+                />
+                Switch to on-demand
+              </label>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={inactive}
+              onClick={() =>
+                dispatchAction("scale_capacity", {
+                  componentId: c.id,
+                  ...(vals.billingMode === "provisioned"
+                    ? {
+                        writeCapacity: vals.writeCapacity,
+                        readCapacity: vals.readCapacity,
+                      }
+                    : {}),
+                  billingMode: vals.billingMode,
+                })
+              }
+            >
+              Apply
+            </Button>
+          </div>
+        );
+      })}
+      {kinesisComponents.map((c) => (
+        <div key={c.id} className="flex flex-col gap-2">
+          <span className="text-xs text-sim-text-muted">{c.label}</span>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              value={kinesisValues[c.id] ?? c.shardCount}
+              disabled={inactive}
+              className="w-24 px-2 py-1 text-xs border border-sim-border rounded bg-sim-surface text-sim-text"
+              onChange={(e) =>
+                setKinesisValues((prev) => ({
+                  ...prev,
+                  [c.id]: parseInt(e.target.value, 10) || 1,
+                }))
+              }
+            />
+            <span className="text-xs text-sim-text-faint">shards</span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={inactive}
+              onClick={() =>
+                dispatchAction("scale_capacity", {
+                  componentId: c.id,
+                  shardCount: kinesisValues[c.id] ?? c.shardCount,
+                })
+              }
+            >
+              Apply
+            </Button>
+          </div>
+        </div>
+      ))}
+    </Section>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export function RemediationsPanel({ inactive }: { inactive: boolean }) {
@@ -684,7 +1064,10 @@ export function RemediationsPanel({ inactive }: { inactive: boolean }) {
 
   if (!scenario) return null;
 
-  const { remediationActions, featureFlags, hostGroups } = scenario;
+  const { remediationActions, featureFlags, hostGroups, topology } = scenario;
+  const components = topology.focalService.components;
+  const capabilities = getComponentCapabilities(components);
+
   const byType = (type: RemediationAction["type"]) =>
     remediationActions.filter((a) => a.type === type);
 
@@ -700,7 +1083,9 @@ export function RemediationsPanel({ inactive }: { inactive: boolean }) {
     scales.length > 0 ||
     throttles.length > 0 ||
     flagActions.length > 0 ||
-    featureFlags.length > 0;
+    featureFlags.length > 0 ||
+    capabilities.canScaleConcurrency ||
+    capabilities.canScaleCapacity;
 
   if (!hasAnything) return null;
 
@@ -736,6 +1121,15 @@ export function RemediationsPanel({ inactive }: { inactive: boolean }) {
             inactive={inactive}
             onConfirm={setConfirm}
           />
+        )}
+        {capabilities.canScaleConcurrency && (
+          <ScaleConcurrencySection
+            components={components}
+            inactive={inactive}
+          />
+        )}
+        {capabilities.canScaleCapacity && (
+          <ScaleCapacitySection components={components} inactive={inactive} />
         )}
         {(flagActions.length > 0 || featureFlags.length > 0) && (
           <FeatureFlagsSection

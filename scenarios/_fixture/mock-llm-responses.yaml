@@ -9,15 +9,10 @@ stakeholder_responses:
 
   - trigger: after_action:trigger_rollback:fixture-service
     tool_calls:
-      - tool: apply_metric_response
+      - tool: select_metric_reaction
         params:
-          affected_metrics:
-            - service: fixture-service
-              metric_id: error_rate
-              direction: recovery
-              pattern: smooth_decay
-              speed: 5m
-              magnitude: full
+          reaction_id: full_recovery
+          reasoning: "Rollback to v1.0.0 resolves the bad deployment causing the error rate spike."
       - tool: send_message
         params:
           persona: fixture-persona
