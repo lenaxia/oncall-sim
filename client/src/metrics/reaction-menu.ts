@@ -1,69 +1,91 @@
-// reaction-menu.ts — builds the 4-candidate reaction menu for a trainee action.
+// reaction-menu.ts — builds the hint template for the metric reaction LLM call.
 //
-// The LLM sees the menu via the ## Available Reactions prompt section and
-// selects one reaction_id via the select_metric_reaction tool.
+// The LLM selects an outcome (full/partial/worsening/no_effect) and specifies
+// pattern, speed, and optionally scope. Hints are provided for each outcome
+// but are non-binding — the LLM may override them based on the action context.
 //
-// All four reactions are always present. Their overlays vary by action type
-// and incident context.
+// The actual overlay computation happens in metric-reaction-engine.ts at
+// apply-time, using the LLM's chosen parameters and the current metric state.
 
 import type { AuditEntry } from "@shared/types/events";
 import type { LoadedScenario } from "../scenario/types";
-import type { MetricStore, ActiveOverlay } from "./metric-store";
-import type { ReactionMenu, MetricReaction, MetricOverlaySpec } from "./types";
+import type { MetricStore, ActiveOverlayPattern } from "./metric-store";
+import type { ActionType } from "@shared/types/events";
+import { REACTIVE_SPEED_SECONDS } from "./patterns/reactive-overlay";
+import type { ReactiveSpeedTier } from "@shared/types/events";
 
-// ── Action type helpers ───────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-// Communication-only actions — no metric effect expected. The engine filters
-// these with PASSIVE_ACTIONS; buildReactionMenu is not called for them.
-// Listed here for documentation only.
-const _COMMUNICATION_ACTIONS = new Set([
-  "post_chat_message",
-  "reply_email",
-  "direct_message_persona",
-  "ack_page",
-  "page_user",
-  "update_ticket",
-  "add_ticket_comment",
-]);
+export type ReactionOutcome =
+  | "full_recovery"
+  | "partial_recovery"
+  | "worsening"
+  | "no_effect";
 
-// ── buildReactionMenu ─────────────────────────────────────────────────────────
+/** A single metric available for overlay application. */
+export interface ReactionMetricContext {
+  service: string;
+  metricId: string;
+  currentValue: number;
+  resolvedValue: number;
+  peakValue: number;
+}
+
+/** Non-binding hints for each outcome, derived from the action window and metric state. */
+export interface OutcomeHint {
+  outcome: ReactionOutcome;
+  label: string;
+  description: string;
+  suggestedPattern: ActiveOverlayPattern;
+  suggestedSpeed: ReactiveSpeedTier;
+}
 
 /**
- * Builds a fixed-4-reaction menu for the given trainee action.
- * Called by the metric reaction engine before each LLM call.
- *
- * When all three non-no_effect reactions have empty overlays (no active
- * incidents or communication-only action), the engine will skip the LLM call.
+ * The reaction template: everything the LLM needs to make an informed choice.
+ * Replaces the old pre-computed ReactionMenu with overlay specs.
  */
-export function buildReactionMenu(
-  action: AuditEntry,
+export interface ReactionTemplate {
+  /** All actions taken since the last completed reaction. */
+  actions: AuditEntry[];
+  /** Active incident metrics the LLM can affect. Empty = skip LLM call. */
+  activeMetrics: ReactionMetricContext[];
+  /** Non-binding hints for each outcome. */
+  hints: [
+    OutcomeHint & { outcome: "full_recovery" },
+    OutcomeHint & { outcome: "partial_recovery" },
+    OutcomeHint & { outcome: "worsening" },
+    OutcomeHint & { outcome: "no_effect" },
+  ];
+  /** The actionType of the most recent action — used for context only. */
+  primaryActionType: ActionType;
+}
+
+// ── buildReactionTemplate ─────────────────────────────────────────────────────
+
+/**
+ * Builds the hint template for the given action window.
+ * Called once per LLM invocation. All actions in the window are considered;
+ * the most recent drives the primaryActionType.
+ *
+ * Returns a template with empty activeMetrics when no incidents are active
+ * (caller skips the LLM call in that case).
+ */
+export function buildReactionTemplate(
+  actions: AuditEntry[],
   scenario: LoadedScenario,
   metricStore: MetricStore,
   simTime: number,
-): ReactionMenu {
-  const metrics = metricStore.listMetrics();
-  const currentValues: Record<string, Record<string, number>> = {};
-  for (const { service, metricId } of metrics) {
-    if (!currentValues[service]) currentValues[service] = {};
-    const v = metricStore.getCurrentValue(service, metricId, simTime);
-    if (v != null) currentValues[service][metricId] = v;
-  }
+): ReactionTemplate {
+  const lastAction = actions[actions.length - 1];
 
-  // Collect all metrics that have active incident overlays (non-empty overlayApplications)
-  const incidentMetrics: Array<{
-    service: string;
-    metricId: string;
-    resolvedValue: number;
-    currentValue: number;
-    peakValue: number;
-    isCapacity: boolean; // saturation-type metric
-  }> = [];
+  // Collect active incident metrics
+  const allMetrics = metricStore.listMetrics();
+  const activeMetrics: ReactionMetricContext[] = [];
 
-  for (const { service, metricId } of metrics) {
+  for (const { service, metricId } of allMetrics) {
     const rp = metricStore.getResolvedParams(service, metricId);
     if (!rp || rp.overlayApplications.length === 0) continue;
 
-    // Only consider overlays that are currently active (onset reached)
     const activeApps = rp.overlayApplications.filter(
       (a) =>
         a.onsetSecond <= simTime &&
@@ -71,136 +93,129 @@ export function buildReactionMenu(
     );
     if (activeApps.length === 0) continue;
 
+    const currentValue =
+      metricStore.getCurrentValue(service, metricId, simTime) ??
+      rp.baselineValue;
     const maxPeak = Math.max(...activeApps.map((a) => a.peakValue));
-    const isSaturation = activeApps.some((a) => a.overlay === "saturation");
-    const currentValue = currentValues[service]?.[metricId] ?? rp.baselineValue;
 
-    incidentMetrics.push({
+    activeMetrics.push({
       service,
       metricId,
-      resolvedValue: rp.resolvedValue,
       currentValue,
+      resolvedValue: rp.resolvedValue,
       peakValue: maxPeak,
-      isCapacity: isSaturation,
     });
   }
 
-  const fullRecovery = buildFullRecovery(incidentMetrics, simTime);
-  const partialRecovery = buildPartialRecovery(incidentMetrics, simTime);
-  const worsening = buildWorsening(incidentMetrics, simTime);
-  const noEffect = buildNoEffect();
+  const hints = buildHints(actions, activeMetrics);
 
   return {
-    actionType: action.action,
-    reactions: [fullRecovery, partialRecovery, worsening, noEffect],
+    actions,
+    activeMetrics,
+    hints,
+    primaryActionType: lastAction.action,
   };
 }
 
-// ── Reaction builders ─────────────────────────────────────────────────────────
+// ── Hint derivation ───────────────────────────────────────────────────────────
 
-type IncidentMetric = {
-  service: string;
-  metricId: string;
-  resolvedValue: number;
-  currentValue: number;
-  peakValue: number;
-  isCapacity: boolean;
-};
+/**
+ * Derives non-binding hints for each outcome based on the action window.
+ * These are suggestions — the LLM should choose what fits the situation.
+ */
+function buildHints(
+  actions: AuditEntry[],
+  activeMetrics: ReactionMetricContext[],
+): ReactionTemplate["hints"] {
+  const { suggestedPattern, suggestedSpeed } = deriveDefaultHint(actions);
+  const worsePattern: ActiveOverlayPattern = "blip_then_decay";
 
-function buildFullRecovery(
-  incidentMetrics: IncidentMetric[],
-  simTime: number,
-): MetricReaction & { id: "full_recovery" } {
-  const overlays: MetricOverlaySpec[] = incidentMetrics.map((m) =>
-    makeOverlaySpec(m.service, m.metricId, {
-      startSimTime: simTime,
-      startValue: m.currentValue,
-      targetValue: m.resolvedValue,
-      pattern: "smooth_decay",
-      speedSeconds: 300,
-      sustained: true,
-    }),
-  );
+  const metricNames =
+    activeMetrics.map((m) => m.metricId).join(", ") ||
+    "active incident metrics";
 
-  return {
-    id: "full_recovery",
-    label: "Full recovery — action fully resolves the incident",
+  const full: OutcomeHint & { outcome: "full_recovery" } = {
+    outcome: "full_recovery",
+    label: "Full recovery — actions collectively resolve the root cause",
     description:
-      "Select when the action directly addresses the root cause and metrics will return to normal.",
-    overlays,
+      "All incident metrics return to baseline. Select when the actions " +
+      "directly address the root cause and no further degradation is expected.",
+    suggestedPattern,
+    suggestedSpeed,
   };
-}
 
-function buildPartialRecovery(
-  incidentMetrics: IncidentMetric[],
-  simTime: number,
-): MetricReaction & { id: "partial_recovery" } {
-  const overlays: MetricOverlaySpec[] = incidentMetrics.map((m) => {
-    const midpoint = (m.currentValue + m.resolvedValue) / 2;
-    return makeOverlaySpec(m.service, m.metricId, {
-      startSimTime: simTime,
-      startValue: m.currentValue,
-      targetValue: midpoint,
-      pattern: "smooth_decay",
-      speedSeconds: 300,
-      sustained: true,
-    });
-  });
-
-  return {
-    id: "partial_recovery",
-    label: "Partial recovery — action helps but does not fully resolve",
+  const partial: OutcomeHint & { outcome: "partial_recovery" } = {
+    outcome: "partial_recovery",
+    label: "Partial recovery — actions help but root cause not fully addressed",
     description:
-      "Select when the action improves the situation but the root cause is not fully addressed.",
-    overlays,
+      "Metrics improve toward halfway between current and baseline. " +
+      "Select when the actions reduce impact but the underlying issue persists.",
+    suggestedPattern: "smooth_decay", // partial improvement is always gradual
+    suggestedSpeed: "15m",
   };
-}
 
-function buildWorsening(
-  incidentMetrics: IncidentMetric[],
-  simTime: number,
-): MetricReaction & { id: "worsening" } {
-  // Worsening: metrics spike further toward peakValue × 1.2 (above current peak)
-  const overlays: MetricOverlaySpec[] = incidentMetrics.map((m) => {
-    const worseTarget = Math.min(
-      m.peakValue * 1.2,
-      m.peakValue + m.currentValue * 0.5,
-    );
-    return makeOverlaySpec(m.service, m.metricId, {
-      startSimTime: simTime,
-      startValue: m.currentValue,
-      targetValue: Math.max(worseTarget, m.currentValue * 1.1),
-      pattern: "blip_then_decay",
-      speedSeconds: 600,
-      sustained: true,
-    });
-  });
-
-  return {
-    id: "worsening",
-    label: "Situation worsens — action made things worse",
+  const worse: OutcomeHint & { outcome: "worsening" } = {
+    outcome: "worsening",
+    label: "Worsening — actions made things worse or introduced a new problem",
     description:
-      "Select when this action is counterproductive or introduces a new problem.",
-    overlays,
+      `Metrics spike further on ${metricNames}. ` +
+      "Select when the actions are counterproductive, target the wrong component, " +
+      "or introduce a side effect that degrades the service further.",
+    suggestedPattern: worsePattern,
+    suggestedSpeed: "5m",
   };
-}
 
-function buildNoEffect(): MetricReaction & { id: "no_effect" } {
-  return {
-    id: "no_effect",
-    label: "No meaningful metric change",
+  const noEffect: OutcomeHint & { outcome: "no_effect" } = {
+    outcome: "no_effect",
+    label: "No meaningful change — actions had no impact on the incident",
     description:
-      "Select when this action had no impact on the incident trajectory.",
-    overlays: [],
+      "Metrics continue their current trajectory unchanged. " +
+      "Select when the actions are unrelated to the root cause.",
+    suggestedPattern,
+    suggestedSpeed,
   };
+
+  return [full, partial, worse, noEffect];
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+/**
+ * Derives the most appropriate pattern and speed hint from the action window.
+ * Based on the types of actions taken — e.g. rollback → cliff (immediate),
+ * scale → smooth_decay (gradual), feature flag → cliff (immediate).
+ */
+function deriveDefaultHint(actions: AuditEntry[]): {
+  suggestedPattern: ActiveOverlayPattern;
+  suggestedSpeed: ReactiveSpeedTier;
+} {
+  // Use the most recent action as the primary signal
+  const actionTypes = new Set(actions.map((a) => a.action));
 
-function makeOverlaySpec(
-  service: string,
-  metricId: string,
-  overlay: ActiveOverlay,
-): MetricOverlaySpec {
-  return { service, metricId, overlay };
+  // Immediate fixes — rollback, feature flag toggle → cliff
+  if (
+    actionTypes.has("trigger_rollback") ||
+    actionTypes.has("toggle_feature_flag") ||
+    actionTypes.has("emergency_deploy")
+  ) {
+    return { suggestedPattern: "cliff", suggestedSpeed: "1m" };
+  }
+
+  // Scaling or infra changes — gradual improvement
+  if (
+    actionTypes.has("scale_cluster") ||
+    actionTypes.has("scale_capacity") ||
+    actionTypes.has("restart_service")
+  ) {
+    return { suggestedPattern: "smooth_decay", suggestedSpeed: "5m" };
+  }
+
+  // Traffic shaping — stepped improvement
+  if (actionTypes.has("throttle_traffic")) {
+    return { suggestedPattern: "stepped", suggestedSpeed: "5m" };
+  }
+
+  // Default
+  return { suggestedPattern: "smooth_decay", suggestedSpeed: "5m" };
 }
+
+// Re-export REACTIVE_SPEED_SECONDS for consumers that need to translate speed tier → seconds
+export { REACTIVE_SPEED_SECONDS };

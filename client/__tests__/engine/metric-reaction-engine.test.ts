@@ -148,7 +148,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { reaction_id: "full_recovery" },
+        params: { outcome: "full_recovery", pattern: "smooth_decay" },
       },
     ]);
 
@@ -171,7 +171,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      { tool: "select_metric_reaction", params: { reaction_id: "worsening" } },
+      { tool: "select_metric_reaction", params: { outcome: "worsening", pattern: "blip_then_decay" } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -213,7 +213,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { reaction_id: "partial_recovery" },
+        params: { outcome: "partial_recovery", pattern: "smooth_decay" },
       },
     ]);
 
@@ -237,7 +237,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      { tool: "select_metric_reaction", params: { reaction_id: "no_effect" } },
+      { tool: "select_metric_reaction", params: { outcome: "no_effect", pattern: "smooth_decay" } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -257,7 +257,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const spy = vi.spyOn(store, "applyActiveOverlay");
 
     const llm = makeMockLLM([
-      { tool: "select_metric_reaction", params: { reaction_id: "invalid_id" } },
+      { tool: "select_metric_reaction", params: { outcome: "invalid_id", pattern: "smooth_decay" } },
     ]);
 
     const engine = createMetricReactionEngine(
@@ -271,7 +271,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("reaction_id missing → applyActiveOverlay not called", async () => {
+  it("outcome missing → applyActiveOverlay not called", async () => {
     const scenario = makeScenarioWithApplyMetric(_fixture);
     const store = makeStoreWithIncident();
     const spy = vi.spyOn(store, "applyActiveOverlay");
@@ -297,7 +297,7 @@ describe("MetricReactionEngine — select_metric_reaction happy paths", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { reaction_id: "full_recovery" },
+        params: { outcome: "full_recovery", pattern: "smooth_decay" },
       },
     ]);
 
@@ -400,7 +400,7 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     const llm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { reaction_id: "full_recovery" },
+        params: { outcome: "full_recovery", pattern: "smooth_decay" },
       },
     ]);
 
@@ -430,7 +430,7 @@ describe("MetricReactionEngine — getLLMClient getter", () => {
     const realLlm = makeMockLLM([
       {
         tool: "select_metric_reaction",
-        params: { reaction_id: "full_recovery" },
+        params: { outcome: "full_recovery", pattern: "smooth_decay" },
       },
     ]);
 

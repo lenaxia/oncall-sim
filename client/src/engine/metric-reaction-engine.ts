@@ -19,8 +19,11 @@ import {
   resolveReactiveTarget,
 } from "../metrics/patterns/reactive-overlay";
 import type { ReactiveSpeedTier } from "@shared/types/events";
-import { buildReactionMenu } from "../metrics/reaction-menu";
-import type { ReactionMenu } from "../metrics/types";
+import { buildReactionTemplate } from "../metrics/reaction-menu";
+import type {
+  ReactionTemplate,
+  ReactionOutcome,
+} from "../metrics/reaction-menu";
 
 const log = logger.child({ component: "metric-reaction-engine" });
 
@@ -113,27 +116,20 @@ export function createMetricReactionEngine(
 
     if (newActions.length === 0) return;
 
-    // The most recent active action drives the reaction menu.
-    const lastAction = newActions[newActions.length - 1];
-
-    // Record how far into the audit log we've processed. The next call will
-    // only show actions appended after this point.
+    // Record how far into the audit log we've processed.
     _lastProcessedAuditLength = context.auditLog.length;
 
-    const menu = buildReactionMenu(
-      lastAction,
+    const template = buildReactionTemplate(
+      newActions,
       scenario,
       metricStore,
       getSimTime(),
     );
 
-    // Skip LLM call if no non-no_effect reactions have overlays (no active incidents)
-    const hasEffect = menu.reactions.some(
-      (r) => r.id !== "no_effect" && r.overlays.length > 0,
-    );
-    if (!hasEffect) return;
+    // Skip LLM call when no incident metrics are active
+    if (template.activeMetrics.length === 0) return;
 
-    const messages = _buildPrompt(context, menu, newActions);
+    const messages = _buildPrompt(context, template, newActions);
 
     let response;
     try {
@@ -153,209 +149,115 @@ export function createMetricReactionEngine(
 
     for (const toolCall of response.toolCalls) {
       if (toolCall.tool !== "select_metric_reaction") continue;
-      const reactionId = toolCall.params["reaction_id"];
-      if (typeof reactionId !== "string") continue;
-      _applySelectedReaction(reactionId, menu);
+      const outcome = toolCall.params["outcome"];
+      if (typeof outcome !== "string") continue;
+      const pattern =
+        (toolCall.params["pattern"] as ActiveOverlayPattern | undefined) ??
+        template.hints[0].suggestedPattern;
+      const speedTier =
+        (toolCall.params["speed"] as ReactiveSpeedTier | undefined) ?? "5m";
+      const scope = toolCall.params["scope"];
+      const scopeSet = Array.isArray(scope)
+        ? new Set<string>(scope as string[])
+        : null;
+      _applySelectedReaction(
+        outcome as ReactionOutcome,
+        pattern,
+        speedTier,
+        scopeSet,
+        template,
+      );
       break;
     }
   }
 
   function _applySelectedReaction(
-    reactionId: string,
-    menu: ReactionMenu,
+    outcome: ReactionOutcome,
+    pattern: ActiveOverlayPattern,
+    speedTier: ReactiveSpeedTier,
+    scopeSet: Set<string> | null,
+    template: ReactionTemplate,
   ): void {
-    const reaction = menu.reactions.find((r) => r.id === reactionId);
-    if (!reaction) {
-      log.warn({ reactionId }, "Unknown reaction_id — no overlay applied");
+    const VALID_OUTCOMES = new Set([
+      "full_recovery",
+      "partial_recovery",
+      "worsening",
+      "no_effect",
+    ]);
+    if (!VALID_OUTCOMES.has(outcome)) {
+      log.warn({ outcome }, "Unknown outcome — no overlay applied");
       return;
     }
-    for (const spec of reaction.overlays) {
-      metricStore.applyActiveOverlay(spec.service, spec.metricId, spec.overlay);
-      log.info({ service: spec.service, metricId: spec.metricId, reactionId });
+
+    if (outcome === "no_effect") {
+      log.info({ outcome }, "no_effect — no overlay applied");
+      return;
     }
-  }
 
-  function _applyMetricResponse(params: Record<string, unknown>): void {
-    const entries = params["affected_metrics"];
-    if (!Array.isArray(entries)) return;
-
-    // Use current sim time when the LLM response arrives — not the stale
-    // context.simTime captured when the action was taken.
+    const speedSeconds = REACTIVE_SPEED_SECONDS[speedTier] ?? 300;
     const applyAtSimTime = getSimTime();
 
-    for (const rawEntry of entries as Record<string, unknown>[]) {
-      const service = rawEntry["service"] as string | undefined;
-      const metricId = rawEntry["metric_id"] as string | undefined;
-      if (!service || !metricId) continue;
+    const metricsToApply = scopeSet
+      ? template.activeMetrics.filter((m) => scopeSet.has(m.metricId))
+      : template.activeMetrics;
 
-      // Validate service
-      const focalService = scenario.opsDashboard.focalService;
-      const isKnownService =
-        service === focalService.name ||
-        scenario.opsDashboard.correlatedServices.some(
-          (cs) => cs.name === service,
-        );
-      if (!isKnownService) {
-        log.warn(
-          { service },
-          "apply_metric_response: unknown service, skipping",
-        );
-        continue;
-      }
-
-      // Validate metricId
-      const knownMetrics: string[] =
-        service === focalService.name
-          ? focalService.metrics.map((m) => m.archetype)
-          : (() => {
-              const cs = scenario.opsDashboard.correlatedServices.find(
-                (c) => c.name === service,
-              );
-              return (
-                cs?.overrides?.map((m) => m.archetype) ??
-                focalService.metrics.map((m) => m.archetype)
-              );
-            })();
-      if (!knownMetrics.includes(metricId)) {
-        log.warn(
-          { service, metricId },
-          "apply_metric_response: unknown metric_id, skipping",
-        );
-        continue;
-      }
-
-      const direction =
-        (rawEntry["direction"] as "recovery" | "worsening") ?? "recovery";
-      const speed = (rawEntry["speed"] as ReactiveSpeedTier) ?? "5m";
-      const magnitude = (rawEntry["magnitude"] as "full" | "partial") ?? "full";
-      const speedSeconds = REACTIVE_SPEED_SECONDS[speed];
-      const sustained = rawEntry["sustained"] !== false; // default true
-
-      // cascade_clear: expand to individual smooth_decay overlays with stagger
-      const rawPattern = (rawEntry["pattern"] as string) ?? "smooth_decay";
-      if (rawPattern === "cascade_clear") {
-        const INFRA = new Set([
-          "cpu_utilization",
-          "memory_used",
-          "memory_rss",
-          "connection_pool_used",
-          "thread_count",
-          "heap_used",
-        ]);
-        const QUALITY = new Set([
-          "error_rate",
-          "fault_rate",
-          "availability",
-          "p99_latency_ms",
-          "p50_latency_ms",
-        ]);
-        const group = INFRA.has(metricId) ? 0 : QUALITY.has(metricId) ? 1 : 2;
-        const staggeredStart = applyAtSimTime + (group * speedSeconds) / 3;
-
-        const rp = metricStore.getResolvedParams(service, metricId);
-        const currentValue = metricStore.getCurrentValue(
-          service,
-          metricId,
-          applyAtSimTime,
-        );
-        if (!rp || currentValue === null) continue;
-
-        const targetValue = resolveReactiveTarget(
-          direction,
-          magnitude,
-          currentValue,
-          rp.resolvedValue,
-          rp.peakValue,
-        );
-        const overlay: ActiveOverlay = {
-          startSimTime: staggeredStart,
-          startValue: currentValue,
-          targetValue,
-          pattern: "smooth_decay",
-          speedSeconds,
-          sustained,
-        };
-        metricStore.applyActiveOverlay(service, metricId, overlay);
-        log.info(
-          {
-            service,
-            metricId,
-            pattern: "smooth_decay (cascade_clear)",
-            direction,
-            speed,
-            sustained,
-            simTime: staggeredStart,
-          },
-          "apply_metric_response executed",
-        );
-        continue;
-      }
-
-      const pattern = rawPattern as ActiveOverlayPattern;
-      const rp = metricStore.getResolvedParams(service, metricId);
-      const currentValue = metricStore.getCurrentValue(
-        service,
-        metricId,
-        applyAtSimTime,
-      );
-      if (!rp || currentValue === null) {
-        log.warn(
-          { service, metricId },
-          "apply_metric_response: no resolved params or current value, skipping",
-        );
-        continue;
-      }
-
-      const targetValue = resolveReactiveTarget(
-        direction,
-        magnitude,
-        currentValue,
-        rp.resolvedValue,
-        rp.peakValue,
-      );
+    for (const m of metricsToApply) {
+      const targetValue = computeTargetValue(outcome, m, pattern);
 
       const overlay: ActiveOverlay = {
         startSimTime: applyAtSimTime,
-        startValue: currentValue,
+        startValue: m.currentValue,
         targetValue,
         pattern,
         speedSeconds,
-        sustained,
-        ...(pattern === "oscillating"
-          ? {
-              oscillationMode:
-                (rawEntry["oscillation_mode"] as
-                  | "damping"
-                  | "sustained"
-                  | undefined) ?? "damping",
-              cycleSeconds: (() => {
-                const raw = rawEntry["cycle_seconds"] as number | undefined;
-                return raw != null ? Math.min(300, Math.max(30, raw)) : 60;
-              })(),
-            }
-          : {}),
+        sustained: true,
       };
 
-      metricStore.applyActiveOverlay(service, metricId, overlay);
+      metricStore.applyActiveOverlay(m.service, m.metricId, overlay);
       log.info(
         {
-          service,
-          metricId,
+          service: m.service,
+          metricId: m.metricId,
+          outcome,
           pattern,
-          direction,
-          speed,
-          magnitude,
-          sustained,
-          simTime: applyAtSimTime,
+          speed: speedTier,
+          targetValue,
         },
-        "apply_metric_response executed",
+        "select_metric_reaction applied",
       );
+    }
+  }
+
+  function computeTargetValue(
+    outcome: Exclude<ReactionOutcome, "no_effect">,
+    m: ReactionTemplate["activeMetrics"][number],
+    _pattern: ActiveOverlayPattern,
+  ): number {
+    switch (outcome) {
+      case "full_recovery":
+        return m.resolvedValue;
+      case "partial_recovery":
+        return resolveReactiveTarget(
+          "recovery",
+          "partial",
+          m.currentValue,
+          m.resolvedValue,
+          m.peakValue,
+        );
+      case "worsening":
+        return resolveReactiveTarget(
+          "worsening",
+          "full",
+          m.currentValue,
+          m.resolvedValue,
+          m.peakValue,
+        );
     }
   }
 
   function _buildPrompt(
     context: StakeholderContext,
-    menu: ReactionMenu,
+    template: ReactionTemplate,
     newActions: StakeholderContext["auditLog"],
   ): LLMMessage[] {
     const focalService = scenario.opsDashboard.focalService;
@@ -378,8 +280,11 @@ export function createMetricReactionEngine(
 
     const systemContent = [
       "You are the environment simulator for an on-call training scenario.",
-      "Your only job is to select the pre-computed metric reaction that best reflects the outcome",
-      "of the most recent trainee action. Always call select_metric_reaction with exactly one reaction_id.",
+      "Assess the cumulative effect of the trainee's recent actions and call",
+      "select_metric_reaction with: the outcome category, the pattern that best",
+      "models how metrics will visibly change, the speed, and optionally a scope",
+      "(list of metric_ids to affect — defaults to all active incident metrics).",
+      "Hints are provided per outcome but are non-binding.",
       "",
       "Available services and metrics:",
       ...serviceLines,
@@ -470,11 +375,18 @@ export function createMetricReactionEngine(
       activeThrottleSection = `## Active Throttles\n${lines.join("\n")}`;
     }
 
-    // Available reactions from the pre-computed menu
-    const reactionLines = menu.reactions.map(
-      (r) => `[${r.id}] ${r.label}\n  Use when: ${r.description}`,
+    // Outcome hints — non-binding, LLM fills in pattern + speed
+    const hintLines = template.hints.map(
+      (h) =>
+        `[${h.outcome}] ${h.label}\n` +
+        `  Use when: ${h.description}\n` +
+        `  Suggested: pattern=${h.suggestedPattern} speed=${h.suggestedSpeed}`,
     );
-    const reactionsSection = `## Available Reactions\nSelect exactly one reaction_id.\n\n${reactionLines.join("\n\n")}`;
+    const reactionsSection =
+      `## Outcome Options\n` +
+      `Select outcome, pattern, speed, and optionally scope.\n` +
+      `Hints are non-binding — choose what best fits the clinical picture.\n\n` +
+      hintLines.join("\n\n");
 
     const userContent = [
       `## Scenario\n${scenario.title}`,

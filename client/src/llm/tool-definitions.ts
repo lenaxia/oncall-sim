@@ -67,23 +67,67 @@ export const EVENT_TOOLS: LLMToolDefinition[] = [
   {
     name: "select_metric_reaction",
     description:
-      "Select the pre-computed metric reaction that best represents the outcome " +
-      "of the trainee's action. Always select exactly one. " +
-      "full_recovery = action fully resolves the incident. " +
-      "partial_recovery = action helps but does not fully fix it. " +
-      "worsening = action made things worse. " +
-      "no_effect = action had no impact on the incident.",
+      "Assess the cumulative effect of the trainee's recent actions on the incident " +
+      "and select an outcome category, transition pattern, and speed. " +
+      "The outcome reflects how much the actions helped or hurt. " +
+      "The pattern and speed model how the metrics will visibly change. " +
+      "Hints are provided in the prompt but are non-binding — choose what best fits " +
+      "the clinical picture.\n\n" +
+      "Outcomes: full_recovery = actions collectively resolve the root cause. " +
+      "partial_recovery = actions help but the root cause is not fully addressed. " +
+      "worsening = actions made the incident worse or introduced a new problem. " +
+      "no_effect = actions had no meaningful impact on metric trajectories.",
     parameters: {
       type: "object",
-      required: ["reaction_id"],
+      required: ["outcome", "pattern"],
       properties: {
-        reaction_id: {
+        outcome: {
           type: "string",
           enum: ["full_recovery", "partial_recovery", "worsening", "no_effect"],
+          description:
+            "The net outcome of all actions taken since the last reaction. " +
+            "Consider the cumulative effect, not just the most recent action.",
+        },
+        pattern: {
+          type: "string",
+          enum: [
+            "smooth_decay",
+            "cliff",
+            "stepped",
+            "blip_then_decay",
+            "queue_burndown",
+            "oscillating",
+            "sawtooth_rebound",
+          ],
+          description:
+            "The visual shape of metric recovery or degradation. " +
+            "smooth_decay = gradual exponential. cliff = near-instant step. " +
+            "stepped = discrete steps. blip_then_decay = brief spike then decay. " +
+            "queue_burndown = flat then rapid. oscillating = cycles with damping. " +
+            "sawtooth_rebound = periodic bounces.",
+        },
+        speed: {
+          type: "string",
+          enum: ["1m", "5m", "15m", "30m", "60m"],
+          description:
+            "How quickly the transition completes. Defaults to 5m if omitted. " +
+            "Use 1m for immediate fixes (rollback, feature flag). " +
+            "Use 15m–30m for scaling or infra changes. " +
+            "Use 60m for slow organisational changes.",
+        },
+        scope: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Optional list of metric_ids to affect. " +
+            "Defaults to all active incident metrics when omitted. " +
+            "Use to restrict recovery to a subset when only some metrics are addressed.",
         },
         reasoning: {
           type: "string",
-          description: "One sentence explaining why this reaction is correct.",
+          description:
+            "One sentence explaining the outcome assessment. " +
+            "Mention which actions in the window most influenced your choice.",
         },
       },
     },
