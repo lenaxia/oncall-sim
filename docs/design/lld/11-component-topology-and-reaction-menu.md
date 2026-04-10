@@ -78,6 +78,8 @@ client/src/scenario/loader.ts
   ~ transform(): topology objects replace flat strings; ops_dashboard derived
   + deriveOpsDashboard(): produces FocalServiceConfig + CorrelatedServiceConfig[]
     from component graph (called from transform())
+  - Step 3 (ops_dashboard_file fetch/merge): removed — ops_dashboard no longer exists in YAML
+  - Step 5 (incident_type warning): removed — incidentType is no longer authored
 
 client/src/scenario/validator.ts
   + entrypoint uniqueness, input reference validity, cycle detection,
@@ -86,6 +88,10 @@ client/src/scenario/validator.ts
 client/src/metrics/types.ts
   + OverlayApplication (replaces 7 flat overlay fields on ResolvedMetricParams)
   ~ ResolvedMetricParams: single overlay fields → overlayApplications[]
+
+client/src/metrics/archetypes.ts
+  + p95_latency_ms
+  - p999_latency_ms (registered but never referenced anywhere)
 
 client/src/metrics/patterns/incident-overlay.ts
   ~ applyIncidentOverlay(): add explicit OverlayApplication parameter
@@ -99,6 +105,7 @@ client/src/metrics/metric-store.ts
 
 client/src/metrics/resolver.ts
   ~ resolveMetricParams(): build overlayApplications[] from MetricConfig
+  - remove import of getIncidentResponse from ./incident-types (no longer used)
 
 client/src/engine/game-loop.ts
   + scale_capacity action handler
@@ -110,15 +117,23 @@ client/src/engine/metric-reaction-engine.ts
   ~ replace _applyMetricResponse() with _applySelectedReaction()
 
 client/src/llm/tool-definitions.ts
-  ~ replace apply_metric_response with select_metric_reaction
-  ~ getMetricReactionTools() accepts ReactionMenu parameter
+  ~ replace apply_metric_response with select_metric_reaction in EVENT_TOOLS
+  ~ getMetricReactionTools(): enablement check changes from "apply_metric_response"
+    to "select_metric_reaction"; no ReactionMenu parameter needed (schema is static)
+  ~ validateToolCall(): remove apply_metric_response validation block;
+    select_metric_reaction only requires reaction_id — validated by static enum in schema
 
 client/src/context/ScenarioContext.tsx
+  ~ ScenarioConfig.topology: focalService changes from string to { name: string; components: ServiceComponent[] }
+    (only name and components are exposed; the full ServiceNode is not needed by UI tabs)
   + expose topology.focalService.components in ScenarioConfig
 
 client/src/components/tabs/RemediationsPanel.tsx
   + getComponentCapabilities(), ScaleConcurrencySection, ScaleCapacitySection
   ~ gate existing sections on component capabilities
+
+client/src/components/ScenarioPicker.tsx
+  ~ remove serviceType display field (field no longer exists on ScenarioSummary)
 
 scenarios/_fixture/scenario.yaml
   ~ full migration: topology object, no ops_dashboard, select_metric_reaction
@@ -127,6 +142,11 @@ scenarios/_fixture/mock-llm-responses.yaml
 
 scenarios/payment-db-pool-exhaustion/scenario.yaml
   ~ full migration
+
+client/src/testutil/index.tsx
+  ~ buildLoadedScenario(): topology updated to ServiceNode object form;
+    serviceType field removed from LoadedScenario fixture (see §1.1)
+  ~ buildScenarioSummary(): serviceType field removed
 ```
 
 ### Test files
@@ -136,6 +156,7 @@ client/__tests__/metrics/component-metrics.test.ts       new
 client/__tests__/metrics/reaction-menu.test.ts           new
 client/__tests__/scenario/component-topology.test.ts     new
 client/__tests__/scenario/loader.test.ts                 extend
+client/__tests__/scenario/validator.test.ts              extend
 client/__tests__/metrics/series.test.ts                  extend
 client/__tests__/metrics/metric-store.test.ts            extend
 client/__tests__/engine/metric-reaction-engine.test.ts   extend
@@ -162,6 +183,12 @@ ScenarioPicker filtering and search.
 `ServiceType`, `ServiceCategory`, and `service_type` are deleted from:
 `scenario/types.ts`, `scenario/schema.ts`, `scenario/loader.ts`,
 `context/ScenarioContext.tsx`, `testutil/index.tsx`, and both scenario YAML files.
+
+`LoadedScenario.serviceType` and `ScenarioSummary.serviceType` are also removed —
+they were populated directly from `service_type` in YAML and have no other source.
+`ScenarioPicker` currently renders `serviceType` as a display label; that field is
+removed and the display slot is dropped. The picker continues to show `difficulty`
+and `tags`, which are unaffected.
 
 ### 1.2 `ComponentType` — closed discriminant
 
@@ -312,16 +339,26 @@ export interface IncidentConfig {
   id: string;
   affectedComponent: string; // component id in this service's components[]
   description: string; // shown verbatim in LLM prompt; factual, not a hint
-  onsetOverlay: OverlayType; // reuses existing: spike_and_sustain |
-  // gradual_degradation | saturation | sudden_drop
+  onsetOverlay: IncidentOverlayType; // see below
   onsetSecond: number;
-  magnitude: number; // multiplier on affected component's baseline.
-  // saturation: 1.0 = fills to capacity.
-  // spike_and_sustain: 3.0 = 3× baseline.
+  magnitude: number; // overlay-specific multiplier:
+  // spike_and_sustain: peak = magnitude × baseline (e.g. 3.0 = 3× baseline)
+  // saturation: fraction of capacity to fill (0 < magnitude ≤ 1.0; 1.0 = full)
+  // gradual_degradation: peak = magnitude × baseline at scenario end
+  // sudden_drop: the fraction the metric drops TO (0 < magnitude < 1.0;
+  //   e.g. 0.1 means metric goes to 10% of baseline = 90% drop)
   rampDurationSeconds?: number; // default 30; only for spike_and_sustain
   endSecond?: number; // absent = sustained. present = returns organically
   // to baseline at endSecond (no shaped recovery).
 }
+
+// Inline union — avoids importing OverlayType from metrics/ into scenario/
+// (which would create a scenario/ → metrics/ → scenario/ circular import).
+export type IncidentOverlayType =
+  | "spike_and_sustain"
+  | "gradual_degradation"
+  | "saturation"
+  | "sudden_drop";
 ```
 
 ### 1.5 `ServiceNode` and `TopologyConfig`
@@ -383,7 +420,7 @@ export interface OverlayApplication {
   onsetSecond: number;
   endSecond?: number; // absent = sustained
   peakValue: number;
-  dropFactor: number;
+  dropFactor: number; // used by sudden_drop only; set to 1.0 for all other overlay types
   ceiling: number;
   rampDurationSeconds: number;
   saturationDurationSeconds: number;
@@ -399,8 +436,9 @@ export interface ResolvedMetricParams {
 ```
 
 The old fields `overlay`, `onsetSecond`, `peakValue`, `dropFactor`, `ceiling`,
-`saturationDurationSeconds`, `rampDurationSeconds` are removed. Every caller
-is updated to use `overlayApplications[0]` or iterate.
+`saturationDurationSeconds`, `rampDurationSeconds` are removed from `ResolvedMetricParams`.
+All callers loop over `overlayApplications[]` and pass individual entries to
+`applyIncidentOverlay(series, baselineValue, app, tAxis)` — no direct field access.
 
 ### 1.8 Reaction menu types (`shared/types/events.ts`)
 
@@ -420,7 +458,7 @@ export interface MetricReaction {
 
 // Invariant: exactly 4 reactions — one of each id.
 export interface ReactionMenu {
-  actionType: string; // ActionType that triggered this menu
+  actionType: ActionType; // ActionType that triggered this menu
   reactions: [
     MetricReaction & { id: "full_recovery" },
     MetricReaction & { id: "partial_recovery" },
@@ -431,7 +469,32 @@ export interface ReactionMenu {
 ```
 
 The tuple type enforces the invariant at compile time. The `no_effect` reaction
-always has `overlays: []`. The other three always have non-empty `overlays`.
+always has `overlays: []`. The other three always have non-empty `overlays` when
+at least one incident is active; when no incidents are active, all four candidates
+have `overlays: []` (see §8.2 — the engine detects this and skips the LLM call).
+
+### 1.9 `ScenarioConfig.topology` shape change (`context/ScenarioContext.tsx`)
+
+`ScenarioConfig` is the shape read by UI tab components via `useScenario()`.
+Its `topology.focalService` is currently a `string` (service name only).
+After this phase it changes to expose components:
+
+```typescript
+// In ScenarioConfig (inside context/ScenarioContext.tsx):
+topology: {
+  focalService: {
+    name: string;
+    components: ServiceComponent[]; // empty array when no components defined
+  };
+  upstream: string[];   // service names only — tabs don't need full ServiceNode
+  downstream: string[]; // service names only
+};
+```
+
+`upstream` and `downstream` remain as `string[]` — no tab component reads
+their detail. `RemediationsPanel` reads `topology.focalService.components` to
+call `getComponentCapabilities()`. All other tabs continue to read
+`topology.focalService` only as a name (access `.name`).
 
 ---
 
@@ -509,21 +572,38 @@ new member in the TypeScript union (§1.3) — nothing else changes.
 ### 2.2 `IncidentConfigSchema`
 
 ```typescript
-const IncidentConfigSchema = z.object({
-  id: z.string().min(1),
-  affected_component: z.string().min(1),
-  description: z.string().min(1),
-  onset_overlay: z.enum([
-    "spike_and_sustain",
-    "gradual_degradation",
-    "saturation",
-    "sudden_drop",
-  ]),
-  onset_second: z.number(),
-  magnitude: z.number().positive(),
-  ramp_duration_seconds: z.number().positive().optional(),
-  end_second: z.number().optional(),
-});
+const IncidentConfigSchema = z
+  .object({
+    id: z.string().min(1),
+    affected_component: z.string().min(1),
+    description: z.string().min(1),
+    onset_overlay: z.enum([
+      "spike_and_sustain",
+      "gradual_degradation",
+      "saturation",
+      "sudden_drop",
+    ]),
+    onset_second: z.number(),
+    magnitude: z.number().positive(),
+    ramp_duration_seconds: z.number().positive().optional(),
+    end_second: z.number().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.onset_overlay === "saturation" && val.magnitude > 1.0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `saturation magnitude must be ≤ 1.0 (got ${val.magnitude}); use spike_and_sustain for values > 1`,
+        path: ["magnitude"],
+      });
+    }
+    if (val.onset_overlay === "sudden_drop" && val.magnitude >= 1.0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `sudden_drop magnitude must be < 1.0 (got ${val.magnitude}); it is the fraction the metric drops TO, not the amount dropped`,
+        path: ["magnitude"],
+      });
+    }
+  });
 ```
 
 ### 2.3 `ServiceNodeSchema`
@@ -591,22 +671,49 @@ topology: z.object({
 
 ## 3. Cross-reference validation (`scenario/validator.ts`)
 
+**Removed blocks:** The existing `validateCrossReferences()` has blocks that
+reference `ops_dashboard` (`focal_service`, `correlated_services`, service
+metric lookups, topology-correlated-service cross-checks). All such blocks are
+removed since `ops_dashboard` no longer exists in YAML.
+
+**Alarm service validation updated:** Alarms reference a `service` field that
+previously had to appear in `ops_dashboard`. After this change, valid service
+names come from `topology.focal_service.name` and `topology.downstream[].name`
+(and optionally `topology.upstream[].name`). The alarm validation block changes
+from checking `allServiceNames` (derived from `ops_dashboard`) to checking
+`topologyServiceNames` (derived from `topology`):
+
+```typescript
+const topologyServiceNames = new Set([
+  raw.topology.focal_service.name,
+  ...raw.topology.upstream.map((n) => n.name),
+  ...raw.topology.downstream.map((n) => n.name),
+]);
+// Alarm service must appear in topologyServiceNames
+```
+
 New rules added to `validateCrossReferences()`:
 
 1. **`typical_rps` required.** If `focal_service.components.length > 0` and
    `focal_service.typical_rps` is absent, emit error.
 
-2. **Entrypoint uniqueness.** For any service with `components.length > 0`:
-   exactly one component must have `inputs: []`. Zero → error. Multiple → error.
+2. **Entrypoint uniqueness.** For **every `ServiceNode`** (focal + upstream + downstream)
+   with `components.length > 0`: exactly one component must have `inputs: []`.
+   Zero → error. Multiple → error.
 
-3. **Input id validity.** Every id in `component.inputs[]` must reference an id
-   that exists in the same service's `components[]`. Validated after full parse
-   (ids resolved first).
+3. **Input id validity.** For every `ServiceNode` with `components.length > 0`:
+   every id in `component.inputs[]` must reference an id that exists in the same
+   node's `components[]`. Validated after full parse (ids resolved first).
 
-4. **No cycles.** The component graph must be a DAG. Detect via DFS.
+4. **No cycles.** For every `ServiceNode` with `components.length > 0`: the
+   component graph must be a DAG. Detect via DFS.
 
-5. **Incident component validity.** Every `incident.affected_component` must be
-   a component id in `focal_service.components`.
+5. **Incident component validity.** Every `incident.affected_component` in
+   `focal_service.incidents` must be a component id in `focal_service.components`.
+
+6. **Incidents on non-focal nodes.** If any upstream or downstream `ServiceNode`
+   has a non-empty `incidents[]`, emit a warning (not an error): incidents on
+   upstream/downstream nodes are silently ignored by `deriveOpsDashboard()`.
 
 ---
 
@@ -654,6 +761,33 @@ export const COMPONENT_METRICS: {
       resolvedValue: () => 0.5,
     },
     {
+      archetype: "fault_rate",
+      deriveBaseline: () => 0.1,
+      incidentPeakValue: (b, m) => b * m * 10,
+      lagSeconds: 30,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 0.1,
+    },
+    {
+      archetype: "p50_latency_ms",
+      deriveBaseline: () => 15,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 15,
+    },
+    {
+      archetype: "p95_latency_ms",
+      deriveBaseline: () => 35,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 35,
+    },
+    {
       archetype: "p99_latency_ms",
       deriveBaseline: () => 50,
       incidentPeakValue: (b, m) => b * m * 3,
@@ -663,16 +797,59 @@ export const COMPONENT_METRICS: {
       resolvedValue: () => 50,
     },
   ],
-
-  ecs_cluster: [
     {
       archetype: "cpu_utilization",
       deriveBaseline: (c) => c.utilization * 100,
-      incidentPeakValue: (b, m, c) => Math.min(95, b * m * 0.7),
+      incidentPeakValue: (b, m, _c) => Math.min(95, b * m * 0.7),
       lagSeconds: 0,
       overlayForIncident: () => "spike_and_sustain",
       ceiling: () => 100,
       resolvedValue: (c) => c.utilization * 100,
+    },
+    {
+      archetype: "memory_jvm",
+      deriveBaseline: (c) => c.instanceCount * 768, // 768 MB per task
+      incidentPeakValue: (b, m) => b * m,
+      lagSeconds: 30,
+      overlayForIncident: () => "gradual_degradation",
+      ceiling: () => null,
+      resolvedValue: (c) => c.instanceCount * 768,
+    },
+    {
+      archetype: "error_rate",
+      deriveBaseline: () => 0.5,
+      incidentPeakValue: (b, m) => b * m * 2,
+      lagSeconds: 30,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 0.5,
+    },
+    {
+      archetype: "fault_rate",
+      deriveBaseline: () => 0.1,
+      incidentPeakValue: (b, m) => b * m * 10,
+      lagSeconds: 30,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 0.1,
+    },
+    {
+      archetype: "p50_latency_ms",
+      deriveBaseline: () => 25,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 25,
+    },
+    {
+      archetype: "p95_latency_ms",
+      deriveBaseline: () => 55,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 55,
     },
     {
       archetype: "p99_latency_ms",
@@ -689,7 +866,9 @@ export const COMPONENT_METRICS: {
     {
       archetype: "concurrent_executions",
       deriveBaseline: (c) => c.reservedConcurrency * c.lambdaUtilization,
-      incidentPeakValue: (b, m, c) => Math.min(c.reservedConcurrency, b * m),
+      // For saturation: magnitude=1.0 fills to reservedConcurrency.
+      incidentPeakValue: (_b, m, c) =>
+        Math.min(c.reservedConcurrency, c.reservedConcurrency * m),
       lagSeconds: 45,
       overlayForIncident: () => "saturation",
       ceiling: (c) => c.reservedConcurrency,
@@ -719,7 +898,10 @@ export const COMPONENT_METRICS: {
     {
       archetype: "write_capacity_used",
       deriveBaseline: (c) => c.writeCapacity * c.writeUtilization,
-      incidentPeakValue: (b, m, c) => Math.min(c.writeCapacity, b * m),
+      // For saturation: magnitude=1.0 means fill to full capacity.
+      // peakValue = capacity × magnitude (not baseline × magnitude).
+      incidentPeakValue: (_b, m, c) =>
+        Math.min(c.writeCapacity, c.writeCapacity * m),
       lagSeconds: 60,
       overlayForIncident: () => "saturation",
       ceiling: (c) => c.writeCapacity,
@@ -737,7 +919,11 @@ export const COMPONENT_METRICS: {
     {
       archetype: "read_capacity_used",
       deriveBaseline: (c) => c.readCapacity * c.readUtilization,
-      incidentPeakValue: (b, m, c) => Math.min(c.readCapacity, b * m * 0.3),
+      // Reads are less likely to saturate than writes under a write-heavy incident.
+      // magnitude=1.0 fills to full read capacity; the scenario typically uses a
+      // lower magnitude (e.g. 0.3) to model partial read impact.
+      incidentPeakValue: (_b, m, c) =>
+        Math.min(c.readCapacity, c.readCapacity * m),
       lagSeconds: 60,
       overlayForIncident: () => "saturation",
       ceiling: (c) => c.readCapacity,
@@ -791,7 +977,9 @@ export const COMPONENT_METRICS: {
     {
       archetype: "connection_pool_used",
       deriveBaseline: (c) => c.maxConnections * c.connectionUtilization,
-      incidentPeakValue: (b, m, c) => Math.min(c.maxConnections, b * m * 0.8),
+      // For saturation: magnitude=1.0 fills to maxConnections.
+      incidentPeakValue: (_b, m, c) =>
+        Math.min(c.maxConnections, c.maxConnections * m),
       lagSeconds: 0,
       overlayForIncident: () => "saturation",
       ceiling: (c) => c.maxConnections,
@@ -805,6 +993,15 @@ export const COMPONENT_METRICS: {
       overlayForIncident: () => "spike_and_sustain",
       ceiling: () => 100,
       resolvedValue: (c) => c.utilization * 100,
+    },
+    {
+      archetype: "p50_latency_ms",
+      deriveBaseline: () => 2,
+      incidentPeakValue: (b, m) => b * m * 8,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 2,
     },
     {
       archetype: "p99_latency_ms",
@@ -848,18 +1045,107 @@ export const COMPONENT_METRICS: {
       ceiling: () => null,
       resolvedValue: () => 0.1,
     },
+    {
+      archetype: "fault_rate",
+      deriveBaseline: () => 0.05,
+      incidentPeakValue: (b, m) => b * m * 10,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 0.05,
+    },
+    {
+      archetype: "p50_latency_ms",
+      deriveBaseline: () => 50,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 50,
+    },
+    {
+      archetype: "p95_latency_ms",
+      deriveBaseline: () => 120,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 120,
+    },
+    {
+      archetype: "p99_latency_ms",
+      deriveBaseline: () => 200,
+      incidentPeakValue: (b, m) => b * m * 4,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 200,
+    },
   ],
 
   ec2_fleet: [
-    // Same shape as ecs_cluster — different defaults reflect EC2 boot time
     {
       archetype: "cpu_utilization",
       deriveBaseline: (c) => c.utilization * 100,
-      incidentPeakValue: (b, m) => Math.min(95, b * m * 0.7),
+      incidentPeakValue: (b, m, _c) => Math.min(95, b * m * 0.7),
       lagSeconds: 0,
       overlayForIncident: () => "spike_and_sustain",
       ceiling: () => 100,
       resolvedValue: (c) => c.utilization * 100,
+    },
+    {
+      archetype: "memory_system",
+      deriveBaseline: (c) => c.instanceCount * 1024, // 1 GB per instance
+      incidentPeakValue: (b, m) => b * m,
+      lagSeconds: 30,
+      overlayForIncident: () => "gradual_degradation",
+      ceiling: () => null,
+      resolvedValue: (c) => c.instanceCount * 1024,
+    },
+    {
+      archetype: "error_rate",
+      deriveBaseline: () => 0.5,
+      incidentPeakValue: (b, m) => b * m * 2,
+      lagSeconds: 30,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 0.5,
+    },
+    {
+      archetype: "fault_rate",
+      deriveBaseline: () => 0.1,
+      incidentPeakValue: (b, m) => b * m * 10,
+      lagSeconds: 30,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 0.1,
+    },
+    {
+      archetype: "p50_latency_ms",
+      deriveBaseline: () => 25,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 25,
+    },
+    {
+      archetype: "p95_latency_ms",
+      deriveBaseline: () => 55,
+      incidentPeakValue: (b, m) => b * m * 3,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 55,
+    },
+    {
+      archetype: "p99_latency_ms",
+      deriveBaseline: () => 80,
+      incidentPeakValue: (b, m) => b * m * 4,
+      lagSeconds: 15,
+      overlayForIncident: () => "spike_and_sustain",
+      ceiling: () => null,
+      resolvedValue: () => 80,
     },
   ],
 
@@ -898,6 +1184,11 @@ export function propagationPath(
 
 // Accumulated lag from startId to targetId along propagationPath.
 // Each component contributes max(lagSeconds) across its metric specs.
+// Components with no specs (e.g. s3, scheduler) contribute 0 lag.
+// Returns 0 when startId === targetId.
+// Returns 0 when targetId is not in propagationPath(startId, components)
+// (i.e. target is not downstream of start — the incident affects a component
+// upstream or parallel; treated as zero propagation delay).
 export function propagationLag(
   startId: string,
   targetId: string,
@@ -917,11 +1208,23 @@ function no longer reads it from YAML (there is no `ops_dashboard` key). Instead
 ```typescript
 // In transform():
 const opsDashboard = deriveOpsDashboard(
-  raw.topology.focal_service, // after ServiceNode transform
+  raw.topology.focal_service, // after ServiceNode transform (snake_case → camelCase)
   raw.timeline.pre_incident_seconds,
   raw.timeline.resolution_seconds,
 );
 ```
+
+The `ServiceNode` transform maps YAML `snake_case` fields to the TypeScript `camelCase`
+interface: `instance_count → instanceCount`, `reserved_concurrency → reservedConcurrency`,
+`lambda_utilization → lambdaUtilization`, `shard_count → shardCount`,
+`write_capacity → writeCapacity`, `read_capacity → readCapacity`,
+`write_utilization → writeUtilization`, `read_utilization → readUtilization`,
+`max_connections → maxConnections`, `connection_utilization → connectionUtilization`,
+`billing_mode → billingMode`, `typical_rps → typicalRps`, `traffic_profile → trafficProfile`,
+`affected_component → affectedComponent`, `onset_overlay → onsetOverlay`,
+`onset_second → onsetSecond`, `end_second → endSecond`,
+`ramp_duration_seconds → rampDurationSeconds`, `lag_seconds → lagSeconds`,
+`impact_factor → impactFactor`.
 
 `deriveOpsDashboard()` returns an `OpsDashboardConfig` with `focalService` and
 `correlatedServices` populated from the component graph. All downstream code
@@ -937,39 +1240,99 @@ function deriveOpsDashboard(
 ): OpsDashboardConfig;
 ```
 
-1. Find entrypoint component via `findEntrypoint(node.components)`.
-2. For each component in `propagationPath(entrypoint.id, node.components)`:
+1. If `node.components` is empty (no components defined), return a minimal
+   `OpsDashboardConfig` with `focalService.metrics = []` and
+   `correlatedServices = []`. The metric pipeline will render no charts for
+   this service. This is valid for scenarios that define topology structure
+   without component detail.
+2. Find entrypoint component via `findEntrypoint(node.components)`.
+3. For each component in `propagationPath(entrypoint.id, node.components)`:
    a. Look up `COMPONENT_METRICS[component.type]` for its `ComponentMetricSpec[]`.
-   b. For each spec: compute `baselineValue`, `resolvedValue` from capacity fields.
+   b. For each spec: compute `baselineValue = spec.deriveBaseline(component, node.typicalRps!)` and `resolvedValue = spec.resolvedValue(component, node.typicalRps!)`.
+   (`node.typicalRps!` is validated to be present when components exist — see §3 rule 1.)
    c. For each incident in `node.incidents`:
-   - Compute propagation lag from `incident.affectedComponent` to this component.
-   - Compute `onsetSecond = incident.onsetSecond + lag`.
-   - Compute `peakValue = spec.incidentPeakValue(baseline, incident.magnitude, component)`.
-   - Compute `overlay = spec.overlayForIncident(incident.onsetOverlay)`.
-   - Build `OverlayApplication`.
+   - Check whether the current component `thisComponent.id` appears in
+     `propagationPath(incident.affectedComponent, node.components)`.
+     If not, skip — the incident does not propagate to this component.
+   - Compute propagation lag: `lag = propagationLag(incident.affectedComponent, thisComponent.id, node.components)`.
+   - Compute `laggedOnset = incident.onsetSecond + lag`.
+   - Compute `peakValue` and `dropFactor` from `incident.magnitude` using overlay type:
+     - `spike_and_sustain` / `gradual_degradation`:
+       `peakValue = spec.incidentPeakValue(baseline, incident.magnitude, component)`
+       `dropFactor = peakValue / Math.max(baseline, 0.001)`
+       `ceiling = spec.ceiling(component) ?? peakValue`
+       (`ceiling` is only read by the `saturation` overlay case; for spike/degradation it
+       is set to the archetype hard cap or peakValue and is unused during overlay math.)
+     - `saturation`:
+       `peakValue = spec.incidentPeakValue(baseline, incident.magnitude, component)` (= capacity × m)
+       `dropFactor = 1.0` (unused by saturation overlay)
+       `ceiling = spec.ceiling(component) ?? peakValue`
+     - `sudden_drop`:
+       `peakValue = baseline * incident.magnitude` (target value after drop)
+       `dropFactor = incident.magnitude` (fraction; < 1.0 = drop, used by overlay directly)
+       `ceiling = spec.ceiling(component) ?? baseline`
+   - `rampDurationSeconds = incident.rampDurationSeconds ?? 30`
+   - `saturationDurationSeconds = 60` (fixed default; not authored)
+   - Build `OverlayApplication { overlay: spec.overlayForIncident(incident.onsetOverlay), onsetSecond: laggedOnset, endSecond: incident.endSecond, peakValue, dropFactor, ceiling, rampDurationSeconds, saturationDurationSeconds }`.
      d. Group `OverlayApplication[]` by archetype. Multiple incidents → multiple
      entries sorted by `onsetSecond`.
-3. Build `MetricConfig[]` from all collected (archetype, overlayApplications, baseline,
+4. Build `MetricConfig[]` from all collected (archetype, overlayApplications, baseline,
    resolvedValue) tuples. One `MetricConfig` per unique archetype across all components.
-4. Produce `FocalServiceConfig`:
+   When multiple components generate the same archetype (e.g. both `load_balancer`
+   and `ecs_cluster` generate `error_rate`), use the entry from the component closest
+   to the entrypoint in topological order — that component's baseline and peak values
+   are the most representative of the service's observable metric. Overlay applications
+   from all components sharing the archetype are merged into a single sorted
+   `overlayApplications[]` list (sorted by `onsetSecond`).
+5. Produce `FocalServiceConfig`:
    - `name`: node.name
    - `scale.typicalRps`: node.typicalRps
    - `trafficProfile`: node.trafficProfile ?? deriveTrafficProfile(entrypoint.type)
      where deriveTrafficProfile: load_balancer|api_gateway→'always_on_api';
      kinesis_stream|sqs_queue→'none'; scheduler→'batch_nightly'; default→'none'
    - `health`: node.health ?? "healthy"
-   - `incidentType`: `"component_derived"` (sentinel; bypasses `INCIDENT_TYPE_REGISTRY` lookup)
+   - `incidentType`: omitted / set to `""` — the legacy `incidentType` field on
+     `FocalServiceConfig` is only read by the old registry-lookup path in `resolver.ts`,
+     which is removed entirely by §6.3. It is present on the type for backwards
+     compatibility with `testutil/index.tsx` fixtures but is not read by any logic
+     path after this phase.
    - `metrics`: derived `MetricConfig[]`
-5. For each `topology.downstream[]` entry with `components.length > 0`: derive
+6. For each `topology.downstream[]` entry with `components.length > 0`: derive
    `CorrelatedServiceConfig` similarly (its own component graph, correlation type
-   from `node.correlation`).
+   from `node.correlation`, `scale.typicalRps` from `node.typicalRps`).
+   Downstream nodes with `components: []` use the default `CorrelatedServiceConfig`
+   (name + correlation only; no scale, no overrides).
+   **Upstream nodes are not included in `correlatedServices`** — upstream services
+   are call dependencies (they fail outward, not inward) and are not charted in
+   the ops dashboard. The upstream list in `topology.upstream[]` exists for context
+   in the LLM prompt and scenario documentation only.
 
 ### 6.3 `MetricConfig` change
 
-`MetricConfig` gains `incidentResponses?: OverlayApplication[]`. When present,
-`resolver.ts` populates `ResolvedMetricParams.overlayApplications` directly from
-this array. The legacy paths (`incidentPeak`, `incidentType`, `incidentResponse`)
-are removed from `MetricConfig` since `ops_dashboard` no longer exists in YAML.
+`MetricConfig` gains `incidentResponses?: OverlayApplication[]` and loses the
+old incident fields. When present, `resolver.ts` populates
+`ResolvedMetricParams.overlayApplications` directly from this array. The legacy
+paths (`incidentPeak`, `incidentType`, `incidentResponse`) are removed from
+`MetricConfig` since `ops_dashboard` no longer exists in YAML.
+
+New `MetricConfig` interface (replacing the existing one in `scenario/types.ts`):
+
+```typescript
+export interface MetricConfig {
+  archetype: string;
+  label?: string;
+  unit?: string;
+  baselineValue?: number;
+  warningThreshold?: number;
+  criticalThreshold?: number;
+  noise?: NoiseLevel;
+  resolvedValue?: number;
+  incidentResponses?: OverlayApplication[]; // derived by loader; never authored
+  seriesOverride?: Array<{ t: number; v: number }>;
+  // Removed: incidentPeak, onsetSecond, incidentResponse, incidentType
+}
+```
+
 `resolver.ts` simplifies to a single path:
 
 ```typescript
@@ -999,9 +1362,11 @@ export function applyIncidentOverlay(
 ): number[];
 ```
 
-Callers pass `params.baselineValue` and the specific `app`. The function no
-longer reads anything from `params` beyond `baselineValue`. This removes the
-coupling between `applyIncidentOverlay` and `ResolvedMetricParams`.
+Callers pass `params.baselineValue` and the specific `app`. The function
+handles `onsetSecond` (skips points before onset) and `endSecond` (returns
+unchanged series values for points at or after `endSecond`). This removes the
+coupling between `applyIncidentOverlay` and `ResolvedMetricParams`, and keeps
+the `endSecond` logic co-located with the overlay shape logic.
 
 ### 7.2 `generateOneSeries()` (`metrics/series.ts`)
 
@@ -1010,6 +1375,8 @@ let result = tAxis.map((_, i) => baseline[i] + rhythm[i] + noise[i]);
 const archDef = getArchetypeDefaults(params.archetype);
 for (const app of params.overlayApplications) {
   if (app.overlay === "none") continue;
+  // applyIncidentOverlay receives the full tAxis; the function itself guards
+  // on t < app.onsetSecond and t >= app.endSecond internally.
   result = applyIncidentOverlay(result, params.baselineValue, app, tAxis);
 }
 return tAxis.map((t, i) => ({
@@ -1017,6 +1384,12 @@ return tAxis.map((t, i) => ({
   v: clampSeries([result[i]], archDef.minValue, archDef.maxValue)[0],
 }));
 ```
+
+`applyIncidentOverlay()` must apply the `endSecond` guard — for each index `i`,
+skip points where `tAxis[i] < app.onsetSecond` (already handled by the existing
+implementation) and also skip points where `app.endSecond != null && tAxis[i] >= app.endSecond`
+(returning unchanged `series[i]` for those points). This keeps `_computeScriptedValue()`
+and `generateOneSeries()` using the same function with consistent semantics.
 
 ### 7.3 `_computeScriptedValue()` (`metrics/metric-store.ts`)
 
@@ -1032,6 +1405,8 @@ function _computeScriptedValue(state: MetricState, t: number): number {
   for (const app of rp.overlayApplications) {
     if (app.overlay === "none") continue;
     if (t < app.onsetSecond) continue;
+    // endSecond guard: applyIncidentOverlay handles this internally,
+    // but checking here avoids the function call overhead for expired overlays.
     if (app.endSecond != null && t >= app.endSecond) continue;
     [value] = applyIncidentOverlay([value], rp.baselineValue, app, [t]);
   }
@@ -1045,11 +1420,15 @@ function _computeScriptedValue(state: MetricState, t: number): number {
 ```typescript
 // Called by game loop after scale_capacity. Updates the target value the LLM
 // reaction engine will use for "full recovery" magnitude.
+// Implementation: sets state.resolvedParams.resolvedValue for the given metric.
 updateResolvedValue(service: string, metricId: string, newValue: number): void;
 
-// Called when DynamoDB switches to on_demand. Removes saturation overlays
-// from overlayApplications for this metric so the ceiling no longer applies.
-// The active LLM-set overlay (if any) is unaffected.
+// Called when DynamoDB switches to on_demand billing. Removes all scripted
+// saturation OverlayApplication entries from overlayApplications for this metric
+// so the capacity ceiling no longer applies to future _computeScriptedValue() calls.
+// The active LLM-set overlay (state.activeOverlay) is unaffected.
+// Implementation: filters state.resolvedParams.overlayApplications to exclude
+// entries where overlay === "saturation".
 clearScriptedOverlays(service: string, metricId: string): void;
 ```
 
@@ -1082,32 +1461,35 @@ export function buildReactionMenu(
 
 Constructs all four candidates unconditionally. The content of each candidate
 varies based on the action type and incident context, but all four are always
-present.
-
-For **communication actions** (`post_chat_message`, `reply_email`,
-`direct_message_persona`, `ack_page`, `page_user`, `update_ticket`,
-`add_ticket_comment`): all three non-`no_effect` candidates have
-`overlays: []` with labels making clear they are not applicable. The metric
-reaction engine sees `full_recovery.overlays.length === 0` for these actions and
-skips the LLM call entirely.
-
-Actually — better: for communication actions the metric reaction engine filters
-them out in `PASSIVE_ACTIONS` before `buildReactionMenu()` is even called. The
-LLM call is never made. `buildReactionMenu()` only needs to handle active
+present. Communication actions (`post_chat_message`, `reply_email`, etc.) are
+filtered out by `PASSIVE_ACTIONS` in `metric-reaction-engine.ts` before
+`buildReactionMenu()` is ever called — `buildReactionMenu()` only handles active
 remediation actions.
 
-### 8.3 Capacity adequacy pre-computation (for `scale_capacity`, `scale_cluster`)
+**When there are no active incidents** (scenario has no `incidents[]` entries,
+or all incidents have resolved): all four candidates are still constructed with
+`overlays: []`. The metric reaction engine detects `full_recovery.overlays.length === 0`
+and skips the LLM call. This is the same skip path as the no-op menu check in
+`_react()`: `if (!hasEffect) return`. No special case needed in `buildReactionMenu()`.
+
+### 8.3 Capacity adequacy pre-computation (for `scale_capacity` and `scale_cluster`)
+
+`scale_capacity` acts on named component fields (DynamoDB WCU/RCU, Kinesis shards,
+Lambda concurrency). `scale_cluster` acts on `instanceCount` for `ecs_cluster` and
+`ec2_fleet` components. Both trigger capacity adequacy analysis.
+
+For `scale_cluster`, the adequate capacity test is: `newInstanceCount × (baseline cpu per instance)` vs estimated demand. The `## Capacity Analysis` block in the prompt is emitted for both action types.
 
 ```typescript
 interface CapacityAdequacy {
   componentLabel: string;
-  originalCapacity: number;
-  newCapacity: number;
-  baselineRate: number;
-  magnitude: number;
-  estimatedDemand: number;
-  headroom: number;
-  sufficient: boolean;
+  originalCapacity: number; // capacity before the scale action
+  newCapacity: number; // capacity after the scale action
+  baselineRate: number; // metric baseline (e.g. 60 WCU baseline writes)
+  incidentMagnitude: number; // incident.magnitude from IncidentConfig (1.0 for saturation)
+  estimatedDemand: number; // demand at incident peak (e.g. for saturation: originalCapacity × magnitude)
+  headroom: number; // newCapacity - estimatedDemand
+  sufficient: boolean; // headroom > 0
 }
 ```
 
@@ -1121,14 +1503,18 @@ based on the adequacy context it received).
 
 ### 8.4 Example — `scale_capacity({ componentId: "payments_ddb", writeCapacity: 200 })`
 
+Context: DynamoDB at 100 WCU provisioned, write_utilization=0.60 (baseline=60 WCU),
+magnitude=1.0 saturation (estimated demand=100 WCU at saturation peak).
+Scaling to 200 WCU gives headroom of +100 WCU → sufficient.
+
 All four candidates, always present:
 
 ```
 full_recovery:
-  label: "Write throttles clear — 200 WCU covers estimated demand (~180 WCU)"
+  label: "Write throttles clear — 200 WCU covers estimated demand (~100 WCU at saturation)"
   description: "Select when new capacity is sufficient for current traffic load."
   overlays:
-    write_capacity_used → smooth_decay to resolvedValue (120 WCU)
+    write_capacity_used → smooth_decay to resolvedValue (60 WCU)
     write_throttles     → cliff to 0
     error_rate          → smooth_decay to resolvedValue (0.5%)
 
@@ -1195,13 +1581,26 @@ per-call descriptions.
 
 `apply_metric_response` is removed from `EVENT_TOOLS`.
 
-`getMetricReactionTools()` signature:
+`getMetricReactionTools()` signature and enablement check:
 
 ```typescript
 export function getMetricReactionTools(
   scenario: LoadedScenario,
-): LLMToolDefinition[];
+): LLMToolDefinition[] {
+  // Enablement check: looks for "select_metric_reaction" (not the old "apply_metric_response")
+  const enabled = scenario.engine.llmEventTools.some(
+    (t) => t.tool === "select_metric_reaction" && t.enabled !== false,
+  );
+  if (!enabled) return [];
+  const tool = EVENT_TOOLS.find((t) => t.name === "select_metric_reaction");
+  return tool ? [tool] : [];
+}
 ```
+
+`validateToolCall()` removes the `apply_metric_response` validation block. No
+equivalent block is needed for `select_metric_reaction` — the tool has a single
+required field `reaction_id` with a static enum; the generic required-field check
+in `validateToolCall()` is sufficient.
 
 No `menu` parameter needed — the tool schema is static.
 
@@ -1260,8 +1659,13 @@ async function _react(context: StakeholderContext): Promise<void> {
 
   for (const toolCall of response.toolCalls) {
     if (toolCall.tool !== "select_metric_reaction") continue;
-    const reactionId = toolCall.params["reaction_id"] as string;
+    const reactionId = toolCall.params["reaction_id"];
+    // reaction_id is a required string field per tool schema; guard against
+    // malformed LLM responses that omit or mis-type it.
+    if (typeof reactionId !== "string") continue;
     _applySelectedReaction(reactionId, menu);
+    break; // only the first valid select_metric_reaction call is honoured;
+    // the LLM is instructed to call it exactly once
   }
 }
 ```
@@ -1305,9 +1709,9 @@ Active incidents:
 ```
 Component: payments_ddb (DynamoDB)
   Previous WCU: 100  →  New WCU: 200
-  Baseline write rate: 60 WCU  |  Traffic magnitude: 3.0×
-  Estimated demand: 60 × 3.0 = 180 WCU
-  Headroom: +20 WCU  →  SUFFICIENT
+  Baseline write rate: 60 WCU  |  Saturation magnitude: 1.0×
+  Estimated demand: 100 WCU (saturation peak)
+  Headroom: +100 WCU  →  SUFFICIENT
 ```
 
 **`## Available Reactions`** (always):
@@ -1332,9 +1736,32 @@ Select exactly one reaction_id.
 
 ## 11. Game loop (`engine/game-loop.ts`)
 
-Add `"scale_capacity"` to `ActionType`. Add handler (same as in prior draft —
-unchanged from §10 of the previous version). `scale_capacity` is not in
-`PASSIVE_ACTIONS`.
+Add `"scale_capacity"` to `ActionType` in `shared/types/events.ts`.
+
+Add handler in `handleAction()`:
+
+```typescript
+case "scale_capacity": {
+  // params: { componentId: string; writeCapacity?: number; readCapacity?: number;
+  //            shardCount?: number; reservedConcurrency?: number }
+  // 1. Record in audit log first (triggers dirty tick for metric reaction engine).
+  auditLog.record("scale_capacity", params);
+  // 2. Update MetricStore resolved values so buildReactionMenu() sees new targets.
+  //    Mapping from action param to affected metric(s):
+  //      writeCapacity   → write_capacity_used (and clearScriptedOverlays if on_demand)
+  //      readCapacity    → read_capacity_used
+  //      shardCount      → throughput_bytes (Kinesis)
+  //      reservedConcurrency → concurrent_executions (Lambda)
+  //    updateResolvedValue(service, metricId, newResolvedValue) uses the same
+  //    deriveResolvedValue logic as COMPONENT_METRICS[type].resolvedValue().
+  // 3. If DynamoDB switches to on_demand, also call clearScriptedOverlays() for
+  //    write_capacity_used and read_capacity_used so saturation ceiling no longer applies.
+  _dirty = true;
+  break;
+}
+```
+
+`scale_capacity` is not in `PASSIVE_ACTIONS` — it triggers the metric reaction engine.
 
 ---
 
@@ -1376,7 +1803,35 @@ export function getComponentCapabilities(
 ```
 
 New sections `ScaleConcurrencySection` (lambda) and `ScaleCapacitySection`
-(dynamodb/kinesis) are added as described in the previous draft — no changes.
+(dynamodb/kinesis) are added to `RemediationsPanel`. They are rendered inside
+the existing `<details open>` section pattern, gated on capabilities.
+
+**`ServiceCapabilities` interface** (defined in `RemediationsPanel.tsx`):
+
+```typescript
+export interface ServiceCapabilities {
+  canRestart: boolean; // ecs_cluster | ec2_fleet | rds | elasticache
+  canScaleHosts: boolean; // ecs_cluster | ec2_fleet
+  canScaleConcurrency: boolean; // lambda
+  canScaleCapacity: boolean; // dynamodb | kinesis_stream
+  canSwitchBillingMode: boolean; // dynamodb where billingMode !== "on_demand"
+  canThrottle: boolean; // load_balancer | api_gateway
+}
+```
+
+**`ScaleConcurrencySection`** (rendered when `canScaleConcurrency`):
+
+- Shows current `reservedConcurrency` from the lambda component.
+- Provides a number input "New reserved concurrency".
+- On submit: dispatches `scale_capacity` with `{ componentId, reservedConcurrency }`.
+
+**`ScaleCapacitySection`** (rendered when `canScaleCapacity`):
+
+- For each dynamodb/kinesis component:
+  - DynamoDB: write capacity (WCU) and read capacity (RCU) number inputs,
+    pre-populated from component values. Billing mode toggle if `canSwitchBillingMode`.
+  - Kinesis: shard count number input, pre-populated from component value.
+- On submit: dispatches `scale_capacity` with component-specific params.
 
 ---
 
@@ -1531,13 +1986,14 @@ engine:
 
 TDD: failing test before each implementation step. Validate before proceeding.
 
-| Test file                        | What is verified                                                                                                                                                                                                                                  |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `component-topology.test.ts`     | `findEntrypoint`: zero/one/two entrypoints; `propagationPath`: linear chain, starts mid-chain; cycle detection throws                                                                                                                             |
-| `component-metrics.test.ts`      | `deriveBaseline` for each component type (narrowed type safety verified); `incidentPeakValue` linear vs sub-linear; `ceiling` null vs value; TypeScript exhaustiveness (all `ComponentType` values present)                                       |
-| `scenario/loader.test.ts`        | `deriveOpsDashboard` produces correct `FocalServiceConfig.metrics` for 1 incident; 2 incidents on same archetype → 2 `overlayApplications`; `endSecond` carried through; `CorrelatedServiceConfig` from downstream with components                |
-| `metrics/series.test.ts`         | `generateOneSeries` with 0/1/2 `overlayApplications`; `endSecond` causes return to baseline at that t                                                                                                                                             |
-| `metrics/metric-store.test.ts`   | `updateResolvedValue`; `clearScriptedOverlays` removes saturation entries; `_computeScriptedValue` skips overlay past `endSecond`; multi-incident compounds correctly                                                                             |
-| `reaction-menu.test.ts`          | All 4 candidates always present; `no_effect` always has `overlays: []`; other three have non-empty `overlays`; capacity adequate → `full_recovery` targets `resolvedValue`; capacity inadequate → `full_recovery` still present with same targets |
-| `metric-reaction-engine.test.ts` | `_applySelectedReaction` applies correct overlays; unknown id → no-op; LLM not called when all non-no_effect candidates have empty overlays                                                                                                       |
-| `RemediationsPanel.test.tsx`     | `getComponentCapabilities` correct for each type combination; `ScaleConcurrencySection` shows for lambda; `ScaleCapacitySection` shows for dynamodb; billing mode toggle dispatches correctly                                                     |
+| Test file                        | What is verified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `component-topology.test.ts`     | `findEntrypoint`: zero/one/two entrypoints; `propagationPath`: linear chain, starts mid-chain; cycle detection throws; `propagationLag`: target unreachable → 0, target equals start → 0, multi-hop accumulates correctly                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `component-metrics.test.ts`      | `deriveBaseline` for each component type (narrowed type safety verified); `incidentPeakValue` linear vs sub-linear; `ceiling` null vs value; `load_balancer` produces 6 metrics (request_rate, error_rate, fault_rate, p50, p95, p99); `ecs_cluster` produces 7 metrics (cpu, memory_jvm, error_rate, fault_rate, p50, p95, p99); `ec2_fleet` produces 7 metrics (cpu, memory_system, error_rate, fault_rate, p50, p95, p99); `api_gateway` produces 6 metrics (request_rate, error_rate, fault_rate, p50, p95, p99); `rds` produces 4 metrics (connection_pool_used, cpu, p50, p99); TypeScript exhaustiveness (all `ComponentType` values present) |
+| `scenario/loader.test.ts`        | `deriveOpsDashboard` produces correct `FocalServiceConfig.metrics` for 1 incident; 2 incidents on same archetype → 2 `overlayApplications`; `endSecond` carried through; `CorrelatedServiceConfig` from downstream with components; empty `components` → `metrics: []`; component upstream of incident `affectedComponent` gets no overlay                                                                                                                                                                                                                                                                                                           |
+| `scenario/validator.test.ts`     | new cross-reference rules: typical_rps required, entrypoint uniqueness (focal + downstream), input id validity, cycle detection, incident component validity; alarm service names validate against topology instead of ops_dashboard; `IncidentConfigSchema` rejects saturation magnitude > 1.0 and sudden_drop magnitude ≥ 1.0; incidents on non-focal nodes emit warning                                                                                                                                                                                                                                                                           |
+| `metrics/series.test.ts`         | `generateOneSeries` with 0/1/2 `overlayApplications`; `endSecond` causes return to baseline at that t                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `metrics/metric-store.test.ts`   | `updateResolvedValue`; `clearScriptedOverlays` removes saturation entries; `_computeScriptedValue` skips overlay past `endSecond`; multi-incident compounds correctly                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `reaction-menu.test.ts`          | All 4 candidates always present; `no_effect` always has `overlays: []`; other three have non-empty `overlays`; capacity adequate → `full_recovery` targets `resolvedValue`; capacity inadequate → `full_recovery` still present with same targets                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `metric-reaction-engine.test.ts` | `_applySelectedReaction` applies correct overlays; unknown id → no-op; LLM not called when all non-no_effect candidates have empty overlays                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `RemediationsPanel.test.tsx`     | `getComponentCapabilities` correct for each type combination; `ScaleConcurrencySection` shows for lambda; `ScaleCapacitySection` shows for dynamodb; billing mode toggle dispatches correctly                                                                                                                                                                                                                                                                                                                                                                                                                                                        |

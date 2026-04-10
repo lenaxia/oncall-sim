@@ -82,8 +82,8 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     minValue: 0,
     maxValue: Infinity,
   },
-  p99_latency_ms: {
-    label: "p99 Latency",
+  p95_latency_ms: {
+    label: "p95 Latency",
     unit: "ms",
     noiseType: "gaussian",
     inheritsRhythm: false,
@@ -93,12 +93,12 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     minValue: 0,
     maxValue: Infinity,
   },
-  p999_latency_ms: {
-    label: "p999 Latency",
+  p99_latency_ms: {
+    label: "p99 Latency",
     unit: "ms",
     noiseType: "gaussian",
     inheritsRhythm: false,
-    defaultNoiseLevel: "low",
+    defaultNoiseLevel: "medium",
     scaleField: null,
     deriveBaseline: null,
     minValue: 0,
