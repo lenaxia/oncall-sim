@@ -155,4 +155,21 @@ describe("getValidArchetypes", () => {
     const valid = new Set(getValidArchetypes());
     expect(valid.has("p999_latency_ms")).toBe(false);
   });
+
+  it("includes all archetypes used by COMPONENT_METRICS — prevents blank screen on load", async () => {
+    // Exact runtime crash path: generateAllMetrics → resolveMetricParams →
+    // getArchetypeDefaults throws if any COMPONENT_METRICS archetype is unregistered.
+    // This test will fail if a new component type is added without registering its archetypes.
+    const { COMPONENT_METRICS } =
+      await import("../../src/metrics/component-metrics");
+    const valid = new Set(getValidArchetypes());
+    for (const [componentType, specs] of Object.entries(COMPONENT_METRICS)) {
+      for (const spec of specs as Array<{ archetype: string }>) {
+        expect(
+          valid.has(spec.archetype),
+          `COMPONENT_METRICS['${componentType}'].archetype='${spec.archetype}' not registered in archetypes.ts`,
+        ).toBe(true);
+      }
+    }
+  });
 });
