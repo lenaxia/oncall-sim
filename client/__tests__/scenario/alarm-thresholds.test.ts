@@ -330,4 +330,24 @@ describe("fixture scenario — auto-alarms end-to-end", () => {
       }
     }
   });
+
+  it("criticalThreshold is set on every opsDashboard metric (proves metricsMeta will have it)", async () => {
+    const fixtureYaml =
+      await import("../../../scenarios/_fixture/scenario.yaml?raw").then(
+        (m) => m.default,
+      );
+    const result = await loadScenarioFromText(fixtureYaml, noopResolve);
+    expect(isScenarioLoadError(result)).toBe(false);
+    if (!isScenarioLoadError(result)) {
+      const metrics = result.opsDashboard.focalService.metrics;
+      expect(metrics.length).toBeGreaterThan(0);
+      for (const m of metrics) {
+        expect(
+          m.criticalThreshold,
+          `fixture metric '${m.archetype}' has no criticalThreshold — metricsMeta will pass undefined to MetricChart`,
+        ).toBeDefined();
+        expect(m.criticalThreshold!).toBeGreaterThan(0);
+      }
+    }
+  });
 });

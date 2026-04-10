@@ -335,6 +335,17 @@ export type SimEvent =
       metricId: string;
       point: TimeSeriesPoint;
     }
+  | {
+      // Batch of metric point updates emitted once per tick (replaces
+      // individual metric_update events). Contains the latest generated
+      // point for each metric that produced one this tick.
+      type: "metrics_tick";
+      updates: Array<{
+        service: string;
+        metricId: string;
+        point: TimeSeriesPoint;
+      }>;
+    }
   | { type: "alarm_fired"; alarm: Alarm }
   | { type: "alarm_silenced"; alarmId: string }
   | { type: "deployment_update"; service: string; deployment: Deployment }

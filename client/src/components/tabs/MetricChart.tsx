@@ -140,6 +140,11 @@ export const MetricChart = memo(function MetricChart({
               minTickGap={50}
             />
             <YAxis
+              domain={[
+                0,
+                (dataMax: number) =>
+                  Math.ceil(Math.max(dataMax, criticalThreshold ?? 0) * 1.1),
+              ]}
               tick={{ fill: "#8b949e", fontSize: 10, fontFamily: "monospace" }}
               axisLine={false}
               tickLine={false}

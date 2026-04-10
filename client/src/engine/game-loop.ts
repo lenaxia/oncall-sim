@@ -519,15 +519,35 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent());
 
-    // Step 4b: generate and stream one point per metric for this tick.
-    // On-demand generation — each metric generates its value at simTime
-    // using current behavioral state (overlay or scripted incident config).
+    // Step 4b: generate metric points for this tick and emit a single batched
+    // metrics_tick event. generatePoint advances the store's internal state for
+    // ALL due points (needed for alarm checks and getAllSeries), but we only send
+    // the LAST generated point per metric to the UI. At speed=1 this is identical
+    // to the previous one-point-per-tick behaviour. At higher speeds (where the
+    // sim-time jump may span multiple resolutionSeconds intervals), intermediate
+    // points are still computed and cached in the store but not dispatched to
+    // React, keeping render count constant regardless of speed.
     if (metricStore) {
+      const tickUpdates: Array<{
+        service: string;
+        metricId: string;
+        point: import("@shared/types/events").TimeSeriesPoint;
+      }> = [];
       for (const { service, metricId } of metricStore.listMetrics()) {
         const points = metricStore.generatePoint(service, metricId, simTime);
-        for (const point of points) {
-          emit({ type: "metric_update", service, metricId, point });
+        if (points.length > 0) {
+          // Only the most-recent point is sent to the UI. Earlier points in the
+          // same tick are cached in the store (visible via getAllSeries) but
+          // skipping their dispatch prevents N renders per tick at high speed.
+          tickUpdates.push({
+            service,
+            metricId,
+            point: points[points.length - 1],
+          });
         }
+      }
+      if (tickUpdates.length > 0) {
+        emit({ type: "metrics_tick", updates: tickUpdates });
       }
     }
 

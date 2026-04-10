@@ -295,6 +295,57 @@ function reducer(state: SessionState, action: Action): SessionState {
           };
         }
 
+        case "metrics_tick": {
+          // Batch update — apply every point in a single state transition so
+          // React only schedules one re-render for the entire tick regardless
+          // of how many metrics produced a point.
+          let metrics = state.metrics;
+          for (const { service, metricId, point } of ev.updates) {
+            const serviceSeries = metrics[service];
+            if (!serviceSeries) continue;
+            const existing = serviceSeries[metricId];
+            if (!existing) continue;
+
+            let updated: TimeSeriesPoint[];
+            const idx = existing.findIndex((p) => p.t === point.t);
+            if (idx !== -1) {
+              updated = existing.slice();
+              updated[idx] = point;
+            } else {
+              // New points from generatePoint always arrive at the tail of the
+              // series (they are generated in ascending t order), so a simple
+              // append is the common path. Fall back to sorted insert only if
+              // the point somehow arrives out of order.
+              const last = existing[existing.length - 1];
+              if (!last || point.t > last.t) {
+                updated = [...existing, point];
+              } else {
+                const insertAt = existing.findIndex((p) => p.t > point.t);
+                updated =
+                  insertAt === -1
+                    ? [...existing, point]
+                    : [
+                        ...existing.slice(0, insertAt),
+                        point,
+                        ...existing.slice(insertAt),
+                      ];
+              }
+            }
+
+            // Only allocate a new object when the array actually changed
+            if (updated !== existing) {
+              metrics =
+                metrics === state.metrics ? { ...state.metrics } : metrics;
+              metrics[service] =
+                metrics[service] === state.metrics[service]
+                  ? { ...serviceSeries }
+                  : metrics[service];
+              metrics[service][metricId] = updated;
+            }
+          }
+          return metrics === state.metrics ? state : { ...state, metrics };
+        }
+
         case "page_sent":
           return { ...state, pages: [...state.pages, ev.alert] };
 

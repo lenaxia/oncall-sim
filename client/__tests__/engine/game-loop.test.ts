@@ -538,12 +538,18 @@ describe("GameLoop — metric_update SSE streaming", () => {
       // Advance clock to cover the reactive window
       vi.advanceTimersByTime(s.engine.tickIntervalSeconds * 1000 * 3);
 
-      const metricUpdates = emitted.filter((e) => e.type === "metric_update");
-      expect(metricUpdates.length).toBeGreaterThan(0);
+      // game-loop emits metrics_tick (batched) instead of individual metric_update events
+      const metricsTicks = emitted.filter(
+        (e) => (e as { type: string }).type === "metrics_tick",
+      );
+      expect(metricsTicks.length).toBeGreaterThan(0);
+      const firstTick = metricsTicks[0] as unknown as {
+        type: "metrics_tick";
+        updates: Array<{ service: string; metricId: string }>;
+      };
       expect(
-        (metricUpdates[0] as { type: "metric_update"; service: string })
-          .service,
-      ).toBe("fixture-service");
+        firstTick.updates.some((u) => u.service === "fixture-service"),
+      ).toBe(true);
 
       loop.stop();
     } finally {
