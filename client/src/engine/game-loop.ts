@@ -350,25 +350,29 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     }
 
     // Step 3: computed alarm threshold detection
-    // Check autoFire alarms — fire when metric value first crosses threshold
+    // Check autoFire alarms — fire when metric value first crosses threshold.
+    // Uses metricStore.getCurrentValue() so live generated points (t > 0) are
+    // included — the static `metrics` variable only holds t <= 0 history.
     const firedAlarmIds = new Set(store.snapshot().alarms.map((a) => a.id));
     for (const alarmConfig of scenario.alarms) {
       if (!alarmConfig.autoFire || firedAlarmIds.has(alarmConfig.id)) continue;
       const threshold = alarmConfig.threshold;
       if (threshold == null) continue;
 
-      const series = metrics[alarmConfig.service]?.[alarmConfig.metricId];
-      if (!series || series.length === 0) continue;
-      const point = [...series].reverse().find((p) => p.t <= simTime);
-      if (!point) continue;
+      const currentValue = metricStore.getCurrentValue(
+        alarmConfig.service,
+        alarmConfig.metricId,
+        simTime,
+      );
+      if (currentValue == null) continue;
 
-      if (point.v >= threshold) {
+      if (currentValue >= threshold) {
         const alarm: import("@shared/types/events").Alarm = {
           id: alarmConfig.id,
           service: alarmConfig.service,
           metricId: alarmConfig.metricId,
           condition: alarmConfig.condition,
-          value: point.v,
+          value: currentValue,
           severity: alarmConfig.severity,
           status: "firing",
           simTime,
