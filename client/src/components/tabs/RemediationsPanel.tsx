@@ -331,34 +331,61 @@ function ThrottleSection({
   onConfirm: (s: ConfirmState) => void;
 }) {
   const { dispatchAction } = useSession();
+  // Track active throttle state per action id
+  const [throttled, setThrottled] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(actions.map((a) => [a.id, false])),
+  );
+
+  function handleToggle(ra: RemediationAction) {
+    const isCurrentlyThrottled = throttled[ra.id] ?? false;
+    const next = !isCurrentlyThrottled;
+    onConfirm({
+      title: next
+        ? `Apply throttle: ${ra.label ?? ra.service}`
+        : `Remove throttle: ${ra.label ?? ra.service}`,
+      body: next
+        ? `Apply traffic throttling to ${ra.service}. ${ra.sideEffect ?? "Load will be shed."}`
+        : `Remove traffic throttling from ${ra.service}. Full traffic will resume.`,
+      action: () => {
+        setThrottled((prev) => ({ ...prev, [ra.id]: next }));
+        dispatchAction("throttle_traffic", {
+          remediationActionId: ra.id,
+          service: ra.service,
+          throttle: next,
+        });
+      },
+    });
+  }
 
   return (
     <Section title="Traffic Throttling">
-      {actions.map((ra) => (
-        <div key={ra.id} className="flex items-center justify-between gap-4">
-          <span className="text-xs font-medium text-sim-text">
-            {ra.label ?? ra.service}
-          </span>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={inactive}
-            onClick={() =>
-              onConfirm({
-                title: `Throttle traffic: ${ra.service}`,
-                body: `Apply rate limiting to ${ra.service}. This will shed load but may impact some customers.`,
-                action: () =>
-                  dispatchAction("throttle_traffic", {
-                    remediationActionId: ra.id,
-                    service: ra.service,
-                  }),
-              })
-            }
-          >
-            Apply throttle
-          </Button>
-        </div>
-      ))}
+      {actions.map((ra) => {
+        const isActive = throttled[ra.id] ?? false;
+        return (
+          <div key={ra.id} className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-sim-text truncate">
+                  {ra.label ?? ra.service}
+                </span>
+                {isActive && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-mono flex-shrink-0 bg-sim-yellow/20 text-sim-yellow">
+                    ACTIVE
+                  </span>
+                )}
+              </div>
+            </div>
+            <Button
+              variant={isActive ? "danger" : "secondary"}
+              size="sm"
+              disabled={inactive}
+              onClick={() => handleToggle(ra)}
+            >
+              {isActive ? "Remove throttle" : "Apply throttle"}
+            </Button>
+          </div>
+        );
+      })}
     </Section>
   );
 }

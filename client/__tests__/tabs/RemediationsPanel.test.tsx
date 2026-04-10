@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import {
@@ -32,6 +32,22 @@ function makeScenarioWithScale(instanceCount = 6) {
   });
 }
 
+function makeScenarioWithThrottle() {
+  return buildLoadedScenario({
+    serviceType: "api",
+    remediationActions: [
+      {
+        id: "throttle_payment",
+        type: "throttle_traffic",
+        service: "payment-service",
+        isCorrectFix: false,
+        label: "Throttle payment-service traffic",
+        sideEffect: "Drops inbound RPS by 75%.",
+      },
+    ],
+  });
+}
+
 function renderPanel(instanceCount = 6) {
   const mockLoop = buildMockGameLoop();
   const scenario = makeScenarioWithScale(instanceCount);
@@ -44,6 +60,8 @@ function renderPanel(instanceCount = 6) {
   });
   return { ...result, mockLoop };
 }
+
+// ── ScaleSection ──────────────────────────────────────────────────────────────
 
 describe("ScaleSection — desired hosts UI", () => {
   it('renders "Desired hosts" label (not scale up/down buttons)', () => {
@@ -68,7 +86,7 @@ describe("ScaleSection — desired hosts UI", () => {
     const user = userEvent.setup();
     const mockLoop = buildMockGameLoop();
     const handleAction = vi.spyOn(mockLoop, "handleAction");
-    const scenario = makeScenarioWithScale(4); // current = 4
+    const scenario = makeScenarioWithScale(4);
 
     renderWithProviders(<RemediationsPanel inactive={false} />, {
       scenario,
@@ -82,10 +100,9 @@ describe("ScaleSection — desired hosts UI", () => {
     });
 
     const input = screen.getByRole("spinbutton");
-    fireEvent.input(input, { target: { value: "10" } }); // desired = 10, delta = +6
+    fireEvent.input(input, { target: { value: "10" } });
 
     await user.click(screen.getByRole("button", { name: /apply/i }));
-    // Confirm modal
     await user.click(screen.getByRole("button", { name: /confirm/i }));
 
     expect(handleAction).toHaveBeenCalledWith(
@@ -103,7 +120,7 @@ describe("ScaleSection — desired hosts UI", () => {
     const user = userEvent.setup();
     const mockLoop = buildMockGameLoop();
     const handleAction = vi.spyOn(mockLoop, "handleAction");
-    const scenario = makeScenarioWithScale(8); // current = 8
+    const scenario = makeScenarioWithScale(8);
 
     renderWithProviders(<RemediationsPanel inactive={false} />, {
       scenario,
@@ -117,7 +134,7 @@ describe("ScaleSection — desired hosts UI", () => {
     });
 
     const input = screen.getByRole("spinbutton");
-    fireEvent.input(input, { target: { value: "3" } }); // desired = 3, delta = -5
+    fireEvent.input(input, { target: { value: "3" } });
 
     await user.click(screen.getByRole("button", { name: /apply/i }));
     await user.click(screen.getByRole("button", { name: /confirm/i }));
@@ -150,9 +167,7 @@ describe("ScaleSection — desired hosts UI", () => {
       });
     });
 
-    // Input already = 6, click Apply
     await user.click(screen.getByRole("button", { name: /apply/i }));
-    // No confirm modal should appear — no change
     expect(screen.queryByRole("button", { name: /confirm/i })).toBeNull();
     expect(handleAction).not.toHaveBeenCalled();
   });
@@ -166,7 +181,136 @@ describe("ScaleSection — desired hosts UI", () => {
     await user.click(screen.getByRole("button", { name: /apply/i }));
     await user.click(screen.getByRole("button", { name: /confirm/i }));
 
-    // After apply the displayed count label should reflect the new value
     expect(screen.getByText(/9 instances/i)).toBeInTheDocument();
+  });
+});
+
+// ── ThrottleSection ───────────────────────────────────────────────────────────
+
+describe("ThrottleSection — toggle UI", () => {
+  it('shows "Apply throttle" button when throttle is OFF', () => {
+    const mockLoop = buildMockGameLoop();
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithThrottle(),
+      mockLoop,
+    });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
+
+    expect(
+      screen.getByRole("button", { name: /apply throttle/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /remove throttle/i }),
+    ).toBeNull();
+  });
+
+  it('after apply, shows "Remove throttle" button and active badge', async () => {
+    const user = userEvent.setup();
+    const mockLoop = buildMockGameLoop();
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithThrottle(),
+      mockLoop,
+    });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: /apply throttle/i }));
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(
+      screen.getByRole("button", { name: /remove throttle/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /apply throttle/i }),
+    ).toBeNull();
+    expect(screen.getByText(/active/i)).toBeInTheDocument();
+  });
+
+  it("apply dispatches throttle_traffic with throttle=true", async () => {
+    const user = userEvent.setup();
+    const mockLoop = buildMockGameLoop();
+    const handleAction = vi.spyOn(mockLoop, "handleAction");
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithThrottle(),
+      mockLoop,
+    });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: /apply throttle/i }));
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(handleAction).toHaveBeenCalledWith(
+      "throttle_traffic",
+      expect.objectContaining({
+        remediationActionId: "throttle_payment",
+        service: "payment-service",
+        throttle: true,
+      }),
+    );
+  });
+
+  it("remove dispatches throttle_traffic with throttle=false", async () => {
+    const user = userEvent.setup();
+    const mockLoop = buildMockGameLoop();
+    const handleAction = vi.spyOn(mockLoop, "handleAction");
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithThrottle(),
+      mockLoop,
+    });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
+
+    // Apply first
+    await user.click(screen.getByRole("button", { name: /apply throttle/i }));
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    // Then remove
+    await user.click(screen.getByRole("button", { name: /remove throttle/i }));
+    await user.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(handleAction).toHaveBeenLastCalledWith(
+      "throttle_traffic",
+      expect.objectContaining({
+        remediationActionId: "throttle_payment",
+        service: "payment-service",
+        throttle: false,
+      }),
+    );
+  });
+
+  it("label shows the action description from the scenario", () => {
+    const mockLoop = buildMockGameLoop();
+    renderWithProviders(<RemediationsPanel inactive={false} />, {
+      scenario: makeScenarioWithThrottle(),
+      mockLoop,
+    });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
+
+    expect(
+      screen.getByText(/Throttle payment-service traffic/i),
+    ).toBeInTheDocument();
   });
 });
