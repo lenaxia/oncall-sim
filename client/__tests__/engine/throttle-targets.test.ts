@@ -43,7 +43,8 @@ describe("ThrottleTarget schema validation", () => {
         baseline_rate: 120,
       },
     ]);
-    const parsed = ScenarioSchema.shape.remediation_actions.element.safeParse(raw);
+    const parsed =
+      ScenarioSchema.shape.remediation_actions.element.safeParse(raw);
     expect(parsed.success).toBe(true);
     if (parsed.success) {
       const targets = parsed.data.throttle_targets ?? [];
@@ -185,14 +186,22 @@ describe("loader — throttle_targets transform", () => {
 id: test-scenario
 title: Test
 description: Test scenario
-service_type: api
 difficulty: easy
 tags: []
 timeline:
   default_speed: 1
   duration_minutes: 15
 topology:
-  focal_service: svc
+  focal_service:
+    name: svc
+    description: Test service
+    typical_rps: 200
+    components:
+      - id: alb
+        type: load_balancer
+        label: ALB
+        inputs: []
+    incidents: []
   upstream: []
   downstream: []
 engine:
@@ -203,18 +212,6 @@ chat:
     - id: "#incidents"
       name: "#incidents"
 ticketing: []
-ops_dashboard:
-  pre_incident_seconds: 300
-  focal_service:
-    name: svc
-    scale:
-      typical_rps: 200
-    traffic_profile: always_on_api
-    health: healthy
-    incident_type: connection_pool_exhaustion
-    metrics:
-      - archetype: error_rate
-        baseline_value: 0.5
 alarms: []
 wiki:
   pages:
@@ -259,7 +256,10 @@ evaluation:
   debrief_context: test
 `) as string;
 
-    return loadScenarioFromText(yaml.dump(base as unknown as Record<string, unknown>), noopResolve);
+    return loadScenarioFromText(
+      yaml.dump(base as unknown as Record<string, unknown>),
+      noopResolve,
+    );
   }
 
   it("throttle_targets are present on loaded RemediationActionConfig", async () => {
@@ -302,7 +302,9 @@ evaluation:
       expect(customerTarget).toBeDefined();
       // customer scope has no nested list — freeform input in UI
       expect(
-        (customerTarget as unknown as Record<string, unknown>)["selectableTargets"],
+        (customerTarget as unknown as Record<string, unknown>)[
+          "selectableTargets"
+        ],
       ).toBeUndefined();
     }
   });
@@ -316,11 +318,24 @@ describe("metric-reaction-engine prompt — throttle context", () => {
       id: "test",
       title: "Test",
       description: "",
-      serviceType: "api",
       difficulty: "easy",
       tags: [],
-      timeline: { defaultSpeed: 1, durationMinutes: 15 },
-      topology: { focalService: "svc", upstream: [], downstream: [] },
+      timeline: {
+        defaultSpeed: 1,
+        durationMinutes: 15,
+        preIncidentSeconds: 300,
+        resolutionSeconds: 15,
+      },
+      topology: {
+        focalService: {
+          name: "svc",
+          description: "test",
+          components: [],
+          incidents: [],
+        },
+        upstream: [],
+        downstream: [],
+      },
       engine: {
         tickIntervalSeconds: 15,
         defaultTab: "email",

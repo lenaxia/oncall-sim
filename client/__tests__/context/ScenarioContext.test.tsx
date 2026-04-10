@@ -63,7 +63,12 @@ describe("ScenarioContext", () => {
 
     it("scenario.engine.timelineDurationSeconds equals durationMinutes * 60", () => {
       const scenario = buildLoadedScenario({
-        timeline: { defaultSpeed: 1, durationMinutes: 15 },
+        timeline: {
+          defaultSpeed: 1,
+          durationMinutes: 15,
+          preIncidentSeconds: 300,
+          resolutionSeconds: 15,
+        },
       });
       const { result } = renderHook(() => useScenario(), {
         wrapper: makeWrapper(scenario),

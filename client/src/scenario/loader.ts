@@ -6,13 +6,11 @@
 import yaml from "js-yaml";
 import { ScenarioSchema } from "./schema";
 import { validateCrossReferences, type ValidationError } from "./validator";
-import { validateIncidentType } from "../metrics/resolver";
 import { LOG_PROFILES, getDensityMultiplier, makeRng } from "./log-profiles";
 import { logger } from "../logger";
 import type {
   LoadedScenario,
   ScenarioSummary,
-  ServiceType,
   Difficulty,
   PersonaConfig,
   AlarmConfig,
@@ -26,12 +24,13 @@ import type {
   WikiConfig,
   CICDConfig,
   OpsDashboardConfig,
-  FocalServiceConfig,
-  CorrelatedServiceConfig,
   MetricConfig,
   EvaluationConfig,
   ScriptedChatMessage,
   ScriptedDeployment,
+  ServiceNode,
+  ServiceComponent,
+  IncidentConfig,
 } from "./types";
 
 const log = logger.child({ component: "loader" });
@@ -93,78 +92,13 @@ export async function loadScenarioFromText(
   }
   const raw = zodResult.data;
 
-  // Step 3: ops_dashboard_file handling — fetch and merge
-  if (raw.ops_dashboard && raw.ops_dashboard_file) {
-    return {
-      scenarioId: raw.id,
-      errors: [
-        {
-          scenarioId: raw.id,
-          field: "ops_dashboard_file",
-          message:
-            "ops_dashboard and ops_dashboard_file are mutually exclusive.",
-        },
-      ],
-    };
-  }
-
-  if (raw.ops_dashboard_file && !raw.ops_dashboard) {
-    // Path-traversal guard
-    const fileRef = raw.ops_dashboard_file;
-    if (
-      fileRef.includes("../") ||
-      fileRef.includes("..\\") ||
-      fileRef.startsWith("/")
-    ) {
-      return {
-        scenarioId: raw.id,
-        errors: [
-          {
-            scenarioId: raw.id,
-            field: "ops_dashboard_file",
-            message: `ops_dashboard_file path traversal rejected: '${fileRef}'`,
-          },
-        ],
-      };
-    }
-    let metricsContent: string;
-    try {
-      metricsContent = await resolveFile(fileRef);
-    } catch {
-      return {
-        scenarioId: raw.id,
-        errors: [
-          {
-            scenarioId: raw.id,
-            field: "ops_dashboard_file",
-            message: `ops_dashboard_file '${fileRef}' could not be loaded`,
-          },
-        ],
-      };
-    }
-    const metricsObj = yaml.load(metricsContent);
-    (raw as Record<string, unknown>)["ops_dashboard"] = metricsObj;
-    (raw as Record<string, unknown>)["ops_dashboard_file"] = undefined;
-  }
-
-  // Step 4: Cross-reference validation
+  // Step 3: Cross-reference validation
   const crossRefErrors = validateCrossReferences(raw);
   if (crossRefErrors.length > 0) {
     return { scenarioId: raw.id, errors: crossRefErrors };
   }
 
-  // Step 5: incident_type warning
-  if (raw.ops_dashboard) {
-    const incidentType = raw.ops_dashboard.focal_service.incident_type;
-    if (!validateIncidentType(incidentType)) {
-      log.warn(
-        { scenarioId: raw.id, incidentType },
-        "incident_type not in registry — Tier 1 metrics will have no incident overlay",
-      );
-    }
-  }
-
-  // Step 6: Transform
+  // Step 4: Transform
   try {
     const loaded = await transform(raw, resolveFile);
     return loaded;
@@ -188,7 +122,6 @@ export function toScenarioSummary(scenario: LoadedScenario): ScenarioSummary {
     id: scenario.id,
     title: scenario.title,
     description: scenario.description,
-    serviceType: scenario.serviceType,
     difficulty: scenario.difficulty,
     tags: scenario.tags,
   };
@@ -196,8 +129,6 @@ export function toScenarioSummary(scenario: LoadedScenario): ScenarioSummary {
 
 // ── Bundled scenario loader (Vite import.meta.glob) ───────────────────────────
 
-// These are resolved at build time by Vite. Values are raw strings (eager: true).
-// The ?raw query returns file contents as strings without module evaluation.
 type RawGlob = Record<string, string>;
 
 let _bundledYamls: RawGlob | null = null;
@@ -219,19 +150,13 @@ function getBundledGlobs(): { yamls: RawGlob; files: RawGlob } {
   return { yamls: _bundledYamls, files: _bundledFiles };
 }
 
-/**
- * Loads all bundled scenarios (from Vite import.meta.glob).
- * Skips _fixture/. Invalid scenarios are logged and excluded.
- */
 export async function loadBundledScenarios(): Promise<LoadedScenario[]> {
   const { yamls, files } = getBundledGlobs();
   const results: LoadedScenario[] = [];
 
   for (const [yamlPath, yamlText] of Object.entries(yamls)) {
-    // Skip _fixture
     if (yamlPath.includes("/_fixture/")) continue;
 
-    // Base path for this scenario (strip trailing 'scenario.yaml')
     const basePath = yamlPath.replace(/scenario\.yaml$/, "");
 
     const resolveFile = (relativePath: string): Promise<string> => {
@@ -257,11 +182,6 @@ export async function loadBundledScenarios(): Promise<LoadedScenario[]> {
   return results;
 }
 
-/**
- * Loads a single scenario from a remote base URL.
- * Expects scenario.yaml at baseUrl + '/scenario.yaml'.
- * File references resolved as baseUrl + '/' + relativePath.
- */
 export async function loadRemoteScenario(
   baseUrl: string,
 ): Promise<LoadedScenario | ScenarioLoadError> {
@@ -385,6 +305,141 @@ function expandBackgroundLogs(
   }
 
   return entries;
+}
+
+// ── Component transform: Zod snake_case → TypeScript camelCase ────────────────
+
+type RawComponent = ReturnType<
+  typeof ScenarioSchema.parse
+>["topology"]["focal_service"]["components"][number];
+
+function transformComponent(c: RawComponent): ServiceComponent {
+  switch (c.type) {
+    case "load_balancer":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "load_balancer",
+      };
+    case "api_gateway":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "api_gateway",
+      };
+    case "ecs_cluster":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "ecs_cluster",
+        instanceCount: c.instance_count,
+        utilization: c.utilization,
+      };
+    case "ec2_fleet":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "ec2_fleet",
+        instanceCount: c.instance_count,
+        utilization: c.utilization,
+      };
+    case "lambda":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "lambda",
+        reservedConcurrency: c.reserved_concurrency,
+        lambdaUtilization: c.lambda_utilization,
+      };
+    case "kinesis_stream":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "kinesis_stream",
+        shardCount: c.shard_count,
+      };
+    case "sqs_queue":
+      return { id: c.id, label: c.label, inputs: c.inputs, type: "sqs_queue" };
+    case "dynamodb":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "dynamodb",
+        writeCapacity: c.write_capacity,
+        readCapacity: c.read_capacity,
+        writeUtilization: c.write_utilization,
+        readUtilization: c.read_utilization,
+        billingMode: c.billing_mode,
+      };
+    case "rds":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "rds",
+        instanceCount: c.instance_count,
+        maxConnections: c.max_connections,
+        utilization: c.utilization,
+        connectionUtilization: c.connection_utilization,
+      };
+    case "elasticache":
+      return {
+        id: c.id,
+        label: c.label,
+        inputs: c.inputs,
+        type: "elasticache",
+        instanceCount: c.instance_count,
+        utilization: c.utilization,
+      };
+    case "s3":
+      return { id: c.id, label: c.label, inputs: c.inputs, type: "s3" };
+    case "scheduler":
+      return { id: c.id, label: c.label, inputs: c.inputs, type: "scheduler" };
+  }
+}
+
+type RawIncident = ReturnType<
+  typeof ScenarioSchema.parse
+>["topology"]["focal_service"]["incidents"][number];
+
+function transformIncident(i: RawIncident): IncidentConfig {
+  return {
+    id: i.id,
+    affectedComponent: i.affected_component,
+    description: i.description,
+    onsetOverlay: i.onset_overlay,
+    onsetSecond: i.onset_second,
+    magnitude: i.magnitude,
+    rampDurationSeconds: i.ramp_duration_seconds,
+    endSecond: i.end_second,
+  };
+}
+
+type RawServiceNode = ReturnType<
+  typeof ScenarioSchema.parse
+>["topology"]["focal_service"];
+
+function transformServiceNode(n: RawServiceNode): ServiceNode {
+  return {
+    name: n.name,
+    description: n.description,
+    owner: n.owner,
+    typicalRps: n.typical_rps,
+    trafficProfile: n.traffic_profile,
+    health: n.health,
+    correlation: n.correlation,
+    lagSeconds: n.lag_seconds,
+    impactFactor: n.impact_factor,
+    components: n.components.map(transformComponent),
+    incidents: n.incidents.map(transformIncident),
+  };
 }
 
 // ── Transform: raw Zod output → LoadedScenario (camelCase) ───────────────────
@@ -601,31 +656,38 @@ async function transform(
     debriefContext: raw.evaluation.debrief_context,
   };
 
-  const rawOps = raw.ops_dashboard!;
+  // opsDashboard is now derived from the component graph in Step 3 (loader §6.1).
+  // Temporary stub returning empty config — will be replaced in Step 3 implementation.
   const opsDashboard: OpsDashboardConfig = {
-    preIncidentSeconds: rawOps.pre_incident_seconds,
-    resolutionSeconds: rawOps.resolution_seconds,
-    focalService: transformFocalService(rawOps.focal_service),
-    correlatedServices: (rawOps.correlated_services ?? []).map(
-      transformCorrelatedService,
-    ),
+    preIncidentSeconds: raw.timeline.pre_incident_seconds,
+    resolutionSeconds: raw.timeline.resolution_seconds,
+    focalService: {
+      name: raw.topology.focal_service.name,
+      scale: { typicalRps: raw.topology.focal_service.typical_rps ?? 0 },
+      trafficProfile: "none",
+      health: "healthy",
+      incidentType: "",
+      metrics: [],
+    },
+    correlatedServices: [],
   };
 
   return {
     id: raw.id,
     title: raw.title,
     description: raw.description,
-    serviceType: raw.service_type as ServiceType,
     difficulty: raw.difficulty as Difficulty,
     tags: raw.tags,
     timeline: {
       defaultSpeed: raw.timeline.default_speed,
       durationMinutes: raw.timeline.duration_minutes,
+      preIncidentSeconds: raw.timeline.pre_incident_seconds,
+      resolutionSeconds: raw.timeline.resolution_seconds,
     },
     topology: {
-      focalService: raw.topology.focal_service,
-      upstream: raw.topology.upstream,
-      downstream: raw.topology.downstream,
+      focalService: transformServiceNode(raw.topology.focal_service),
+      upstream: raw.topology.upstream.map(transformServiceNode),
+      downstream: raw.topology.downstream.map(transformServiceNode),
     },
     engine: {
       tickIntervalSeconds: raw.engine.tick_interval_seconds,
@@ -701,47 +763,6 @@ function transformMetric(m: {
   };
 }
 
-function transformFocalService(focal: {
-  name: string;
-  scale: {
-    typical_rps: number;
-    instance_count?: number;
-    max_connections?: number;
-  };
-  traffic_profile: string;
-  health: "healthy" | "degraded" | "flaky";
-  incident_type: string;
-  metrics: Parameters<typeof transformMetric>[0][];
-}): FocalServiceConfig {
-  return {
-    name: focal.name,
-    scale: {
-      typicalRps: focal.scale.typical_rps,
-      instanceCount: focal.scale.instance_count,
-      maxConnections: focal.scale.max_connections,
-    },
-    trafficProfile:
-      focal.traffic_profile as FocalServiceConfig["trafficProfile"],
-    health: focal.health,
-    incidentType: focal.incident_type,
-    metrics: focal.metrics.map(transformMetric),
-  };
-}
-
-function transformCorrelatedService(cs: {
-  name: string;
-  correlation: "upstream_impact" | "exonerated" | "independent";
-  lag_seconds?: number;
-  impact_factor?: number;
-  health: "healthy" | "degraded" | "flaky";
-  overrides?: Parameters<typeof transformMetric>[0][];
-}): CorrelatedServiceConfig {
-  return {
-    name: cs.name,
-    correlation: cs.correlation,
-    lagSeconds: cs.lag_seconds,
-    impactFactor: cs.impact_factor,
-    health: cs.health,
-    overrides: (cs.overrides ?? []).map(transformMetric),
-  };
-}
+// transformMetric is kept for future use by opsDashboard derivation (Step 3).
+// Suppress unused warning temporarily.
+void (transformMetric as unknown);

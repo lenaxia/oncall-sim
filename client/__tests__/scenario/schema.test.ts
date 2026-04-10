@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ScenarioSchema } from "../../src/scenario/schema";
-import yaml from "js-yaml"
-import fixtureYaml from "../../../scenarios/_fixture/scenario.yaml?raw"
+import yaml from "js-yaml";
+import fixtureYaml from "../../../scenarios/_fixture/scenario.yaml?raw";
 
 // ── Load fixture YAML once ────────────────────────────────────────────────────
 
@@ -76,24 +76,30 @@ describe("ScenarioSchema — valid fixture", () => {
     expect(result.success).toBe(false);
   });
 
-  it("topology.upstream is required — omitting it fails", () => {
+  it("topology.upstream defaults to [] when omitted", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const topology = raw.topology as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
       topology: { ...topology, upstream: undefined },
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.topology.upstream).toEqual([]);
+    }
   });
 
-  it("topology.downstream is required — omitting it fails", () => {
+  it("topology.downstream defaults to [] when omitted", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const topology = raw.topology as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
       topology: { ...topology, downstream: undefined },
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.topology.downstream).toEqual([]);
+    }
   });
 
   it("applies defaults — chat.messages defaults to []", () => {
@@ -133,7 +139,6 @@ describe("ScenarioSchema — required field validation", () => {
     ["id"],
     ["title"],
     ["description"],
-    ["service_type"],
     ["difficulty"],
     ["tags"],
     ["timeline"],
@@ -166,11 +171,13 @@ describe("ScenarioSchema — field constraints", () => {
     return { ...(loadFixture() as object), ...overrides };
   }
 
-  it("rejects invalid service_type", () => {
+  it("service_type field is no longer required — ignored if present", () => {
+    // service_type was removed from the schema; passing it as an unknown field is fine
     const result = ScenarioSchema.safeParse(
       withOverride({ service_type: "cache" }),
     );
-    expect(result.success).toBe(false);
+    // Zod strips unknown keys — parse succeeds
+    expect(result.success).toBe(true);
   });
 
   it("rejects invalid difficulty", () => {
@@ -219,29 +226,29 @@ describe("ScenarioSchema — field constraints", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid traffic_profile", () => {
+  it("rejects invalid traffic_profile on focal_service", () => {
     const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
-    const focal = ops.focal_service as Record<string, unknown>;
+    const topology = raw.topology as Record<string, unknown>;
+    const focal = topology.focal_service as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
-      ops_dashboard: {
-        ...ops,
+      topology: {
+        ...topology,
         focal_service: { ...focal, traffic_profile: "spike" },
       },
     });
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid correlation type", () => {
+  it("rejects invalid correlation type on downstream node", () => {
     const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
+    const topology = raw.topology as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
-      ops_dashboard: {
-        ...ops,
-        correlated_services: [
-          { name: "svc", correlation: "unknown", health: "healthy" },
+      topology: {
+        ...topology,
+        downstream: [
+          { name: "svc", description: "test", correlation: "unknown" },
         ],
       },
     });
@@ -289,18 +296,28 @@ describe("ScenarioSchema — field constraints", () => {
     expect(result.success).toBe(true);
   });
 
-  it("rejects metric_config with invalid noise level", () => {
+  it("rejects incident with invalid noise level on ecs_cluster component", () => {
+    // noise level is checked in ComponentSchema — there's no component-level noise field.
+    // Instead test that an incident with an invalid onset_overlay is rejected.
     const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
-    const focal = ops.focal_service as Record<string, unknown>;
-    const metrics = focal.metrics as Array<Record<string, unknown>>;
+    const topology = raw.topology as Record<string, unknown>;
+    const focal = topology.focal_service as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
-      ops_dashboard: {
-        ...ops,
+      topology: {
+        ...topology,
         focal_service: {
           ...focal,
-          metrics: [{ ...metrics[0], noise: "insane" }],
+          incidents: [
+            {
+              id: "test",
+              affected_component: "app",
+              description: "test",
+              onset_overlay: "invalid_overlay",
+              onset_second: 0,
+              magnitude: 1.0,
+            },
+          ],
         },
       },
     });
@@ -386,14 +403,15 @@ describe("ScenarioSchema — cross-reference data available after parse", () => 
     }
   });
 
-  it("ops_dashboard focal_service metrics have archetype for cross-ref validation", () => {
+  it("topology.focal_service.components parses correctly", () => {
     const raw = loadFixture();
     const result = ScenarioSchema.safeParse(raw);
     expect(result.success).toBe(true);
     if (result.success) {
-      const metrics = result.data.ops_dashboard?.focal_service.metrics ?? [];
-      expect(metrics.length).toBeGreaterThan(0);
-      expect(metrics.every((m) => typeof m.archetype === "string")).toBe(true);
+      const components = result.data.topology.focal_service.components;
+      expect(Array.isArray(components)).toBe(true);
+      expect(components.length).toBeGreaterThan(0);
+      expect(components.every((c) => typeof c.id === "string")).toBe(true);
     }
   });
 
@@ -411,43 +429,31 @@ describe("ScenarioSchema — cross-reference data available after parse", () => 
 // those validators to consume.
 
 describe("ScenarioSchema — deferred validation (Phase 2/3)", () => {
-  it("incident_type is accepted as any non-empty string — registry warning is Phase 2", () => {
-    // LLD: "incident_type not in registry: produces warning, not error"
-    // The Zod schema accepts any string. The warning is emitted by the loader (Phase 3)
-    // after checking the registry (Phase 2).
+  it("incident magnitude validation is enforced by Zod superRefine", () => {
+    // saturation magnitude > 1.0 is rejected at parse time
     const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
-    const focal = ops.focal_service as Record<string, unknown>;
+    const topology = raw.topology as Record<string, unknown>;
+    const focal = topology.focal_service as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
-      ops_dashboard: {
-        ...ops,
-        focal_service: { ...focal, incident_type: "unknown_incident_type_xyz" },
-      },
-    });
-    // Zod accepts it — warning is Phase 3 loader's job
-    expect(result.success).toBe(true);
-  });
-
-  it("archetype is accepted as any non-empty string by Zod — registry error is Phase 2/3", () => {
-    // LLD: "Unrecognized metric archetype: produces error"
-    // The Zod schema accepts any non-empty string. The registry check happens in
-    // validator.ts (Phase 3) using getValidArchetypes() from metrics/archetypes.ts (Phase 2).
-    const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
-    const focal = ops.focal_service as Record<string, unknown>;
-    const result = ScenarioSchema.safeParse({
-      ...raw,
-      ops_dashboard: {
-        ...ops,
+      topology: {
+        ...topology,
         focal_service: {
           ...focal,
-          metrics: [{ archetype: "unrecognized_archetype_xyz" }],
+          incidents: [
+            {
+              id: "inc-1",
+              affected_component: "app",
+              description: "test",
+              onset_overlay: "saturation",
+              onset_second: 0,
+              magnitude: 2.0, // invalid — > 1.0 for saturation
+            },
+          ],
         },
       },
     });
-    // Zod accepts it — archetype registry validation is Phase 3's job
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it("duplicate alarm IDs are accepted by Zod — uniqueness check is Phase 3", () => {
@@ -474,67 +480,32 @@ describe("ScenarioSchema — deferred validation (Phase 2/3)", () => {
   });
 });
 
-// ── resolved_value field on MetricConfig ──────────────────────────────────────
+// ── resolved_value field — MetricConfig is now derived, not authored ──────────
+// MetricConfig is populated by the loader from the component graph.
+// The schema no longer exposes ops_dashboard metrics for YAML authoring.
 
-describe("ScenarioSchema — resolved_value on metric config", () => {
-  function withResolvedValue(resolvedValue: unknown): boolean {
+describe("ScenarioSchema — MetricConfig is derived (not authored)", () => {
+  it("timeline pre_incident_seconds defaults to 300", () => {
     const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
-    const focal = ops.focal_service as Record<string, unknown>;
-    const metrics = focal.metrics as Array<Record<string, unknown>>;
     const result = ScenarioSchema.safeParse({
       ...raw,
-      ops_dashboard: {
-        ...ops,
-        focal_service: {
-          ...focal,
-          metrics: [{ ...metrics[0], resolved_value: resolvedValue }],
-        },
-      },
-    });
-    return result.success;
-  }
-
-  it("accepts metric config without resolved_value (field is optional)", () => {
-    const raw = loadFixture() as Record<string, unknown>;
-    expect(ScenarioSchema.safeParse(raw).success).toBe(true);
-  });
-
-  it("accepts resolved_value as a positive number", () => {
-    expect(withResolvedValue(520)).toBe(true);
-  });
-
-  it("accepts resolved_value as zero", () => {
-    expect(withResolvedValue(0)).toBe(true);
-  });
-
-  it("rejects resolved_value as a negative number", () => {
-    expect(withResolvedValue(-1)).toBe(false);
-  });
-
-  it("rejects resolved_value as a string", () => {
-    expect(withResolvedValue("high")).toBe(false);
-  });
-
-  it("parsed MetricConfig includes resolvedValue when present", () => {
-    const raw = loadFixture() as Record<string, unknown>;
-    const ops = raw.ops_dashboard as Record<string, unknown>;
-    const focal = ops.focal_service as Record<string, unknown>;
-    const metrics = focal.metrics as Array<Record<string, unknown>>;
-    const result = ScenarioSchema.safeParse({
-      ...raw,
-      ops_dashboard: {
-        ...ops,
-        focal_service: {
-          ...focal,
-          metrics: [{ ...metrics[0], resolved_value: 520 }],
-        },
-      },
+      timeline: { default_speed: 1, duration_minutes: 10 },
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      const parsed = result.data.ops_dashboard!.focal_service.metrics[0];
-      expect((parsed as Record<string, unknown>).resolved_value).toBe(520);
+      expect(result.data.timeline.pre_incident_seconds).toBe(300);
+    }
+  });
+
+  it("timeline resolution_seconds defaults to 15", () => {
+    const raw = loadFixture() as Record<string, unknown>;
+    const result = ScenarioSchema.safeParse({
+      ...raw,
+      timeline: { default_speed: 1, duration_minutes: 10 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.timeline.resolution_seconds).toBe(15);
     }
   });
 });

@@ -104,44 +104,6 @@ const MetricConfigSchema = z.object({
     .optional(),
 });
 
-const ServiceScaleSchema = z.object({
-  typical_rps: z.number().positive(),
-  instance_count: z.number().positive().optional(),
-  max_connections: z.number().positive().optional(),
-});
-
-const OpsDashboardSchema = z.object({
-  pre_incident_seconds: z.number().positive(),
-  resolution_seconds: z.number().positive().optional().default(15),
-  focal_service: z.object({
-    name: z.string().min(1),
-    scale: ServiceScaleSchema,
-    traffic_profile: z.enum([
-      "business_hours_web",
-      "business_hours_b2b",
-      "always_on_api",
-      "batch_nightly",
-      "batch_weekly",
-      "none",
-    ]),
-    health: z.enum(["healthy", "degraded", "flaky"]),
-    incident_type: z.string().min(1),
-    metrics: z.array(MetricConfigSchema).min(1),
-  }),
-  correlated_services: z
-    .array(
-      z.object({
-        name: z.string().min(1),
-        correlation: z.enum(["upstream_impact", "exonerated", "independent"]),
-        lag_seconds: z.number().optional(),
-        impact_factor: z.number().min(0).max(1).optional(),
-        health: z.enum(["healthy", "degraded", "flaky"]),
-        overrides: z.array(MetricConfigSchema).optional(),
-      }),
-    )
-    .optional(),
-});
-
 const LLMEventToolSchema = z.object({
   tool: z.string().min(1),
   enabled: z.boolean().optional(),
@@ -305,39 +267,166 @@ const HostGroupSchema = z.object({
   description: z.string().optional(),
 });
 
+// ── Component schema — discriminated union ────────────────────────────────────
+
+const ComponentBaseSchema = {
+  id: z.string().min(1),
+  label: z.string().min(1),
+  inputs: z.array(z.string()),
+};
+
+export const ComponentSchema = z.discriminatedUnion("type", [
+  z.object({ ...ComponentBaseSchema, type: z.literal("load_balancer") }),
+  z.object({ ...ComponentBaseSchema, type: z.literal("api_gateway") }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("ecs_cluster"),
+    instance_count: z.number().int().positive(),
+    utilization: z.number().min(0).max(1),
+  }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("ec2_fleet"),
+    instance_count: z.number().int().positive(),
+    utilization: z.number().min(0).max(1),
+  }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("lambda"),
+    reserved_concurrency: z.number().int().positive(),
+    lambda_utilization: z.number().min(0).max(1),
+  }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("kinesis_stream"),
+    shard_count: z.number().int().positive(),
+  }),
+  z.object({ ...ComponentBaseSchema, type: z.literal("sqs_queue") }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("dynamodb"),
+    write_capacity: z.number().int().positive(),
+    read_capacity: z.number().int().positive(),
+    write_utilization: z.number().min(0).max(1),
+    read_utilization: z.number().min(0).max(1),
+    billing_mode: z.enum(["provisioned", "on_demand"]).default("provisioned"),
+  }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("rds"),
+    instance_count: z.number().int().positive(),
+    max_connections: z.number().int().positive(),
+    utilization: z.number().min(0).max(1),
+    connection_utilization: z.number().min(0).max(1),
+  }),
+  z.object({
+    ...ComponentBaseSchema,
+    type: z.literal("elasticache"),
+    instance_count: z.number().int().positive(),
+    utilization: z.number().min(0).max(1),
+  }),
+  z.object({ ...ComponentBaseSchema, type: z.literal("s3") }),
+  z.object({ ...ComponentBaseSchema, type: z.literal("scheduler") }),
+]);
+
+// ── Incident schema ───────────────────────────────────────────────────────────
+
+export const IncidentConfigSchema = z
+  .object({
+    id: z.string().min(1),
+    affected_component: z.string().min(1),
+    description: z.string().min(1),
+    onset_overlay: z.enum([
+      "spike_and_sustain",
+      "gradual_degradation",
+      "saturation",
+      "sudden_drop",
+    ]),
+    onset_second: z.number(),
+    magnitude: z.number().positive(),
+    ramp_duration_seconds: z.number().positive().optional(),
+    end_second: z.number().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.onset_overlay === "saturation" && val.magnitude > 1.0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `saturation magnitude must be ≤ 1.0 (got ${val.magnitude}); use spike_and_sustain for values > 1`,
+        path: ["magnitude"],
+      });
+    }
+    if (val.onset_overlay === "sudden_drop" && val.magnitude >= 1.0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `sudden_drop magnitude must be < 1.0 (got ${val.magnitude}); it is the fraction the metric drops TO`,
+        path: ["magnitude"],
+      });
+    }
+  });
+
+// ── ServiceNode schema ────────────────────────────────────────────────────────
+
+export const ServiceNodeSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().min(1),
+  owner: z.string().optional(),
+  typical_rps: z.number().positive().optional(),
+  traffic_profile: z
+    .enum([
+      "business_hours_web",
+      "business_hours_b2b",
+      "always_on_api",
+      "batch_nightly",
+      "batch_weekly",
+      "none",
+    ])
+    .optional(),
+  health: z.enum(["healthy", "degraded", "flaky"]).optional(),
+  correlation: z
+    .enum(["upstream_impact", "exonerated", "independent"])
+    .optional(),
+  lag_seconds: z.number().optional(),
+  impact_factor: z.number().min(0).max(1).optional(),
+  components: z.array(ComponentSchema).optional().default([]),
+  incidents: z.array(IncidentConfigSchema).optional().default([]),
+});
+
+// ── Topology schema ───────────────────────────────────────────────────────────
+
+const TopologySchema = z.object({
+  focal_service: ServiceNodeSchema,
+  upstream: z.array(ServiceNodeSchema).optional().default([]),
+  downstream: z.array(ServiceNodeSchema).optional().default([]),
+});
+
+// ── Timeline schema ───────────────────────────────────────────────────────────
+
+const TimelineSchema = z.object({
+  default_speed: z.union([
+    z.literal(1),
+    z.literal(2),
+    z.literal(5),
+    z.literal(10),
+  ]),
+  duration_minutes: z.number().positive(),
+  pre_incident_seconds: z.number().positive().optional().default(300),
+  resolution_seconds: z.number().positive().optional().default(15),
+});
+
+// ── Root scenario schema ──────────────────────────────────────────────────────
+
 export const ScenarioSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   description: z.string(),
-  service_type: z.enum([
-    "api",
-    "workflow",
-    "serverless",
-    "database",
-    "console",
-  ]),
   difficulty: z.enum(["easy", "medium", "hard"]),
   tags: z.array(z.string()),
-  timeline: z.object({
-    default_speed: z.union([
-      z.literal(1),
-      z.literal(2),
-      z.literal(5),
-      z.literal(10),
-    ]),
-    duration_minutes: z.number().positive(),
-  }),
-  topology: z.object({
-    focal_service: z.string().min(1),
-    upstream: z.array(z.string()),
-    downstream: z.array(z.string()),
-  }),
+  timeline: TimelineSchema,
+  topology: TopologySchema,
   engine: EngineSchema,
   email: z.array(ScriptedEmailSchema),
   chat: ChatSchema,
   ticketing: z.array(TicketSchema),
-  ops_dashboard_file: z.string().optional(),
-  ops_dashboard: OpsDashboardSchema.optional(),
   alarms: z.array(AlarmConfigSchema),
   logs: z.array(ScriptedLogSchema).optional().default([]),
   log_patterns: z.array(LogPatternSchema).optional().default([]),
@@ -349,6 +438,10 @@ export const ScenarioSchema = z.object({
   feature_flags: z.array(FeatureFlagSchema).optional().default([]),
   host_groups: z.array(HostGroupSchema).optional().default([]),
   evaluation: EvaluationSchema,
+  // Legacy fields kept as passthrough so old YAML files don't hard-fail at parse
+  // time — the validator emits a warning if ops_dashboard is present.
+  ops_dashboard: z.unknown().optional(),
+  ops_dashboard_file: z.string().optional(),
 });
 
 export type RawScenarioConfig = z.infer<typeof ScenarioSchema>;

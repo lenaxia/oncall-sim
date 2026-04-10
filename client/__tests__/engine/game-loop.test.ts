@@ -9,6 +9,7 @@ import { generateAllMetrics } from "../../src/metrics/generator";
 import { createMetricStore } from "../../src/metrics/metric-store";
 import {
   getFixtureScenario,
+  buildLoadedScenario,
   clearFixtureCache,
   buildTestClock,
   expectEvent,
@@ -20,11 +21,10 @@ import type { GameLoopDependencies } from "../../src/engine/game-loop";
 
 beforeEach(() => clearFixtureCache());
 
-
 function makeDeps(
   overrides: Partial<GameLoopDependencies> = {},
 ): GameLoopDependencies {
-  const scenario = _fixture
+  const scenario = _fixture;
   const clock = buildTestClock(0);
   return {
     scenario,
@@ -44,12 +44,13 @@ function makeDeps(
 // ── tick sequence ─────────────────────────────────────────────────────────────
 
 // ── Fixture loaded once via beforeAll ────────────────────────────────────────
-let _fixture: import("../../src/scenario/types").LoadedScenario
+let _fixture: import("../../src/scenario/types").LoadedScenario;
 
 beforeAll(async () => {
-  _fixture = await getFixtureScenario()
-})
+  _fixture = await getFixtureScenario();
+});
 
+beforeEach(() => clearFixtureCache());
 
 describe("GameLoop — tick sequence (timer-driven)", () => {
   it("scripted event at t=0 fires on first tick via game loop", async () => {
@@ -507,7 +508,8 @@ describe("GameLoop — metric_update SSE streaming", () => {
   it("emits metric_update events when MetricStore has reactive overlay points in window", async () => {
     vi.useFakeTimers();
     try {
-      const s = _fixture;
+      // Use buildLoadedScenario() which has opsDashboard with error_rate metric
+      const s = buildLoadedScenario();
       const { series, resolvedParams } = generateAllMetrics(
         s,
         "session-reactive",
@@ -550,7 +552,8 @@ describe("GameLoop — metric_update SSE streaming", () => {
   });
 
   it("getSnapshot returns MetricStore series when metricStore is provided", async () => {
-    const s = _fixture;
+    // Use buildLoadedScenario() which has opsDashboard with error_rate metric
+    const s = buildLoadedScenario();
     const { series, resolvedParams } = generateAllMetrics(s, "session-snap");
     const store = createMetricStore(series, resolvedParams);
     const clock = buildTestClock(0);

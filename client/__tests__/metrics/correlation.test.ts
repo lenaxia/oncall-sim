@@ -6,11 +6,15 @@ import {
 import { resolveMetricParams } from "../../src/metrics/resolver";
 import { generateOneSeries } from "../../src/metrics/generator";
 import {
-  getFixtureScenario,
+  buildLoadedScenario,
   clearFixtureCache,
 } from "../../src/testutil/index";
 import type { CorrelatedServiceConfig } from "../../src/scenario/types";
 import type { ResolvedMetricParams } from "../../src/metrics/types";
+
+// Use buildLoadedScenario() — correlation tests depend on opsDashboard.focalService.metrics
+// which is derived from components in Step 3. Until then, testutil provides stable fixture data.
+const getFixtureScenario = async () => buildLoadedScenario();
 
 beforeEach(() => clearFixtureCache());
 

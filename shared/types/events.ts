@@ -232,6 +232,7 @@ export type ActionType =
   | "view_pipeline" // evaluation-tracked: trainee viewed a pipeline
   | "restart_service"
   | "scale_cluster"
+  | "scale_capacity"
   | "throttle_traffic"
   | "suppress_alarm"
   | "emergency_deploy"

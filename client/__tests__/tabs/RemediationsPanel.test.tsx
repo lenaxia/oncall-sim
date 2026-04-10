@@ -34,7 +34,6 @@ function makeScenarioWithScale(instanceCount = 6) {
 
 function makeScenarioWithThrottle() {
   return buildLoadedScenario({
-    serviceType: "api",
     remediationActions: [
       {
         id: "throttle_payment",
@@ -319,7 +318,6 @@ describe("ThrottleSection — toggle UI", () => {
 
 function makeScenarioWithTargets() {
   return buildLoadedScenario({
-    serviceType: "api",
     remediationActions: [
       {
         id: "throttle_payment",
@@ -433,7 +431,12 @@ describe("ThrottleSection — endpoint/global apply flow", () => {
       scenario: makeScenarioWithTargets(),
       mockLoop,
     });
-    act(() => { mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() }) });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
 
     const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
     // Click the endpoint (POST /v1/charges) set limit button
@@ -451,12 +454,15 @@ describe("ThrottleSection — endpoint/global apply flow", () => {
     await user.click(applyBtns[0]);
     await user.click(screen.getByRole("button", { name: /confirm/i }));
 
-    expect(handleAction).toHaveBeenCalledWith("throttle_traffic", expect.objectContaining({
-      targetId: "checkout",
-      scope: "endpoint",
-      limitRate: 80,
-      throttle: true,
-    }));
+    expect(handleAction).toHaveBeenCalledWith(
+      "throttle_traffic",
+      expect.objectContaining({
+        targetId: "checkout",
+        scope: "endpoint",
+        limitRate: 80,
+        throttle: true,
+      }),
+    );
   });
 
   it("after applying a limit, row shows ACTIVE badge and Edit/Remove buttons", async () => {
@@ -472,7 +478,9 @@ describe("ThrottleSection — endpoint/global apply flow", () => {
     await user.click(screen.getByRole("button", { name: /confirm/i }));
 
     expect(screen.getAllByText(/active/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: /remove/i }).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("button", { name: /remove/i }).length,
+    ).toBeGreaterThan(0);
   });
 
   it("removing a limit dispatches throttle_traffic with throttle=false", async () => {
@@ -483,7 +491,12 @@ describe("ThrottleSection — endpoint/global apply flow", () => {
       scenario: makeScenarioWithTargets(),
       mockLoop,
     });
-    act(() => { mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() }) });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
 
     // Apply then remove
     const setLimitBtns = screen.getAllByRole("button", { name: /set limit/i });
@@ -498,9 +511,12 @@ describe("ThrottleSection — endpoint/global apply flow", () => {
     await user.click(removeBtns[0]);
     await user.click(screen.getByRole("button", { name: /confirm/i }));
 
-    expect(handleAction).toHaveBeenLastCalledWith("throttle_traffic", expect.objectContaining({
-      throttle: false,
-    }));
+    expect(handleAction).toHaveBeenLastCalledWith(
+      "throttle_traffic",
+      expect.objectContaining({
+        throttle: false,
+      }),
+    );
   });
 });
 
@@ -518,7 +534,12 @@ describe("ThrottleSection — customer scope", () => {
       scenario: makeScenarioWithTargets(),
       mockLoop,
     });
-    act(() => { mockLoop.emit({ type: "session_snapshot", snapshot: buildTestSnapshot() }) });
+    act(() => {
+      mockLoop.emit({
+        type: "session_snapshot",
+        snapshot: buildTestSnapshot(),
+      });
+    });
 
     // Find the customer row's limit input (not the endpoint inline input)
     const customerIdInput = screen.getByPlaceholderText(/customer id/i);
@@ -532,13 +553,16 @@ describe("ThrottleSection — customer scope", () => {
     await user.click(customerApplyBtn);
     await user.click(screen.getByRole("button", { name: /confirm/i }));
 
-    expect(handleAction).toHaveBeenCalledWith("throttle_traffic", expect.objectContaining({
-      targetId: "per_customer",
-      scope: "customer",
-      customerId: "acme_corp",
-      limitRate: 50,
-      throttle: true,
-    }));
+    expect(handleAction).toHaveBeenCalledWith(
+      "throttle_traffic",
+      expect.objectContaining({
+        targetId: "per_customer",
+        scope: "customer",
+        customerId: "acme_corp",
+        limitRate: 50,
+        throttle: true,
+      }),
+    );
   });
 
   it("customer apply button is disabled when customer ID is empty", () => {

@@ -1,18 +1,20 @@
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { generateAllMetrics } from "../../src/metrics/generator";
 import {
-  getFixtureScenario,
+  buildLoadedScenario,
   clearFixtureCache,
 } from "../../src/testutil/index";
 import type { LoadedScenario } from "../../src/scenario/types";
 
+// Use buildLoadedScenario() which has hardcoded opsDashboard with metrics.
+// The fixture YAML no longer authors ops_dashboard — it is derived from components
+// in Step 3. Until deriveOpsDashboard() is implemented, tests use testutil data.
 let _fixture: LoadedScenario;
 
-beforeAll(async () => {
-  _fixture = await getFixtureScenario();
+beforeEach(() => {
+  clearFixtureCache();
+  _fixture = buildLoadedScenario();
 });
-
-beforeEach(() => clearFixtureCache());
 
 describe("generateAllMetrics with fixture scenario", () => {
   it("returns series for focal service metrics", () => {
@@ -26,7 +28,8 @@ describe("generateAllMetrics with fixture scenario", () => {
     const { series } = generateAllMetrics(_fixture, "session-1");
     const { preIncidentSeconds } = _fixture.opsDashboard;
     const resolutionSeconds = 15;
-    const expectedLength = Math.floor(preIncidentSeconds / resolutionSeconds) + 1;
+    const expectedLength =
+      Math.floor(preIncidentSeconds / resolutionSeconds) + 1;
     const s = series["fixture-service"]["error_rate"];
     expect(s.length).toBe(expectedLength);
   });
@@ -72,7 +75,11 @@ describe("generateAllMetrics with fixture scenario", () => {
       opsDashboard: {
         ..._fixture.opsDashboard,
         correlatedServices: [
-          { name: "downstream-service", correlation: "exonerated" as const, health: "healthy" as const },
+          {
+            name: "downstream-service",
+            correlation: "exonerated" as const,
+            health: "healthy" as const,
+          },
         ],
       },
     };
@@ -88,11 +95,22 @@ describe("generateAllMetrics with fixture scenario", () => {
         ..._fixture.opsDashboard,
         focalService: {
           ..._fixture.opsDashboard.focalService,
-          metrics: [{ archetype: "error_rate", seriesOverride: [{ t: -15, v: 99 }, { t: 0, v: 98 }] }],
+          metrics: [
+            {
+              archetype: "error_rate",
+              seriesOverride: [
+                { t: -15, v: 99 },
+                { t: 0, v: 98 },
+              ],
+            },
+          ],
         },
       },
     };
-    const { series } = generateAllMetrics(modified as typeof _fixture, "session-override");
+    const { series } = generateAllMetrics(
+      modified as typeof _fixture,
+      "session-override",
+    );
     const s = series["fixture-service"]["error_rate"];
     expect(s).toHaveLength(2);
     expect(s[0]).toEqual({ t: -15, v: 99 });
@@ -108,7 +126,10 @@ describe("generateAllMetrics - resolvedParams", () => {
   });
 
   it("resolvedParams keys match series keys", () => {
-    const { series, resolvedParams } = generateAllMetrics(_fixture, "session-1");
+    const { series, resolvedParams } = generateAllMetrics(
+      _fixture,
+      "session-1",
+    );
     for (const service of Object.keys(series)) {
       expect(resolvedParams[service]).toBeDefined();
       for (const metricId of Object.keys(series[service])) {
@@ -130,11 +151,15 @@ describe("generateAllMetrics - resolvedParams", () => {
         ..._fixture.opsDashboard,
         focalService: {
           ..._fixture.opsDashboard.focalService,
-          metrics: [{ archetype: "error_rate", baselineValue: 1.0, resolvedValue: 520 }],
+          metrics: [
+            { archetype: "error_rate", baselineValue: 1.0, resolvedValue: 520 },
+          ],
         },
       },
     };
     const { resolvedParams } = generateAllMetrics(modified, "session-1");
-    expect(resolvedParams["fixture-service"]["error_rate"].resolvedValue).toBe(520);
+    expect(resolvedParams["fixture-service"]["error_rate"].resolvedValue).toBe(
+      520,
+    );
   });
 });

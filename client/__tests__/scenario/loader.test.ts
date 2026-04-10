@@ -87,45 +87,58 @@ describe("loadScenarioFromText — happy paths", () => {
     }
   });
 
-  it("camelCase transformation is applied — service_type → serviceType", async () => {
+  it("camelCase transformation is applied — topology has ServiceNode shape", async () => {
     const result = await loadScenarioFromText(fixtureYaml, noopResolve);
     if (!isScenarioLoadError(result)) {
-      expect(result.serviceType).toBe("api");
+      expect(typeof result.topology.focalService).toBe("object");
+      expect(result.topology.focalService.name).toBe("fixture-service");
+      expect(Array.isArray(result.topology.focalService.components)).toBe(true);
+      // service_type no longer exists
       expect(
-        (result as unknown as Record<string, unknown>)["service_type"],
+        (result as unknown as Record<string, unknown>)["serviceType"],
       ).toBeUndefined();
     }
   });
 
-  it("opsDashboard.focalService has correct name and trafficProfile", async () => {
+  it("topology.focalService.components are transformed to camelCase", async () => {
     const result = await loadScenarioFromText(fixtureYaml, noopResolve);
     if (!isScenarioLoadError(result)) {
-      expect(result.opsDashboard.focalService.name).toBe("fixture-service");
-      expect(result.opsDashboard.focalService.trafficProfile).toBe(
-        "always_on_api",
-      );
+      const components = result.topology.focalService.components;
+      expect(components.length).toBeGreaterThan(0);
+      // ecs_cluster component should have instanceCount (not instance_count)
+      const ecs = components.find((c) => c.type === "ecs_cluster");
+      expect(ecs).toBeDefined();
+      if (ecs?.type === "ecs_cluster") {
+        expect(typeof ecs.instanceCount).toBe("number");
+      }
+    }
+  });
+
+  it("timeline has preIncidentSeconds and resolutionSeconds", async () => {
+    const result = await loadScenarioFromText(fixtureYaml, noopResolve);
+    if (!isScenarioLoadError(result)) {
+      expect(typeof result.timeline.preIncidentSeconds).toBe("number");
+      expect(typeof result.timeline.resolutionSeconds).toBe("number");
+      expect(result.timeline.preIncidentSeconds).toBe(120);
+      expect(result.timeline.resolutionSeconds).toBe(15);
     }
   });
 });
 
-// ── ops_dashboard_file resolution ────────────────────────────────────────────
+// ── ops_dashboard_file — legacy field still accepted (passthrough) ────────────
 
 describe("loadScenarioFromText — ops_dashboard_file", () => {
-  it("ops_dashboard_file reference is resolved and merged correctly", async () => {
+  it("ops_dashboard_file present does NOT cause a load error (passthrough field)", async () => {
+    // ops_dashboard_file is now a passthrough unknown field — the loader
+    // no longer processes it. The scenario loads without error.
     const fixtureObj = parseFixtureYaml();
-    const ops = fixtureObj["ops_dashboard"];
-    delete fixtureObj["ops_dashboard"];
     fixtureObj["ops_dashboard_file"] = "metrics.yaml";
+    delete fixtureObj["ops_dashboard"]; // avoid Zod unknown key warning
 
     const modifiedYaml = yaml.dump(fixtureObj);
-    const resolve = makeResolve({ "metrics.yaml": yaml.dump(ops) });
-
-    const result = await loadScenarioFromText(modifiedYaml, resolve);
-    if (isScenarioLoadError(result)) console.error(result.errors);
+    const result = await loadScenarioFromText(modifiedYaml, noopResolve);
+    // Should load successfully (ops_dashboard_file is ignored)
     expect(isScenarioLoadError(result)).toBe(false);
-    if (!isScenarioLoadError(result)) {
-      expect(result.opsDashboard.focalService.name).toBe("fixture-service");
-    }
   });
 });
 
@@ -185,7 +198,9 @@ describe("loadScenarioFromText — error paths", () => {
     }
   });
 
-  it("ops_dashboard + ops_dashboard_file both present returns error", async () => {
+  it("ops_dashboard + ops_dashboard_file both present: scenario still loads (both are passthrough)", async () => {
+    // ops_dashboard and ops_dashboard_file are now unknown passthrough fields.
+    // The loader no longer enforces mutual exclusion.
     const fixtureObj = parseFixtureYaml();
     fixtureObj["ops_dashboard_file"] = "metrics.yaml";
 
@@ -193,12 +208,7 @@ describe("loadScenarioFromText — error paths", () => {
       yaml.dump(fixtureObj),
       noopResolve,
     );
-    expect(isScenarioLoadError(result)).toBe(true);
-    if (isScenarioLoadError(result)) {
-      expect(
-        result.errors.find((e) => e.field === "ops_dashboard_file"),
-      ).toBeDefined();
-    }
+    expect(isScenarioLoadError(result)).toBe(false);
   });
 
   it("path traversal in file reference returns error", async () => {
@@ -264,12 +274,10 @@ describe("toScenarioSummary", () => {
         "description",
         "difficulty",
         "id",
-        "serviceType",
         "tags",
         "title",
       ]);
       expect(summary.id).toBe("_fixture");
-      expect(summary.serviceType).toBe("api");
       expect(summary.difficulty).toBe("easy");
       expect(Array.isArray(summary.tags)).toBe(true);
     }
@@ -309,28 +317,20 @@ describe("isScenarioLoadError", () => {
   });
 });
 
-// ── resolved_value transform ──────────────────────────────────────────────────
+// ── topology transform ────────────────────────────────────────────────────────
 
-describe("loadScenarioFromText — resolved_value metric field transform", () => {
-  it("resolvedValue is undefined when resolved_value is omitted", async () => {
+describe("loadScenarioFromText — topology transform", () => {
+  it("topology.focalService.incidents are transformed to camelCase", async () => {
     const result = await loadScenarioFromText(fixtureYaml, noopResolve);
-    expect(isScenarioLoadError(result)).toBe(false);
     if (!isScenarioLoadError(result)) {
-      const metric = result.opsDashboard.focalService.metrics[0];
-      expect(metric.resolvedValue).toBeUndefined();
-    }
-  });
-
-  it("resolvedValue is populated when resolved_value is present in YAML", async () => {
-    const modified = fixtureYaml.replace(
-      /archetype:\s*error_rate/,
-      "archetype: error_rate\n        resolved_value: 520",
-    );
-    const result = await loadScenarioFromText(modified, noopResolve);
-    expect(isScenarioLoadError(result)).toBe(false);
-    if (!isScenarioLoadError(result)) {
-      const metric = result.opsDashboard.focalService.metrics[0];
-      expect(metric.resolvedValue).toBe(520);
+      const incidents = result.topology.focalService.incidents;
+      expect(Array.isArray(incidents)).toBe(true);
+      expect(incidents.length).toBeGreaterThan(0);
+      const inc = incidents[0];
+      expect(inc.affectedComponent).toBeDefined(); // camelCase
+      expect(
+        (inc as unknown as Record<string, unknown>)["affected_component"],
+      ).toBeUndefined();
     }
   });
 });

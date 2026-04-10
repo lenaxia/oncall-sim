@@ -4,10 +4,14 @@ import {
   deriveMetricSeedExported,
 } from "../../src/metrics/resolver";
 import {
-  getFixtureScenario,
+  buildLoadedScenario,
   clearFixtureCache,
 } from "../../src/testutil/index";
 import type { MetricConfig } from "../../src/scenario/types";
+
+// Use buildLoadedScenario() — resolver tests depend on opsDashboard.focalService.metrics
+// which is derived from components in Step 3. Until then, testutil provides stable data.
+const getFixtureScenario = async () => buildLoadedScenario();
 
 describe("resolveMetricParams — baseline derivation", () => {
   it("uses author baseline_value when provided", async () => {
@@ -140,11 +144,15 @@ describe("resolveMetricParams — noise", () => {
 describe("resolveMetricParams — incident overlay", () => {
   it("author incident_peak overrides registry default factor", async () => {
     const scenario = await getFixtureScenario();
-    // fixture has archetype: error_rate, incident_peak: 12.0, onset_second: 0
-    const focalMetric = scenario.opsDashboard.focalService.metrics[0];
-    expect(focalMetric.archetype).toBe("error_rate");
+    // Explicit metricConfig with incident_peak set
+    const metricConfig: MetricConfig = {
+      archetype: "error_rate",
+      baselineValue: 0.5,
+      incidentPeak: 12.0,
+      onsetSecond: 0,
+    };
     const params = resolveMetricParams(
-      focalMetric,
+      metricConfig,
       scenario.opsDashboard.focalService,
       scenario,
       "session-1",
@@ -154,14 +162,19 @@ describe("resolveMetricParams — incident overlay", () => {
 
   it("author onset_second overrides registry default", async () => {
     const scenario = await getFixtureScenario();
-    const focalMetric = scenario.opsDashboard.focalService.metrics[0];
+    const metricConfig: MetricConfig = {
+      archetype: "error_rate",
+      baselineValue: 0.5,
+      incidentPeak: 10.0,
+      onsetSecond: 45,
+    };
     const params = resolveMetricParams(
-      focalMetric,
+      metricConfig,
       scenario.opsDashboard.focalService,
       scenario,
       "session-1",
     );
-    expect(params.onsetSecond).toBe(0); // fixture sets onset_second: 0
+    expect(params.onsetSecond).toBe(45);
   });
 
   it("Tier 1 metric gets overlay from incident type registry", async () => {

@@ -1,8 +1,6 @@
 // validator.ts — cross-reference validation (browser port).
 // The checkFileRef existence check (fs.accessSync) is removed.
 // Path-traversal guard uses string prefix matching instead of path.resolve.
-// File existence for bundled scenarios is guaranteed by import.meta.glob at build time;
-// for remote scenarios, a failed fetch surfaces to the user.
 
 import type { z } from "zod";
 import type { ScenarioSchema } from "./schema";
@@ -32,6 +30,7 @@ const VALID_ACTION_TYPES: Set<string> = new Set<ActionType>([
   "block_promotion",
   "restart_service",
   "scale_cluster",
+  "scale_capacity",
   "throttle_traffic",
   "suppress_alarm",
   "emergency_deploy",
@@ -49,7 +48,6 @@ type RawConfig = z.infer<typeof ScenarioSchema>;
 
 export function validateCrossReferences(
   scenario: RawConfig,
-  // scenarioBaseUrl is unused in browser port — kept for API compatibility with server version
   _scenarioBaseUrl?: string,
 ): ValidationError[] {
   const errors: ValidationError[] = [];
@@ -59,42 +57,37 @@ export function validateCrossReferences(
     errors.push({ scenarioId: id, field, message });
   }
 
-  if (scenario.ops_dashboard && scenario.ops_dashboard_file) {
-    err(
-      "ops_dashboard_file",
-      "ops_dashboard and ops_dashboard_file are mutually exclusive — provide one or the other, not both.",
-    );
-  }
+  // ── Alarm service validation — uses topology service names ────────────────
 
-  const focalServiceName =
-    scenario.ops_dashboard?.focal_service.name ?? scenario.ops_dashboard_file;
-  const correlatedNames = (
-    scenario.ops_dashboard?.correlated_services ?? []
-  ).map((cs) => cs.name);
-  const allServiceNames = new Set(
-    [focalServiceName, ...correlatedNames].filter(Boolean),
-  );
+  const topologyServiceNames = new Set([
+    scenario.topology.focal_service.name,
+    ...scenario.topology.upstream.map((n) => n.name),
+    ...scenario.topology.downstream.map((n) => n.name),
+  ]);
 
-  const metricsPerService: Map<string, Set<string>> = new Map();
-  if (scenario.ops_dashboard) {
-    const focal = scenario.ops_dashboard.focal_service;
-    metricsPerService.set(
-      focal.name,
-      new Set(focal.metrics.map((m) => m.archetype)),
-    );
-    for (const cs of scenario.ops_dashboard.correlated_services ?? []) {
-      const overrideArchetypes = (cs.overrides ?? []).map((m) => m.archetype);
-      const focalArchetypes = Array.from(
-        metricsPerService.get(focal.name) ?? [],
+  // Build a set of valid metric archetypes per service for alarm cross-refs.
+  // Without a derived ops_dashboard (Step 3), we allow any registered archetype
+  // for topology-listed services. Strict per-service metric validation comes
+  // in a later step once deriveOpsDashboard is implemented.
+  const validArchetypes = new Set(getValidArchetypes());
+
+  for (let i = 0; i < scenario.alarms.length; i++) {
+    const alarm = scenario.alarms[i];
+    if (!topologyServiceNames.has(alarm.service)) {
+      err(
+        `alarms[${i}].service`,
+        `alarm '${alarm.id}' references service '${alarm.service}' which does not appear in topology. Valid: ${[...topologyServiceNames].join(", ")}`,
       );
-      metricsPerService.set(
-        cs.name,
-        new Set([...focalArchetypes, ...overrideArchetypes]),
+    } else if (!validArchetypes.has(alarm.metric_id)) {
+      err(
+        `alarms[${i}].metric_id`,
+        `alarm '${alarm.id}' references metric_id '${alarm.metric_id}' which is not a registered archetype. Registered: ${[...validArchetypes].join(", ")}`,
       );
     }
   }
 
-  // No duplicate IDs
+  // ── No duplicate IDs ──────────────────────────────────────────────────────
+
   const alarmIds = scenario.alarms.map((a) => a.id);
   findDuplicates(alarmIds).forEach((dup) =>
     err("alarms", `Duplicate alarm id: '${dup}'`),
@@ -121,24 +114,7 @@ export function validateCrossReferences(
     err("wiki.pages", `Duplicate wiki page title: '${dup}'`),
   );
 
-  // Alarm service + metric_id cross-refs
-  for (let i = 0; i < scenario.alarms.length; i++) {
-    const alarm = scenario.alarms[i];
-    if (!allServiceNames.has(alarm.service)) {
-      err(
-        `alarms[${i}].service`,
-        `alarm '${alarm.id}' references service '${alarm.service}' which does not appear in ops_dashboard. Valid: ${[...allServiceNames].join(", ")}`,
-      );
-    } else {
-      const serviceMetrics = metricsPerService.get(alarm.service);
-      if (serviceMetrics && !serviceMetrics.has(alarm.metric_id)) {
-        err(
-          `alarms[${i}].metric_id`,
-          `alarm '${alarm.id}' references metric_id '${alarm.metric_id}' not defined for '${alarm.service}'. Defined: ${[...serviceMetrics].join(", ")}`,
-        );
-      }
-    }
-  }
+  // ── Persona references ────────────────────────────────────────────────────
 
   const personaIdSet = new Set(personaIds);
 
@@ -182,6 +158,8 @@ export function validateCrossReferences(
     }
   }
 
+  // ── Evaluation cross-references ───────────────────────────────────────────
+
   for (let i = 0; i < scenario.evaluation.relevant_actions.length; i++) {
     const ra = scenario.evaluation.relevant_actions[i];
     if (!VALID_ACTION_TYPES.has(ra.action)) {
@@ -199,68 +177,110 @@ export function validateCrossReferences(
         `relevant_action '${ra.action}' references remediation_action_id '${ra.remediation_action_id}' not in remediation_actions[]`,
       );
     }
-    if (ra.service && !allServiceNames.has(ra.service)) {
+    if (ra.service && !topologyServiceNames.has(ra.service)) {
       err(
         `evaluation.relevant_actions[${i}].service`,
-        `relevant_action '${ra.action}' references service '${ra.service}' not in ops_dashboard`,
+        `relevant_action '${ra.action}' references service '${ra.service}' not in topology`,
       );
     }
   }
 
-  const topologyServices = new Set([
-    ...scenario.topology.upstream,
-    ...scenario.topology.downstream,
-  ]);
-  for (
-    let i = 0;
-    i < (scenario.ops_dashboard?.correlated_services ?? []).length;
-    i++
-  ) {
-    const cs = scenario.ops_dashboard!.correlated_services![i];
-    if (!topologyServices.has(cs.name)) {
+  // ── New rules: component graph validation ─────────────────────────────────
+
+  const allServiceNodes = [
+    {
+      node: scenario.topology.focal_service,
+      path: "topology.focal_service",
+      isFocal: true,
+    },
+    ...scenario.topology.upstream.map((n, i) => ({
+      node: n,
+      path: `topology.upstream[${i}]`,
+      isFocal: false,
+    })),
+    ...scenario.topology.downstream.map((n, i) => ({
+      node: n,
+      path: `topology.downstream[${i}]`,
+      isFocal: false,
+    })),
+  ];
+
+  for (const { node, path, isFocal } of allServiceNodes) {
+    const components = node.components ?? [];
+    if (components.length === 0) continue;
+
+    // Rule 1: typical_rps required on focal_service when components present
+    if (isFocal && node.typical_rps === undefined) {
       err(
-        `ops_dashboard.correlated_services[${i}].name`,
-        `correlated service '${cs.name}' not in topology.upstream or topology.downstream`,
+        `${path}.typical_rps`,
+        `'${node.name}' has components but no typical_rps — typical_rps is required for metric baseline derivation`,
       );
     }
-  }
 
-  const validArchetypes = new Set(getValidArchetypes());
-  if (scenario.ops_dashboard) {
-    for (
-      let i = 0;
-      i < scenario.ops_dashboard.focal_service.metrics.length;
-      i++
-    ) {
-      const m = scenario.ops_dashboard.focal_service.metrics[i];
-      if (!validArchetypes.has(m.archetype)) {
-        err(
-          `ops_dashboard.focal_service.metrics[${i}].archetype`,
-          `'${m.archetype}' is not a registered archetype. Valid: ${[...validArchetypes].join(", ")}`,
-        );
+    const componentIds = new Set(components.map((c) => c.id));
+
+    // Rule 2: entrypoint uniqueness
+    const entrypoints = components.filter((c) => c.inputs.length === 0);
+    if (entrypoints.length === 0) {
+      err(
+        `${path}.entrypoint`,
+        `'${node.name}' has no entrypoint component (a component with inputs: []). Exactly one is required.`,
+      );
+    } else if (entrypoints.length > 1) {
+      err(
+        `${path}.entrypoint`,
+        `'${node.name}' has ${entrypoints.length} entrypoint components (${entrypoints.map((c) => c.id).join(", ")}). Exactly one is required.`,
+      );
+    }
+
+    // Rule 3: input id validity
+    for (let ci = 0; ci < components.length; ci++) {
+      const comp = components[ci];
+      for (let ii = 0; ii < comp.inputs.length; ii++) {
+        const inputId = comp.inputs[ii];
+        if (!componentIds.has(inputId)) {
+          err(
+            `${path}.components[${ci}].inputs[${ii}]`,
+            `component '${comp.id}' references input id '${inputId}' which does not exist in '${node.name}'.components`,
+          );
+        }
       }
     }
-    for (
-      let ci = 0;
-      ci < (scenario.ops_dashboard.correlated_services ?? []).length;
-      ci++
-    ) {
-      const cs = scenario.ops_dashboard.correlated_services![ci];
-      for (let mi = 0; mi < (cs.overrides ?? []).length; mi++) {
-        const m = cs.overrides![mi];
-        if (!validArchetypes.has(m.archetype)) {
+
+    // Rule 4: no cycles — DFS
+    if (hasCycle(components)) {
+      err(`${path}.cycle`, `'${node.name}' component graph contains a cycle`);
+    }
+
+    // Rule 5 (focal only): incident component validity
+    if (isFocal) {
+      const incidents = node.incidents ?? [];
+      for (let ii = 0; ii < incidents.length; ii++) {
+        const inc = incidents[ii];
+        if (!componentIds.has(inc.affected_component)) {
           err(
-            `ops_dashboard.correlated_services[${ci}].overrides[${mi}].archetype`,
-            `'${m.archetype}' is not a registered archetype`,
+            `${path}.incidents[${ii}].affected_component`,
+            `incident '${inc.id}' references affected_component '${inc.affected_component}' which does not exist in focal_service.components`,
           );
         }
       }
     }
   }
 
-  // File reference path-traversal guard (browser: no fs.accessSync)
+  // Rule 6: warn when non-focal nodes have incidents (they are silently ignored)
+  for (const { node, path } of allServiceNodes.filter((s) => !s.isFocal)) {
+    const incidents = node.incidents ?? [];
+    if (incidents.length > 0) {
+      err(
+        path,
+        `'${node.name}' has ${incidents.length} incident(s) defined, but incidents on upstream/downstream nodes are silently ignored — move them to focal_service if intended`,
+      );
+    }
+  }
+
+  // ── File reference path-traversal guard ───────────────────────────────────
+
   function checkFileRef(filePath: string): string | null {
-    // Reject obvious path traversal
     if (
       filePath.includes("../") ||
       filePath.includes("..\\") ||
@@ -298,6 +318,43 @@ export function validateCrossReferences(
   }
 
   return errors;
+}
+
+// ── Graph helpers ─────────────────────────────────────────────────────────────
+
+function hasCycle(
+  components: Array<{ id: string; inputs: string[] }>,
+): boolean {
+  // Build adjacency list: edge from input → component (downstream direction)
+  const children: Map<string, string[]> = new Map();
+  for (const c of components) {
+    if (!children.has(c.id)) children.set(c.id, []);
+    for (const input of c.inputs) {
+      const list = children.get(input) ?? [];
+      list.push(c.id);
+      children.set(input, list);
+    }
+  }
+
+  const visited = new Set<string>();
+  const inStack = new Set<string>();
+
+  function dfs(id: string): boolean {
+    if (inStack.has(id)) return true; // cycle
+    if (visited.has(id)) return false;
+    visited.add(id);
+    inStack.add(id);
+    for (const child of children.get(id) ?? []) {
+      if (dfs(child)) return true;
+    }
+    inStack.delete(id);
+    return false;
+  }
+
+  for (const c of components) {
+    if (dfs(c.id)) return true;
+  }
+  return false;
 }
 
 function findDuplicates(values: string[]): string[] {

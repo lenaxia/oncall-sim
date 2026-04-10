@@ -28,11 +28,13 @@ export interface ScenarioConfig {
   id: string;
   title: string;
   description: string;
-  serviceType: string;
   difficulty: string;
   tags: string[];
   topology: {
-    focalService: string;
+    focalService: {
+      name: string;
+      components: import("../scenario/types").ServiceComponent[];
+    };
     upstream: string[];
     downstream: string[];
   };
@@ -136,10 +138,16 @@ function toScenarioConfig(s: LoadedScenario): ScenarioConfig {
     id: s.id,
     title: s.title,
     description: s.description,
-    serviceType: s.serviceType,
     difficulty: s.difficulty,
     tags: s.tags,
-    topology: s.topology,
+    topology: {
+      focalService: {
+        name: s.topology.focalService.name,
+        components: s.topology.focalService.components,
+      },
+      upstream: s.topology.upstream.map((n) => n.name),
+      downstream: s.topology.downstream.map((n) => n.name),
+    },
     personas: s.personas,
     wikiPages: s.wiki.pages,
     featureFlags: s.featureFlags,

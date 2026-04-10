@@ -469,7 +469,6 @@ export interface ScenarioSummary {
   id: string;
   title: string;
   description: string;
-  serviceType: string;
   difficulty: string;
   tags: string[];
 }
@@ -481,7 +480,6 @@ export function buildScenarioSummary(
     id: "_fixture",
     title: "Fixture Scenario",
     description: "A minimal test scenario.",
-    serviceType: "api",
     difficulty: "medium",
     tags: ["fixture"],
     ...overrides,
@@ -496,11 +494,24 @@ export function buildLoadedScenario(
     id: "_fixture",
     title: "Fixture Scenario",
     description: "A minimal test scenario.",
-    serviceType: "api",
     difficulty: "medium",
     tags: ["fixture"],
-    timeline: { defaultSpeed: 1, durationMinutes: 10 },
-    topology: { focalService: "fixture-service", upstream: [], downstream: [] },
+    timeline: {
+      defaultSpeed: 1,
+      durationMinutes: 10,
+      preIncidentSeconds: 300,
+      resolutionSeconds: 15,
+    },
+    topology: {
+      focalService: {
+        name: "fixture-service",
+        description: "Minimal fixture service.",
+        components: [],
+        incidents: [],
+      },
+      upstream: [],
+      downstream: [],
+    },
     engine: { tickIntervalSeconds: 15, defaultTab: "email", llmEventTools: [] },
     personas: [
       {

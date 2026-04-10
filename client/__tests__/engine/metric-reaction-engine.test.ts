@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMetricReactionEngine } from "../../src/engine/metric-reaction-engine";
 import { createMetricStore } from "../../src/metrics/metric-store";
 import {
-  getFixtureScenario,
+  buildLoadedScenario,
   clearFixtureCache,
 } from "../../src/testutil/index";
 import type { ResolvedMetricParams } from "../../src/metrics/types";
@@ -13,10 +13,10 @@ import type { LoadedScenario } from "../../src/scenario/types";
 
 let _fixture: LoadedScenario;
 
-beforeAll(async () => {
-  _fixture = await getFixtureScenario();
+beforeEach(() => {
+  clearFixtureCache();
+  _fixture = buildLoadedScenario();
 });
-beforeEach(() => clearFixtureCache());
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -77,7 +77,7 @@ function makeContext(
       deployments: {},
       pipelines: [],
       pages: [],
-        throttles: [],
+      throttles: [],
     },
     personaCooldowns: {},
     directlyAddressed: new Set(),

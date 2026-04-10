@@ -1,16 +1,40 @@
 id: _fixture
 title: Fixture Scenario
 description: Minimal scenario used by all automated tests. Not a real training scenario.
-service_type: api
 difficulty: easy
 tags: [fixture, test]
 
 timeline:
   default_speed: 1
   duration_minutes: 10
+  pre_incident_seconds: 120
+  resolution_seconds: 15
 
 topology:
-  focal_service: fixture-service
+  focal_service:
+    name: fixture-service
+    description: "Minimal fixture service for automated tests."
+    typical_rps: 100
+    traffic_profile: always_on_api
+    health: healthy
+    components:
+      - id: alb
+        type: load_balancer
+        label: "ALB"
+        inputs: []
+      - id: app
+        type: ecs_cluster
+        label: "fixture-service ECS"
+        instance_count: 2
+        utilization: 0.40
+        inputs: [alb]
+    incidents:
+      - id: error_rate_spike
+        affected_component: app
+        description: "Error rate elevated due to a bad deployment."
+        onset_overlay: spike_and_sustain
+        onset_second: 0
+        magnitude: 20.0
   upstream: []
   downstream: []
 
@@ -22,7 +46,7 @@ engine:
       max_calls: 1
     - tool: inject_log_entry
       enabled: true
-    - tool: apply_metric_response
+    - tool: select_metric_reaction
       enabled: true
 
 email:
@@ -54,24 +78,6 @@ ticketing:
     created_by: fixture-persona
     assignee: trainee
     at_second: -1
-
-ops_dashboard:
-  pre_incident_seconds: 120
-  resolution_seconds: 15
-  focal_service:
-    name: fixture-service
-    scale:
-      typical_rps: 100
-      instance_count: 2
-      max_connections: 10
-    traffic_profile: always_on_api
-    health: healthy
-    incident_type: bad_deploy_latency
-    metrics:
-      - archetype: error_rate
-        critical_threshold: 5
-        incident_peak: 12.0
-        onset_second: 0
 
 alarms:
   - id: fixture-alarm-001

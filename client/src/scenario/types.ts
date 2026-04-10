@@ -12,12 +12,6 @@ import type {
   TestStatus,
 } from "@shared/types/events";
 
-export type ServiceType =
-  | "api"
-  | "workflow"
-  | "serverless"
-  | "database"
-  | "console";
 export type Difficulty = "easy" | "medium" | "hard";
 export type NoiseLevel = "low" | "medium" | "high" | "extreme";
 export type HealthLevel = "healthy" | "degraded" | "flaky";
@@ -38,15 +32,141 @@ export type RemediationActionType =
   | "emergency_deploy"
   | "toggle_feature_flag";
 
-export interface TimelineConfig {
-  defaultSpeed: 1 | 2 | 5 | 10;
-  durationMinutes: number;
+// Overlay types that can be authored on an incident.
+// "none" is intentionally excluded — it is not a valid incident onset.
+export type IncidentOverlayType =
+  | "spike_and_sustain"
+  | "gradual_degradation"
+  | "saturation"
+  | "sudden_drop";
+
+// ── Component types ───────────────────────────────────────────────────────────
+
+export type ComponentType =
+  | "load_balancer"
+  | "api_gateway"
+  | "ecs_cluster"
+  | "ec2_fleet"
+  | "lambda"
+  | "kinesis_stream"
+  | "sqs_queue"
+  | "dynamodb"
+  | "rds"
+  | "elasticache"
+  | "s3"
+  | "scheduler";
+
+interface ServiceComponentBase {
+  id: string;
+  label: string;
+  inputs: string[];
+}
+
+export interface LoadBalancerComponent extends ServiceComponentBase {
+  type: "load_balancer";
+}
+export interface ApiGatewayComponent extends ServiceComponentBase {
+  type: "api_gateway";
+}
+export interface EcsClusterComponent extends ServiceComponentBase {
+  type: "ecs_cluster";
+  instanceCount: number;
+  utilization: number;
+}
+export interface Ec2FleetComponent extends ServiceComponentBase {
+  type: "ec2_fleet";
+  instanceCount: number;
+  utilization: number;
+}
+export interface LambdaComponent extends ServiceComponentBase {
+  type: "lambda";
+  reservedConcurrency: number;
+  lambdaUtilization: number;
+}
+export interface KinesisStreamComponent extends ServiceComponentBase {
+  type: "kinesis_stream";
+  shardCount: number;
+}
+export interface SqsQueueComponent extends ServiceComponentBase {
+  type: "sqs_queue";
+}
+export interface DynamoDbComponent extends ServiceComponentBase {
+  type: "dynamodb";
+  writeCapacity: number;
+  readCapacity: number;
+  writeUtilization: number;
+  readUtilization: number;
+  billingMode: "provisioned" | "on_demand";
+}
+export interface RdsComponent extends ServiceComponentBase {
+  type: "rds";
+  instanceCount: number;
+  maxConnections: number;
+  utilization: number;
+  connectionUtilization: number;
+}
+export interface ElasticacheComponent extends ServiceComponentBase {
+  type: "elasticache";
+  instanceCount: number;
+  utilization: number;
+}
+export interface S3Component extends ServiceComponentBase {
+  type: "s3";
+}
+export interface SchedulerComponent extends ServiceComponentBase {
+  type: "scheduler";
+}
+
+export type ServiceComponent =
+  | LoadBalancerComponent
+  | ApiGatewayComponent
+  | EcsClusterComponent
+  | Ec2FleetComponent
+  | LambdaComponent
+  | KinesisStreamComponent
+  | SqsQueueComponent
+  | DynamoDbComponent
+  | RdsComponent
+  | ElasticacheComponent
+  | S3Component
+  | SchedulerComponent;
+
+export interface IncidentConfig {
+  id: string;
+  affectedComponent: string;
+  description: string;
+  onsetOverlay: IncidentOverlayType;
+  onsetSecond: number;
+  magnitude: number;
+  rampDurationSeconds?: number;
+  endSecond?: number;
+}
+
+export interface ServiceNode {
+  name: string;
+  description: string;
+  owner?: string;
+  typicalRps?: number;
+  trafficProfile?: TrafficProfile;
+  health?: HealthLevel;
+  correlation?: CorrelationType;
+  lagSeconds?: number;
+  impactFactor?: number;
+  components: ServiceComponent[];
+  incidents: IncidentConfig[];
 }
 
 export interface TopologyConfig {
-  focalService: string;
-  upstream: string[];
-  downstream: string[];
+  focalService: ServiceNode;
+  upstream: ServiceNode[];
+  downstream: ServiceNode[];
+}
+
+export interface TimelineConfig {
+  defaultSpeed: 1 | 2 | 5 | 10;
+  durationMinutes: number;
+  preIncidentSeconds: number;
+  resolutionSeconds: number;
 }
 
 export interface LLMEventToolConfig {
@@ -101,16 +221,14 @@ import type { ThrottleScope, ThrottleUnit } from "@shared/types/events";
 
 export type { ThrottleScope, ThrottleUnit };
 
-// A throttle target defined by the scenario author.
-// Describes one lever the trainee can pull in the Traffic Throttling panel.
 export interface ThrottleTargetConfig {
   id: string;
   scope: ThrottleScope;
-  label: string; // shown to trainee — arbitrary string, e.g. "POST /v1/charges"
-  description: string; // shown to trainee — factual description only
-  llmHint?: string; // LLM-only — causal context; NEVER shown to trainee
+  label: string;
+  description: string;
+  llmHint?: string;
   unit: ThrottleUnit;
-  baselineRate: number; // normal operating rate, shown as reference in UI
+  baselineRate: number;
 }
 
 export interface RemediationActionConfig {
@@ -123,7 +241,6 @@ export interface RemediationActionConfig {
   flagId?: string;
   flagEnabled?: boolean;
   label?: string;
-  // Only present on type === 'throttle_traffic'
   throttleTargets?: ThrottleTargetConfig[];
 }
 
@@ -325,7 +442,6 @@ export interface LoadedScenario {
   id: string;
   title: string;
   description: string;
-  serviceType: ServiceType;
   difficulty: Difficulty;
   tags: string[];
   timeline: TimelineConfig;
@@ -351,7 +467,6 @@ export interface ScenarioSummary {
   id: string;
   title: string;
   description: string;
-  serviceType: ServiceType;
   difficulty: Difficulty;
   tags: string[];
 }

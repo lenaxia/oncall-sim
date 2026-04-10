@@ -11,11 +11,24 @@ vi.mock("../../src/scenario/loader", () => {
     id: "_fixture",
     title: "Fixture Scenario",
     description: "A minimal test scenario.",
-    serviceType: "api",
     difficulty: "medium",
     tags: ["fixture"],
-    timeline: { defaultSpeed: 1, durationMinutes: 10 },
-    topology: { focalService: "fixture-service", upstream: [], downstream: [] },
+    timeline: {
+      defaultSpeed: 1,
+      durationMinutes: 10,
+      preIncidentSeconds: 300,
+      resolutionSeconds: 15,
+    },
+    topology: {
+      focalService: {
+        name: "fixture-service",
+        description: "test",
+        components: [],
+        incidents: [],
+      },
+      upstream: [],
+      downstream: [],
+    },
     engine: { tickIntervalSeconds: 15, defaultTab: "email", llmEventTools: [] },
     personas: [
       {
@@ -68,12 +81,10 @@ vi.mock("../../src/scenario/loader", () => {
   };
   return {
     loadBundledScenarios: vi.fn().mockResolvedValue([fixture]),
-    loadRemoteScenario: vi
-      .fn()
-      .mockResolvedValue({
-        scenarioId: "r",
-        errors: [{ scenarioId: "r", field: "x", message: "x" }],
-      }),
+    loadRemoteScenario: vi.fn().mockResolvedValue({
+      scenarioId: "r",
+      errors: [{ scenarioId: "r", field: "x", message: "x" }],
+    }),
     isScenarioLoadError: (r: unknown) =>
       "errors" in (r as object) &&
       Array.isArray((r as { errors: unknown }).errors),
@@ -81,7 +92,6 @@ vi.mock("../../src/scenario/loader", () => {
       id: s.id,
       title: s.title,
       description: s.description,
-      serviceType: s.serviceType,
       difficulty: s.difficulty,
       tags: s.tags,
     }),
