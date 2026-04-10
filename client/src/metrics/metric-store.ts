@@ -99,6 +99,25 @@ export interface MetricStore {
     overlay: ActiveOverlay,
   ): void;
 
+  /**
+   * Updates the resolved (target) value for a metric.
+   * Called by the game loop after scale_capacity so buildReactionMenu() sees
+   * the new target value for full_recovery overlays.
+   */
+  updateResolvedValue(
+    service: string,
+    metricId: string,
+    newValue: number,
+  ): void;
+
+  /**
+   * Removes all saturation OverlayApplications from overlayApplications for
+   * a metric. Called when DynamoDB switches to on_demand billing so the
+   * saturation ceiling no longer applies.
+   * The active LLM-set overlay (activeOverlay) is unaffected.
+   */
+  clearScriptedOverlays(service: string, metricId: string): void;
+
   getResolvedParams(
     service: string,
     metricId: string,
@@ -290,12 +309,20 @@ export function createMetricStore(
     const rhythm = rp.inheritsRhythm
       ? generateRhythm(rp.rhythmProfile, rp.baselineValue, [t])[0]
       : 0;
-    const combined = [base + rhythm];
+    let combined = [base + rhythm];
 
-    // incident overlay (stateless, pure function of t and params)
-    const withOverlay = applyIncidentOverlay(combined, rp, [t]);
+    // Apply all scripted overlays (from component-derived incidentResponses).
+    // endSecond guard: applyIncidentOverlay handles it internally; the early-exit
+    // here avoids a function-call overhead for expired overlays.
+    for (const app of rp.overlayApplications) {
+      if (app.overlay === "none") continue;
+      if (t < app.onsetSecond) continue;
+      if (app.endSecond != null && t >= app.endSecond) continue;
+      combined = applyIncidentOverlay(combined, rp.baselineValue, app, [t]);
+    }
+
     const archDef = getArchetypeDefaults(rp.archetype);
-    return clampSeries(withOverlay, archDef.minValue, archDef.maxValue)[0];
+    return clampSeries(combined, archDef.minValue, archDef.maxValue)[0];
   }
 
   // ── Overlay shape computation (replaces scripted value when overlay active) ─
@@ -471,6 +498,30 @@ export function createMetricStore(
       const state = _getState(service, metricId);
       if (!state) return;
       state.activeOverlay = overlay;
+    },
+
+    updateResolvedValue(
+      service: string,
+      metricId: string,
+      newValue: number,
+    ): void {
+      const state = _getState(service, metricId);
+      if (!state) return;
+      state.resolvedParams = {
+        ...state.resolvedParams,
+        resolvedValue: newValue,
+      };
+    },
+
+    clearScriptedOverlays(service: string, metricId: string): void {
+      const state = _getState(service, metricId);
+      if (!state) return;
+      state.resolvedParams = {
+        ...state.resolvedParams,
+        overlayApplications: state.resolvedParams.overlayApplications.filter(
+          (a) => a.overlay !== "saturation",
+        ),
+      };
     },
 
     getResolvedParams(

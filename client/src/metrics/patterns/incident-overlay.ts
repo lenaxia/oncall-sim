@@ -1,27 +1,34 @@
-import type { ResolvedMetricParams } from "../types";
+import type { OverlayApplication } from "../types";
 
+/**
+ * Applies a single OverlayApplication to a series in-place and returns a new array.
+ * Handles onsetSecond (skips points before onset) and endSecond (skips points at/after endSecond).
+ * Does not mutate the input series.
+ */
 export function applyIncidentOverlay(
   series: number[],
-  params: ResolvedMetricParams,
+  baselineValue: number,
+  app: OverlayApplication,
   tAxis: number[],
 ): number[] {
-  if (params.overlay === "none") return [...series];
+  if (app.overlay === "none") return [...series];
 
   const result = [...series];
   const {
     overlay,
     onsetSecond,
+    endSecond,
     peakValue,
     dropFactor,
     ceiling,
     saturationDurationSeconds,
     rampDurationSeconds,
-    baselineValue,
-  } = params;
+  } = app;
 
   for (let i = 0; i < tAxis.length; i++) {
     const t = tAxis[i];
     if (t < onsetSecond) continue;
+    if (endSecond != null && t >= endSecond) continue;
 
     const elapsed = t - onsetSecond;
     const current = result[i];

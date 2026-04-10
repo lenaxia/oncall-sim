@@ -22,6 +22,12 @@ function nullMetricStore(): MetricStore {
     applyActiveOverlay: () => {
       /* no-op */
     },
+    updateResolvedValue: () => {
+      /* no-op */
+    },
+    clearScriptedOverlays: () => {
+      /* no-op */
+    },
     getResolvedParams: () => null,
     listMetrics: () => [],
   };

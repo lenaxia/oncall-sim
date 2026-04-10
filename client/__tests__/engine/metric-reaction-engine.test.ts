@@ -38,6 +38,7 @@ function makeRp(
     inheritsRhythm: false,
     noiseType: "none",
     noiseLevelMultiplier: 1.0,
+    overlayApplications: [],
     overlay: "none",
     onsetSecond: 0,
     peakValue: 14.0,

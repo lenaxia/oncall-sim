@@ -48,8 +48,13 @@ export function generateOneSeries(
   const combined = tAxis.map((_, i) => baseline[i] + rhythm[i] + noise[i]);
 
   const archDef = getArchetypeDefaults(params.archetype);
-  const withOverlay = applyIncidentOverlay(combined, params, tAxis);
-  const clamped = clampSeries(withOverlay, archDef.minValue, archDef.maxValue);
+  let result = [...combined];
+  for (const app of params.overlayApplications) {
+    if (app.overlay === "none") continue;
+    // applyIncidentOverlay handles onsetSecond and endSecond guards internally.
+    result = applyIncidentOverlay(result, params.baselineValue, app, tAxis);
+  }
+  const clamped = clampSeries(result, archDef.minValue, archDef.maxValue);
 
   return tAxis.map((t, i) => ({ t, v: clamped[i] }));
 }

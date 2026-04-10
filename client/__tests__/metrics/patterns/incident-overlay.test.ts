@@ -3,35 +3,19 @@ import {
   applyIncidentOverlay,
   clampSeries,
 } from "../../../src/metrics/patterns/incident-overlay";
-import type { ResolvedMetricParams } from "../../../src/metrics/types";
+import type { OverlayApplication } from "../../../src/metrics/types";
 
-function baseParams(
-  overrides: Partial<ResolvedMetricParams> = {},
-): ResolvedMetricParams {
+function makeApp(
+  overrides: Partial<OverlayApplication> = {},
+): OverlayApplication {
   return {
-    metricId: "test",
-    service: "svc",
-    archetype: "error_rate",
-    label: "Error Rate",
-    unit: "percent",
-    fromSecond: -120,
-    toSecond: 300,
-    resolutionSeconds: 15,
-    baselineValue: 1.0,
-    resolvedValue: 1.0,
-    rhythmProfile: "none",
-    inheritsRhythm: false,
-    noiseType: "none",
-    noiseLevelMultiplier: 1.0,
-    overlay: "none",
+    overlay: "spike_and_sustain",
     onsetSecond: 0,
     peakValue: 10.0,
-    dropFactor: 0.5,
+    dropFactor: 10.0,
     ceiling: 10.0,
-    saturationDurationSeconds: 60,
     rampDurationSeconds: 30,
-    seriesOverride: null,
-    seed: 42,
+    saturationDurationSeconds: 60,
     ...overrides,
   };
 }
@@ -44,8 +28,8 @@ describe("applyIncidentOverlay — none", () => {
   it("returns series unchanged", () => {
     const tAxis = [-30, -15, 0, 15, 30];
     const series = makeSeries(tAxis, 1.0);
-    const params = baseParams({ overlay: "none" });
-    const result = applyIncidentOverlay(series, params, tAxis);
+    const app = makeApp({ overlay: "none" });
+    const result = applyIncidentOverlay(series, 1.0, app, tAxis);
     expect(result).toEqual(series);
   });
 });
@@ -53,14 +37,13 @@ describe("applyIncidentOverlay — none", () => {
 describe("applyIncidentOverlay — spike_and_sustain", () => {
   const tAxis = [-30, -15, 0, 15, 30, 45, 60];
   const series = makeSeries(tAxis, 1.0);
-  const params = baseParams({
+  const app = makeApp({
     overlay: "spike_and_sustain",
     onsetSecond: 0,
-    baselineValue: 1.0,
     peakValue: 10.0,
     rampDurationSeconds: 30,
   });
-  const result = applyIncidentOverlay(series, params, tAxis);
+  const result = applyIncidentOverlay(series, 1.0, app, tAxis);
 
   it("values before onsetSecond are unchanged", () => {
     const preOnset = tAxis.filter((t) => t < 0);
@@ -71,8 +54,6 @@ describe("applyIncidentOverlay — spike_and_sustain", () => {
   });
 
   it("values strictly after onset are elevated toward peakValue", () => {
-    // At t=onset, elapsed=0 so rampFraction=0 → no change yet (correct behavior)
-    // Values strictly AFTER onset (elapsed > 0) should be elevated
     const postOnsetStrict = tAxis.filter((t) => t > 0);
     postOnsetStrict.forEach((t) => {
       const idx = tAxis.indexOf(t);
@@ -86,30 +67,55 @@ describe("applyIncidentOverlay — spike_and_sustain", () => {
   });
 
   it("noise is preserved through incident window (values not all identical post-onset)", () => {
-    // If we use a series with varied noise (not flat), post-onset values should differ
-    const noisySeries = tAxis.map((_, i) => 1.0 + (i % 3) * 0.1); // varied values
-    const noisyResult = applyIncidentOverlay(noisySeries, params, tAxis);
+    const noisySeries = tAxis.map((_, i) => 1.0 + (i % 3) * 0.1);
+    const noisyResult = applyIncidentOverlay(noisySeries, 1.0, app, tAxis);
     const postOnset = tAxis
       .map((t, i) => ({ t, i }))
       .filter(({ t }) => t > 0)
       .map(({ i }) => i);
-    // Post-onset values should NOT all be identical (noise is preserved as delta is additive)
     const postValues = postOnset.map((i) => noisyResult[i]);
     const allSame = postValues.every((v) => v === postValues[0]);
     expect(allSame).toBe(false);
+  });
+
+  it("does not mutate input series", () => {
+    const original = [...series];
+    applyIncidentOverlay(series, 1.0, app, tAxis);
+    expect(series).toEqual(original);
+  });
+});
+
+describe("applyIncidentOverlay — endSecond", () => {
+  it("points at or after endSecond are returned unchanged", () => {
+    const tAxis = [0, 15, 30, 45, 60];
+    const series = makeSeries(tAxis, 1.0);
+    const app = makeApp({
+      overlay: "spike_and_sustain",
+      onsetSecond: 0,
+      endSecond: 30,
+      peakValue: 10.0,
+      rampDurationSeconds: 0,
+    });
+    const result = applyIncidentOverlay(series, 1.0, app, tAxis);
+    // t=0, t=15 → elevated
+    expect(result[0]).toBeGreaterThan(1.0);
+    expect(result[1]).toBeGreaterThan(1.0);
+    // t=30, t=45, t=60 → unchanged
+    expect(result[2]).toBe(1.0);
+    expect(result[3]).toBe(1.0);
+    expect(result[4]).toBe(1.0);
   });
 });
 
 describe("applyIncidentOverlay — sudden_drop", () => {
   const tAxis = [-30, -15, 0, 15, 30];
   const series = makeSeries(tAxis, 100.0);
-  const params = baseParams({
+  const app = makeApp({
     overlay: "sudden_drop",
     onsetSecond: 0,
-    baselineValue: 100.0,
     dropFactor: 0.5,
   });
-  const result = applyIncidentOverlay(series, params, tAxis);
+  const result = applyIncidentOverlay(series, 100.0, app, tAxis);
 
   it("values before onsetSecond unchanged", () => {
     expect(result[0]).toBeCloseTo(100.0, 5);
@@ -126,17 +132,16 @@ describe("applyIncidentOverlay — sudden_drop", () => {
 describe("applyIncidentOverlay — saturation", () => {
   const tAxis = [0, 15, 30, 45, 60, 75, 90];
   const series = makeSeries(tAxis, 5.0);
-  const params = baseParams({
+  const app = makeApp({
     overlay: "saturation",
     onsetSecond: 0,
-    baselineValue: 5.0,
     ceiling: 18.0,
     saturationDurationSeconds: 60,
   });
-  const result = applyIncidentOverlay(series, params, tAxis);
+  const result = applyIncidentOverlay(series, 5.0, app, tAxis);
 
   it("values climb toward ceiling over saturation_duration_seconds", () => {
-    expect(result[0]).toBeCloseTo(5.0, 0); // onset — starts at baseline
+    expect(result[0]).toBeCloseTo(5.0, 0);
     expect(result[4]).toBeGreaterThan(result[0]);
     expect(result[4]).toBeLessThanOrEqual(18.0 + 0.01);
   });
@@ -149,13 +154,12 @@ describe("applyIncidentOverlay — saturation", () => {
 describe("applyIncidentOverlay — gradual_degradation", () => {
   const tAxis = [-60, -30, 0, 60, 120, 180, 240, 300];
   const series = makeSeries(tAxis, 50.0);
-  const params = baseParams({
+  const app = makeApp({
     overlay: "gradual_degradation",
     onsetSecond: 0,
-    baselineValue: 50.0,
     peakValue: 350.0,
   });
-  const result = applyIncidentOverlay(series, params, tAxis);
+  const result = applyIncidentOverlay(series, 50.0, app, tAxis);
 
   it("values before onsetSecond unchanged", () => {
     expect(result[0]).toBeCloseTo(50.0, 5);
@@ -173,14 +177,12 @@ describe("applyIncidentOverlay — gradual_degradation", () => {
   });
 
   it("onset at negative second starts climb before t=0", () => {
-    const paramsNeg = baseParams({
+    const appNeg = makeApp({
       overlay: "gradual_degradation",
       onsetSecond: -60,
-      baselineValue: 50.0,
       peakValue: 350.0,
     });
-    const resultNeg = applyIncidentOverlay(series, paramsNeg, tAxis);
-    // at t=-30 (after onset -60) should be elevated
+    const resultNeg = applyIncidentOverlay(series, 50.0, appNeg, tAxis);
     const idx = tAxis.indexOf(-30);
     expect(resultNeg[idx]).toBeGreaterThan(50.0);
   });

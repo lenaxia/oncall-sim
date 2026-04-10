@@ -171,6 +171,10 @@ export function resolveMetricParams(
     inheritsRhythm,
     noiseType,
     noiseLevelMultiplier,
+    // New: multi-incident overlay list from component-derived incidentResponses.
+    // Falls back to empty when using old registry-based incidentType path.
+    overlayApplications: metricConfig.incidentResponses ?? [],
+    // Legacy single-overlay fields (kept for old incidentType registry path)
     overlay,
     onsetSecond,
     peakValue,

@@ -24,6 +24,7 @@ function makeRp(
     inheritsRhythm: false,
     noiseType: "none",
     noiseLevelMultiplier: 1.0,
+    overlayApplications: [],
     overlay: "none",
     onsetSecond: 0,
     peakValue: 10.0,
@@ -202,15 +203,23 @@ describe("MetricStore — generatePoint", () => {
     expect(pts.map((p) => p.t)).toEqual([60, 120, 180]);
   });
 
-  it("without overlay, generates scripted incident values", () => {
+  it("without overlay, generates scripted incident values via overlayApplications", () => {
     const store = createMetricStore(
       { svc: { error_rate: makeHistorical(1) } },
       {
         svc: {
           error_rate: makeRp({
-            overlay: "spike_and_sustain",
-            onsetSecond: 0,
-            peakValue: 10,
+            overlayApplications: [
+              {
+                overlay: "spike_and_sustain",
+                onsetSecond: 0,
+                peakValue: 10,
+                dropFactor: 10,
+                ceiling: 10,
+                rampDurationSeconds: 0,
+                saturationDurationSeconds: 60,
+              },
+            ],
             baselineValue: 1,
           }),
         },

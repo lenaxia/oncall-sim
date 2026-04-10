@@ -33,6 +33,7 @@ function baseParams(
     inheritsRhythm: false,
     noiseType: "sporadic_spikes",
     noiseLevelMultiplier: 1.0,
+    overlayApplications: [],
     overlay: "spike_and_sustain",
     onsetSecond: 0,
     peakValue: 95,
@@ -548,6 +549,8 @@ describe("computeMetricSummary — integration with fixture scenario", () => {
       getCurrentValue: () => null,
       generatePoint: () => [],
       applyActiveOverlay: () => {},
+      updateResolvedValue: () => {},
+      clearScriptedOverlays: () => {},
       getResolvedParams: () => null,
       listMetrics: () => [],
     };
@@ -562,6 +565,8 @@ describe("computeMetricSummary — integration with fixture scenario", () => {
       getCurrentValue: () => null,
       generatePoint: () => [],
       applyActiveOverlay: () => {},
+      updateResolvedValue: () => {},
+      clearScriptedOverlays: () => {},
       getResolvedParams: () => null,
       listMetrics: () => [],
     };

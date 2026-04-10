@@ -47,6 +47,11 @@ export interface ResolvedMetricParams {
   inheritsRhythm: boolean;
   noiseType: NoiseType;
   noiseLevelMultiplier: number;
+  // New: multi-incident overlay list (replaces single-overlay flat fields).
+  // Empty array = pure baseline + rhythm + noise (no incident).
+  overlayApplications: OverlayApplication[];
+  // Legacy single-overlay fields — kept for backwards compat with the old
+  // incident_type registry path (resolver.ts). Removed in Step 4 cleanup.
   overlay: OverlayType;
   onsetSecond: number;
   peakValue: number;

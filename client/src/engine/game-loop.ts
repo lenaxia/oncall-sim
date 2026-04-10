@@ -126,6 +126,12 @@ function _buildFallbackStore(
     applyActiveOverlay() {
       /* no-op: no resolvedParams in fallback store */
     },
+    updateResolvedValue() {
+      /* no-op: no resolvedParams in fallback store */
+    },
+    clearScriptedOverlays() {
+      /* no-op: no resolvedParams in fallback store */
+    },
     getResolvedParams() {
       return null;
     },
