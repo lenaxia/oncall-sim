@@ -277,6 +277,8 @@ export interface ServiceScale {
   maxConnections?: number;
 }
 
+import type { OverlayApplication } from "../metrics/types";
+
 export interface MetricConfig {
   archetype: string;
   label?: string;
@@ -296,6 +298,8 @@ export interface MetricConfig {
     rampDurationSeconds?: number;
     saturationDurationSeconds?: number;
   };
+  /** Derived by loader from component graph. Never authored in YAML. */
+  incidentResponses?: OverlayApplication[];
   seriesOverride?: Array<{ t: number; v: number }>;
 }
 

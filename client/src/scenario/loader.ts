@@ -24,6 +24,8 @@ import type {
   WikiConfig,
   CICDConfig,
   OpsDashboardConfig,
+  FocalServiceConfig,
+  CorrelatedServiceConfig,
   MetricConfig,
   EvaluationConfig,
   ScriptedChatMessage,
@@ -31,7 +33,16 @@ import type {
   ServiceNode,
   ServiceComponent,
   IncidentConfig,
+  TrafficProfile,
+  ComponentType,
 } from "./types";
+import type { OverlayApplication } from "../metrics/types";
+import { COMPONENT_METRICS } from "../metrics/component-metrics";
+import {
+  findEntrypoint,
+  propagationPath,
+  propagationLag,
+} from "./component-topology";
 
 const log = logger.child({ component: "loader" });
 
@@ -305,6 +316,205 @@ function expandBackgroundLogs(
   }
 
   return entries;
+}
+
+// ── deriveTrafficProfile ──────────────────────────────────────────────────────
+
+function deriveTrafficProfile(entrypointType: ComponentType): TrafficProfile {
+  switch (entrypointType) {
+    case "load_balancer":
+    case "api_gateway":
+      return "always_on_api";
+    case "kinesis_stream":
+    case "sqs_queue":
+      return "none";
+    case "scheduler":
+      return "batch_nightly";
+    default:
+      return "none";
+  }
+}
+
+// ── deriveOpsDashboard ────────────────────────────────────────────────────────
+
+/**
+ * Derives OpsDashboardConfig from the focal ServiceNode's component graph.
+ * Called by transform() to replace the old authored ops_dashboard YAML section.
+ */
+function deriveOpsDashboard(
+  focalNode: ServiceNode,
+  preIncidentSeconds: number,
+  resolutionSeconds: number,
+  downstreamNodes: ServiceNode[],
+): OpsDashboardConfig {
+  const focalService = deriveFocalServiceConfig(focalNode);
+  const correlatedServices = downstreamNodes.map(
+    deriveCorrelatedServiceConfigFromNode,
+  );
+
+  return {
+    preIncidentSeconds,
+    resolutionSeconds,
+    focalService,
+    correlatedServices,
+  };
+}
+
+function deriveFocalServiceConfig(node: ServiceNode): FocalServiceConfig {
+  const { components, incidents } = node;
+
+  if (components.length === 0) {
+    return {
+      name: node.name,
+      scale: { typicalRps: node.typicalRps ?? 0 },
+      trafficProfile: node.trafficProfile ?? "none",
+      health: node.health ?? "healthy",
+      incidentType: "",
+      metrics: [],
+    };
+  }
+
+  const entrypoint = findEntrypoint(components);
+  const typicalRps = node.typicalRps ?? 0;
+
+  // Collect (archetype → MetricConfig) in topological order.
+  // First occurrence (closest to entrypoint) wins on archetype collision.
+  const metricByArchetype = new Map<string, MetricConfig>();
+  const overlaysByArchetype = new Map<string, OverlayApplication[]>();
+
+  const path = propagationPath(entrypoint.id, components);
+  for (const compId of path) {
+    const component = components.find((c) => c.id === compId);
+    if (!component) continue;
+
+    const specs = COMPONENT_METRICS[component.type];
+    for (const spec of specs) {
+      const baseline = spec.deriveBaseline(component as never, typicalRps);
+      const resolved = spec.resolvedValue(component as never, typicalRps);
+
+      // Register metric config if not yet seen (entrypoint-closest wins)
+      if (!metricByArchetype.has(spec.archetype)) {
+        metricByArchetype.set(spec.archetype, {
+          archetype: spec.archetype,
+          baselineValue: baseline,
+          resolvedValue: resolved,
+        });
+        overlaysByArchetype.set(spec.archetype, []);
+      }
+
+      // Build overlay applications for each incident that propagates to this component
+      for (const incident of incidents) {
+        // Skip if this component is not reachable from the affected component
+        const path2 = propagationPath(incident.affectedComponent, components);
+        if (!path2.includes(compId)) continue;
+
+        const lag = propagationLag(
+          incident.affectedComponent,
+          compId,
+          components,
+        );
+        const laggedOnset = incident.onsetSecond + lag;
+
+        const overlayApp = buildOverlayApplication(
+          spec,
+          component as never,
+          baseline,
+          incident,
+          laggedOnset,
+        );
+        if (overlayApp) {
+          overlaysByArchetype.get(spec.archetype)!.push(overlayApp);
+        }
+      }
+    }
+  }
+
+  // Attach sorted overlay applications to each MetricConfig
+  const metrics: MetricConfig[] = [];
+  for (const [archetype, metricConfig] of metricByArchetype) {
+    const overlays = (overlaysByArchetype.get(archetype) ?? []).sort(
+      (a, b) => a.onsetSecond - b.onsetSecond,
+    );
+    metrics.push({ ...metricConfig, incidentResponses: overlays });
+  }
+
+  return {
+    name: node.name,
+    scale: { typicalRps },
+    trafficProfile:
+      node.trafficProfile ?? deriveTrafficProfile(entrypoint.type),
+    health: node.health ?? "healthy",
+    incidentType: "", // legacy field; not read after this phase
+    metrics,
+  };
+}
+
+function buildOverlayApplication(
+  spec: {
+    ceiling: (c: never) => number | null;
+    overlayForIncident: (o: never) => string;
+    incidentPeakValue: (b: number, m: number, c: never) => number;
+  },
+  component: never,
+  baseline: number,
+  incident: IncidentConfig,
+  laggedOnset: number,
+): OverlayApplication | null {
+  const overlayType = spec.overlayForIncident(
+    incident.onsetOverlay as never,
+  ) as OverlayApplication["overlay"];
+  if (overlayType === "none") return null;
+
+  const ceiling = spec.ceiling(component) ?? baseline;
+  const peakValue = spec.incidentPeakValue(
+    baseline,
+    incident.magnitude,
+    component,
+  );
+
+  let dropFactor = 1.0;
+  if (overlayType === "sudden_drop") {
+    dropFactor = incident.magnitude;
+  } else if (overlayType !== "saturation") {
+    dropFactor = peakValue / Math.max(baseline, 0.001);
+  }
+
+  return {
+    overlay: overlayType,
+    onsetSecond: laggedOnset,
+    endSecond: incident.endSecond,
+    peakValue,
+    dropFactor,
+    ceiling,
+    rampDurationSeconds: incident.rampDurationSeconds ?? 30,
+    saturationDurationSeconds: 60,
+  };
+}
+
+function deriveCorrelatedServiceConfigFromNode(
+  node: ServiceNode,
+): CorrelatedServiceConfig {
+  if (node.components.length === 0) {
+    return {
+      name: node.name,
+      correlation: node.correlation ?? "independent",
+      lagSeconds: node.lagSeconds,
+      impactFactor: node.impactFactor,
+      health: node.health ?? "healthy",
+    };
+  }
+
+  // Downstream node with components — derive its metrics too
+  const focalConfig = deriveFocalServiceConfig(node);
+  return {
+    name: node.name,
+    correlation: node.correlation ?? "independent",
+    lagSeconds: node.lagSeconds,
+    impactFactor: node.impactFactor,
+    health: node.health ?? "healthy",
+    scale: { typicalRps: node.typicalRps ?? 0 },
+    overrides: focalConfig.metrics,
+  };
 }
 
 // ── Component transform: Zod snake_case → TypeScript camelCase ────────────────
@@ -656,21 +866,18 @@ async function transform(
     debriefContext: raw.evaluation.debrief_context,
   };
 
-  // opsDashboard is now derived from the component graph in Step 3 (loader §6.1).
-  // Temporary stub returning empty config — will be replaced in Step 3 implementation.
-  const opsDashboard: OpsDashboardConfig = {
-    preIncidentSeconds: raw.timeline.pre_incident_seconds,
-    resolutionSeconds: raw.timeline.resolution_seconds,
-    focalService: {
-      name: raw.topology.focal_service.name,
-      scale: { typicalRps: raw.topology.focal_service.typical_rps ?? 0 },
-      trafficProfile: "none",
-      health: "healthy",
-      incidentType: "",
-      metrics: [],
-    },
-    correlatedServices: [],
+  const topology = {
+    focalService: transformServiceNode(raw.topology.focal_service),
+    upstream: raw.topology.upstream.map(transformServiceNode),
+    downstream: raw.topology.downstream.map(transformServiceNode),
   };
+
+  const opsDashboard = deriveOpsDashboard(
+    topology.focalService,
+    raw.timeline.pre_incident_seconds,
+    raw.timeline.resolution_seconds,
+    topology.downstream,
+  );
 
   return {
     id: raw.id,
@@ -684,11 +891,7 @@ async function transform(
       preIncidentSeconds: raw.timeline.pre_incident_seconds,
       resolutionSeconds: raw.timeline.resolution_seconds,
     },
-    topology: {
-      focalService: transformServiceNode(raw.topology.focal_service),
-      upstream: raw.topology.upstream.map(transformServiceNode),
-      downstream: raw.topology.downstream.map(transformServiceNode),
-    },
+    topology,
     engine: {
       tickIntervalSeconds: raw.engine.tick_interval_seconds,
       defaultTab: raw.engine.default_tab ?? "email",
@@ -715,54 +918,3 @@ async function transform(
     evaluation,
   };
 }
-
-function transformMetric(m: {
-  archetype: string;
-  label?: string;
-  unit?: string;
-  baseline_value?: number;
-  warning_threshold?: number;
-  critical_threshold?: number;
-  noise?: "low" | "medium" | "high" | "extreme";
-  incident_peak?: number;
-  onset_second?: number;
-  resolved_value?: number;
-  incident_response?: {
-    overlay: string;
-    onset_second?: number;
-    peak_value?: number;
-    drop_factor?: number;
-    ramp_duration_seconds?: number;
-    saturation_duration_seconds?: number;
-  };
-  series_override?: Array<{ t: number; v: number }>;
-}): MetricConfig {
-  return {
-    archetype: m.archetype,
-    label: m.label,
-    unit: m.unit,
-    baselineValue: m.baseline_value,
-    warningThreshold: m.warning_threshold,
-    criticalThreshold: m.critical_threshold,
-    noise: m.noise,
-    incidentPeak: m.incident_peak,
-    onsetSecond: m.onset_second,
-    resolvedValue: m.resolved_value,
-    incidentResponse: m.incident_response
-      ? {
-          overlay: m.incident_response.overlay,
-          onsetSecond: m.incident_response.onset_second,
-          peakValue: m.incident_response.peak_value,
-          dropFactor: m.incident_response.drop_factor,
-          rampDurationSeconds: m.incident_response.ramp_duration_seconds,
-          saturationDurationSeconds:
-            m.incident_response.saturation_duration_seconds,
-        }
-      : undefined,
-    seriesOverride: m.series_override,
-  };
-}
-
-// transformMetric is kept for future use by opsDashboard derivation (Step 3).
-// Suppress unused warning temporarily.
-void (transformMetric as unknown);

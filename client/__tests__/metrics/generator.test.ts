@@ -1,20 +1,18 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { generateAllMetrics } from "../../src/metrics/generator";
 import {
-  buildLoadedScenario,
+  getFixtureScenario,
   clearFixtureCache,
 } from "../../src/testutil/index";
 import type { LoadedScenario } from "../../src/scenario/types";
 
-// Use buildLoadedScenario() which has hardcoded opsDashboard with metrics.
-// The fixture YAML no longer authors ops_dashboard — it is derived from components
-// in Step 3. Until deriveOpsDashboard() is implemented, tests use testutil data.
 let _fixture: LoadedScenario;
 
-beforeEach(() => {
-  clearFixtureCache();
-  _fixture = buildLoadedScenario();
+beforeAll(async () => {
+  _fixture = await getFixtureScenario();
 });
+
+beforeEach(() => clearFixtureCache());
 
 describe("generateAllMetrics with fixture scenario", () => {
   it("returns series for focal service metrics", () => {

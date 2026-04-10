@@ -12,8 +12,8 @@ import {
 import type { CorrelatedServiceConfig } from "../../src/scenario/types";
 import type { ResolvedMetricParams } from "../../src/metrics/types";
 
-// Use buildLoadedScenario() — correlation tests depend on opsDashboard.focalService.metrics
-// which is derived from components in Step 3. Until then, testutil provides stable fixture data.
+// buildLoadedScenario() provides a stable scenario with incidentType-based overlays.
+// Correlation tests exercise the correlation.ts module, not the deriveOpsDashboard path.
 const getFixtureScenario = async () => buildLoadedScenario();
 
 beforeEach(() => clearFixtureCache());

@@ -16,6 +16,22 @@ export type OverlayType =
   | "gradual_degradation"
   | "none";
 
+// ── OverlayApplication ────────────────────────────────────────────────────────
+// Replaces the 7 flat overlay fields on ResolvedMetricParams (Step 4).
+// Added here in Step 3 so MetricConfig.incidentResponses can reference it.
+
+export interface OverlayApplication {
+  overlay: OverlayType;
+  onsetSecond: number;
+  endSecond?: number; // absent = sustained
+  peakValue: number;
+  /** Used by sudden_drop only; set to 1.0 for all other overlay types. */
+  dropFactor: number;
+  ceiling: number;
+  rampDurationSeconds: number;
+  saturationDurationSeconds: number;
+}
+
 export interface ResolvedMetricParams {
   metricId: string;
   service: string;
