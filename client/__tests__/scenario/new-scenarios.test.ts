@@ -128,9 +128,9 @@ describe("memory-leak-jvm", () => {
     expect(p99Alarms[0].id).toBe("alarm-latency-p99");
   });
 
-  it("timeline pre_incident_seconds = 3600 (1 hour of pre-incident data)", async () => {
+  it("timeline pre_incident_seconds = 120 (lean history — degradation context in narrative)", async () => {
     const s = await loadOrFail(memoryLeakYaml);
-    expect(s.timeline.preIncidentSeconds).toBe(3600);
+    expect(s.timeline.preIncidentSeconds).toBe(120);
   });
 });
 

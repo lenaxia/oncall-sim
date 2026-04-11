@@ -10,7 +10,7 @@ tags: [jvm, memory-leak, gradual-degradation, catalog]
 timeline:
   default_speed: 2
   duration_minutes: 20
-  pre_incident_seconds: 3600
+  pre_incident_seconds: 120 # trainee sees 2min of recent history; the leak has been running for an hour already (established by email/ticket)
   resolution_seconds: 120
 
 topology:

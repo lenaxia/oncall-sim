@@ -46,20 +46,20 @@ topology:
         affected_component: processor
         description: "Lambda reserved concurrency set to 10 by automated cost-saving script (was 200). Morning traffic immediately saturates the concurrency limit — all 10 executions in use, new invocations throttled."
         onset_overlay: saturation
-        onset_second: 0
+        onset_second: 60
         magnitude: 1.0
       - id: queue_backlog
         affected_component: event_stream
         description: "Kinesis iterator age climbing — Lambda throttling causes consumers to fall behind. Events accumulate in the stream."
         onset_overlay: gradual_degradation
-        onset_second: 0
+        onset_second: 60
         magnitude: 8.0
         ramp_duration_seconds: 60
       - id: dlq_accumulation
         affected_component: dlq
         description: "SQS DLQ filling as events exhaust retry attempts from Kinesis."
         onset_overlay: gradual_degradation
-        onset_second: 120
+        onset_second: 180
         magnitude: 6.0
         ramp_duration_seconds: 120
   upstream:
