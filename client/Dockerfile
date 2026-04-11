@@ -17,8 +17,8 @@ COPY client/ ./client/
 COPY scenarios/ ./scenarios/
 
 # Build with k8s mode vars baked in
-ARG VITE_LLM_MODE=k8s
-ARG VITE_LLM_BASE_URL=http://localhost:8000/llm
+ARG VITE_LLM_MODE=proxy
+ARG VITE_LLM_BASE_URL=/llm
 ARG VITE_LLM_API_KEY=
 ARG VITE_LLM_MODEL=
 
