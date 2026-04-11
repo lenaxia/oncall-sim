@@ -1,4 +1,4 @@
-import { useMemo, memo } from "react";
+import { useMemo, memo, useState, useEffect } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -63,10 +63,9 @@ export const MetricChart = memo(function MetricChart({
   );
   const current = visible.length > 0 ? visible[visible.length - 1].v : null;
 
-  // Default brush window: show last DEFAULT_WINDOW_SECONDS ending at simTime.
-  // Uses binary search instead of findIndex — the window start typically lands
-  // deep in the 72h pre-incident history, making linear scan scan ~95% of the
-  // array on every render (benchmarked at 1588× slower than binary search).
+  // The chart line and XAxis render only the last 4h by default.
+  // The Brush minimap receives the full visible series so the trainee
+  // can slide the handles to pan back into older history.
   const windowStart = simTime - DEFAULT_WINDOW_SECONDS;
   const defaultStartIndex = useMemo(
     () =>
@@ -77,6 +76,29 @@ export const MetricChart = memo(function MetricChart({
     [visible, windowStart],
   );
   const defaultEndIndex = visible.length > 0 ? visible.length - 1 : 0;
+
+  // Controlled brush indices — initialised to the 4h window, updated on drag.
+  // Reset to the default window whenever new points arrive (simTime advances).
+  const [brushStart, setBrushStart] = useState(defaultStartIndex);
+  const [brushEnd, setBrushEnd] = useState(defaultEndIndex);
+
+  // When the trailing edge of the default window moves forward (new point
+  // appended), auto-advance the brush end so the window tracks the present —
+  // but only when the user hasn't zoomed out (brushEnd was already at the last
+  // point before the new one arrived).
+  useEffect(() => {
+    if (brushEnd >= visible.length - 2) {
+      // User is viewing the live end — keep them there
+      setBrushEnd(defaultEndIndex);
+      setBrushStart(defaultStartIndex);
+    }
+  }, [defaultStartIndex, defaultEndIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The data slice the chart actually renders
+  const windowed = useMemo(
+    () => visible.slice(brushStart, brushEnd + 1),
+    [visible, brushStart, brushEnd],
+  );
 
   const breaching =
     criticalThreshold != null &&
@@ -125,7 +147,7 @@ export const MetricChart = memo(function MetricChart({
       <div className="h-[220px] w-full" onMouseEnter={onFirstHover}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
-            data={visible}
+            data={windowed}
             margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
           >
             <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
@@ -185,12 +207,23 @@ export const MetricChart = memo(function MetricChart({
               activeDot={{ r: 4, stroke: "none" }}
               isAnimationActive={false}
             />
-            {/* Brush: mini-map at the bottom for pan/zoom over 72h history */}
+            {/* Brush: minimap over full history so trainee can pan back */}
             {visible.length > 1 && (
               <Brush
+                data={visible}
                 dataKey="t"
-                startIndex={defaultStartIndex}
-                endIndex={defaultEndIndex}
+                startIndex={brushStart}
+                endIndex={brushEnd}
+                onChange={(range) => {
+                  if (
+                    range &&
+                    typeof range.startIndex === "number" &&
+                    typeof range.endIndex === "number"
+                  ) {
+                    setBrushStart(range.startIndex);
+                    setBrushEnd(range.endIndex);
+                  }
+                }}
                 height={28}
                 stroke="#30363d"
                 fill="#161b22"
