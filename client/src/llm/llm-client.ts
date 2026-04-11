@@ -54,8 +54,6 @@ export class LLMError extends Error {
  *
  * VITE_MOCK_LLM=true or import.meta.env.MODE === 'test'
  *   → MockProvider (reads bundled fixture YAML)
- * VITE_LLM_MODE=harmony
- *   → BedrockBrowserProvider (dynamic import — keeps @aws-sdk out of non-harmony builds)
  * VITE_LLM_MODE=local | k8s (default)
  *   → OpenAIProvider (calls VITE_LLM_BASE_URL/chat/completions)
  */
@@ -67,29 +65,6 @@ export async function createLLMClient(): Promise<LLMClient> {
   ) {
     const { createFixtureMockProvider } = await import("./mock-provider");
     return createFixtureMockProvider();
-  }
-
-  const mode = import.meta.env.VITE_LLM_MODE ?? "local";
-
-  if (mode === "harmony") {
-    // Dynamic import: keeps @aws-sdk/client-bedrock-runtime out of non-harmony bundles
-    const { BedrockBrowserProvider } =
-      await import("./bedrock-browser-provider");
-    const config = window.__ONCALL_CONFIG__;
-    if (
-      !config?.bedrockRoleArn ||
-      !config?.bedrockRegion ||
-      !config?.bedrockModelId
-    ) {
-      throw new Error(
-        "[createLLMClient] harmony mode requires window.__ONCALL_CONFIG__ with bedrockRoleArn, bedrockRegion, bedrockModelId",
-      );
-    }
-    return new BedrockBrowserProvider({
-      roleArn: config.bedrockRoleArn,
-      region: config.bedrockRegion,
-      modelId: config.bedrockModelId,
-    });
   }
 
   // local or k8s — both use OpenAIProvider
