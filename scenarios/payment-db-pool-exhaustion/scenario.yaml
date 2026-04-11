@@ -15,7 +15,7 @@ timeline:
 topology:
   focal_service:
     name: payment-service
-    description: "Payment processing microservice."
+    description: "Payment processing microservice — Java/Spring, HikariCP connection pool."
     owner: sara-chen
     typical_rps: 200
     traffic_profile: always_on_api
@@ -31,30 +31,18 @@ topology:
         instance_count: 4
         utilization: 0.55
         inputs: [alb]
-      - id: payment_stream
-        type: kinesis_stream
-        label: "payment-events"
-        shard_count: 4
+      - id: postgres
+        type: rds
+        label: "postgres-primary (HikariCP)"
+        instance_count: 1
+        max_connections: 5 # misconfigured — should be 20; set to 5 by typo in v2.4.1
+        utilization: 0.40
+        connection_utilization: 1.0 # immediately saturated — all 5 connections in use
         inputs: [ecs]
-      - id: processor
-        type: lambda
-        label: "payment-event-processor"
-        reserved_concurrency: 200
-        lambda_utilization: 0.35
-        inputs: [payment_stream]
-      - id: payments_ddb
-        type: dynamodb
-        label: "payments DynamoDB table"
-        write_capacity: 100
-        read_capacity: 500
-        write_utilization: 0.60
-        read_utilization: 0.20
-        billing_mode: provisioned
-        inputs: [processor]
     incidents:
-      - id: ddb_write_saturation
-        affected_component: payments_ddb
-        description: "DynamoDB write capacity exhausted under sustained high checkout volume."
+      - id: db_pool_exhaustion
+        affected_component: postgres
+        description: "HikariCP connection pool exhausted — MAX_DB_CONNECTIONS misconfigured as 5 (should be 20). All connections active, requests queuing."
         onset_overlay: saturation
         onset_second: 0
         magnitude: 1.0
@@ -63,7 +51,7 @@ topology:
       description: "AWS API Gateway routes inbound payment API traffic."
   downstream:
     - name: postgres-primary
-      description: "Legacy PostgreSQL — read-only fraud history lookups."
+      description: "Legacy PostgreSQL — the actual DB behind the RDS component above (read-only replica for fraud history)."
       correlation: exonerated
     - name: fraud-service
       description: "Synchronous fraud scoring service. Called per checkout request."
