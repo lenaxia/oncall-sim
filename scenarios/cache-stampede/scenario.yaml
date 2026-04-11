@@ -51,13 +51,13 @@ topology:
         affected_component: cache
         description: "Elasticache cluster restarted for OS patching at 2am — cache is cold. cache_hit_rate drops from 82% to ~2% as all requests miss and hit the DB."
         onset_overlay: sudden_drop
-        onset_second: 0
+        onset_second: 90
         magnitude: 0.02
       - id: db_saturation
         affected_component: recs_db
         description: "RDS Aurora connection pool saturated by stampeding cache-miss reads — 250 RPS × 0.82 cache miss rate × 3 DB queries per recommendation = ~615 extra queries/second."
         onset_overlay: saturation
-        onset_second: 0
+        onset_second: 90
         magnitude: 1.0
   upstream:
     - name: storefront
