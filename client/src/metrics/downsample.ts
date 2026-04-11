@@ -3,6 +3,10 @@
 // Full-resolution series (1 point/minute) is used internally for MetricStore
 // alarm checking and scripted value computation. For chart rendering, older
 // history is downsampled to reduce Recharts node count.
+//
+// Pre-simulation history defaults to 12h (43200s) when not set by the scenario.
+// Chart default window shows the last 4h (MetricChart.DEFAULT_WINDOW_SECONDS).
+// Downsampling split: last 6h at 1-min resolution, older at 5-min resolution.
 
 import type { TimeSeriesPoint } from "@shared/types/events";
 

@@ -485,7 +485,7 @@ describe("ScenarioSchema — deferred validation (Phase 2/3)", () => {
 // The schema no longer exposes ops_dashboard metrics for YAML authoring.
 
 describe("ScenarioSchema — MetricConfig is derived (not authored)", () => {
-  it("timeline pre_incident_seconds defaults to 300", () => {
+  it("timeline pre_incident_seconds defaults to 43200 (12h)", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
@@ -493,7 +493,7 @@ describe("ScenarioSchema — MetricConfig is derived (not authored)", () => {
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.timeline.pre_incident_seconds).toBe(300);
+      expect(result.data.timeline.pre_incident_seconds).toBe(43200);
     }
   });
 

@@ -417,7 +417,7 @@ const TimelineSchema = z.object({
     z.literal(10),
   ]),
   duration_minutes: z.number().positive(),
-  pre_incident_seconds: z.number().positive().optional().default(300),
+  pre_incident_seconds: z.number().positive().optional().default(43200), // defaults to 12h
   resolution_seconds: z.number().positive().optional().default(15),
 });
 

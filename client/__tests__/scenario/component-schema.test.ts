@@ -445,7 +445,7 @@ describe("TimelineSchema — new fields", () => {
     }
   });
 
-  it("defaults pre_incident_seconds to 300 when omitted", () => {
+  it("defaults pre_incident_seconds to 43200 (12h) when omitted", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
@@ -453,7 +453,7 @@ describe("TimelineSchema — new fields", () => {
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.timeline.pre_incident_seconds).toBe(300);
+      expect(result.data.timeline.pre_incident_seconds).toBe(43200);
     }
   });
 
@@ -480,6 +480,19 @@ describe("TimelineSchema — new fields", () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+
+  it("accepts large pre_incident_seconds (no upper cap)", () => {
+    const raw = loadFixture() as Record<string, unknown>;
+    const result = ScenarioSchema.safeParse({
+      ...raw,
+      timeline: {
+        default_speed: 1,
+        duration_minutes: 10,
+        pre_incident_seconds: 86400, // 24h — valid for long-history scenarios
+      },
+    });
+    expect(result.success).toBe(true);
   });
 });
 
