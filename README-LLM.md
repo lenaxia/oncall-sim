@@ -1,8 +1,8 @@
 # On-Call Training Simulator — LLM Implementation Guide
 
-**Version:** 1.2
-**Last Updated:** 2026-04-09
-**Project Status:** Phases 1–8 Complete, Phase 9 (debrief narrative) stub only
+**Version:** 1.3
+**Last Updated:** 2026-04-11
+**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.0 released), Phase 9 (debrief narrative) stub only
 
 ---
 
@@ -178,7 +178,8 @@ When completing a story or phase:
 oncall-sim/
 ├── README.md                          # User-facing README
 ├── README-LLM.md                      # This file
-├── package.json                       # Root workspace (npm workspaces)
+├── package.json                       # Root workspace (npm workspaces: ["client"])
+├── docker-compose.yml                 # Local proxy-mode testing (client + sidecar)
 ├── .env.example                       # Environment variable reference
 │
 ├── docs/
@@ -193,7 +194,8 @@ oncall-sim/
 │   │       ├── 06-api.md
 │   │       ├── 07-ui-components.md
 │   │       ├── 08-sim-tabs.md
-│   │       └── 09-coach-debrief.md
+│   │       ├── 09-coach-debrief.md
+│   │       └── 11-component-topology-and-reaction-menu.md
 │   ├── backlog/                       # Epics and user stories
 │   │   ├── README.md
 │   │   ├── 01-shared-types/
@@ -210,105 +212,106 @@ oncall-sim/
 │
 ├── shared/
 │   └── types/
-│       └── events.ts                  # Canonical SSE event + data types
+│       └── events.ts                  # Canonical TypeScript types (imported by client)
 │
 ├── scenarios/
 │   ├── _fixture/                      # Minimal scenario for all tests
 │   │   ├── scenario.yaml
 │   │   └── mock-llm-responses.yaml
-│   └── api-error-rate-spike/          # Launch scenario
-│       ├── scenario.yaml
-│       ├── email/
-│       ├── tickets/
-│       ├── wiki/
-│       └── mock-llm-responses.yaml
+│   ├── payment-db-pool-exhaustion/    # Launch scenario
+│   ├── cache-stampede/
+│   ├── fraud-api-quota-exhaustion/
+│   ├── lambda-cold-start-cascade/
+│   ├── memory-leak-jvm/
+│   └── tls-cert-expiry/
 │
-├── server/
+├── client/                            # React SPA — the entire application
 │   ├── src/
-│   │   ├── index.ts                   # Express app entry point
-│   │   ├── config.ts                  # Env var loading + validation
-│   │   ├── routes/
-│   │   │   ├── scenarios.ts
-│   │   │   ├── sessions.ts
-│   │   │   ├── actions.ts
-│   │   │   └── llm.ts
+│   │   ├── main.tsx
+│   │   ├── App.tsx
+│   │   ├── logger.ts
+│   │   ├── declarations.d.ts
+│   │   ├── context/
+│   │   │   ├── ScenarioContext.tsx
+│   │   │   └── SessionContext.tsx
+│   │   ├── hooks/
+│   │   │   └── useSimClock.ts
 │   │   ├── engine/
 │   │   │   ├── game-loop.ts
 │   │   │   ├── event-scheduler.ts
 │   │   │   ├── stakeholder-engine.ts
+│   │   │   ├── metric-reaction-engine.ts
+│   │   │   ├── sim-state-store.ts
+│   │   │   ├── sim-clock.ts
 │   │   │   ├── audit-log.ts
 │   │   │   ├── conversation-store.ts
-│   │   │   ├── sim-clock.ts
 │   │   │   └── evaluator.ts
 │   │   ├── metrics/
 │   │   │   ├── generator.ts
 │   │   │   ├── resolver.ts
+│   │   │   ├── metric-store.ts
+│   │   │   ├── metric-summary.ts
+│   │   │   ├── reaction-menu.ts
 │   │   │   ├── incident-types.ts
 │   │   │   ├── archetypes.ts
+│   │   │   ├── component-metrics.ts
 │   │   │   ├── correlation.ts
+│   │   │   ├── downsample.ts
+│   │   │   ├── series.ts
+│   │   │   ├── types.ts
 │   │   │   └── patterns/
 │   │   │       ├── baseline.ts
 │   │   │       ├── rhythm.ts
 │   │   │       ├── noise.ts
-│   │   │       └── incident-overlay.ts
+│   │   │       ├── incident-overlay.ts
+│   │   │       └── reactive-overlay.ts
 │   │   ├── llm/
 │   │   │   ├── llm-client.ts
 │   │   │   ├── openai-provider.ts
-│   │   │   ├── bedrock-provider.ts
 │   │   │   ├── mock-provider.ts
 │   │   │   └── tool-definitions.ts
 │   │   ├── scenario/
 │   │   │   ├── loader.ts
-│   │   │   └── schema.ts
-│   │   ├── session/
-│   │   │   ├── session-store.ts
-│   │   │   └── session.ts
-│   │   ├── sse/
-│   │   │   └── sse-broker.ts
-│   │   └── types/
-│   │       └── events.ts              # Re-exports from shared/ via path alias
-│   ├── __tests__/
-│   │   ├── engine/
-│   │   ├── metrics/
-│   │   │   └── patterns/
-│   │   └── routes/
+│   │   │   ├── schema.ts
+│   │   │   ├── types.ts
+│   │   │   ├── validator.ts
+│   │   │   ├── component-topology.ts
+│   │   │   └── log-profiles.ts
+│   │   ├── components/
+│   │   │   ├── TabBar.tsx
+│   │   │   ├── SpeedControl.tsx
+│   │   │   ├── CoachPanel.tsx
+│   │   │   ├── ScenarioPicker.tsx
+│   │   │   ├── DebriefScreen.tsx
+│   │   │   └── tabs/
+│   │   │       ├── EmailTab.tsx
+│   │   │       ├── ChatTab.tsx
+│   │   │       ├── TicketingTab.tsx
+│   │   │       ├── OpsDashboardTab.tsx
+│   │   │       ├── MetricChart.tsx
+│   │   │       ├── LogsTab.tsx
+│   │   │       ├── WikiTab.tsx
+│   │   │       ├── CICDTab.tsx
+│   │   │       └── RemediationsPanel.tsx
+│   │   └── testutil/
+│   │       ├── index.tsx
+│   │       └── msw-handlers.ts
+│   ├── __tests__/                     # 70 test files (Vitest + React Testing Library)
+│   ├── index.html
+│   ├── Dockerfile
 │   ├── package.json
-│   └── tsconfig.json
+│   ├── tsconfig.json
+│   └── vite.config.ts
 │
-└── client/
-    ├── src/
-    │   ├── main.tsx
-    │   ├── App.tsx
-    │   ├── context/
-    │   │   ├── ScenarioContext.tsx
-    │   │   ├── SessionContext.tsx
-    │   │   └── AuditContext.tsx
-    │   ├── hooks/
-    │   │   ├── useSSE.ts
-    │   │   └── useSimClock.ts
-    │   ├── components/
-    │   │   ├── TabBar.tsx
-    │   │   ├── SpeedControl.tsx
-    │   │   ├── CoachPanel.tsx
-    │   │   ├── ScenarioPicker.tsx
-    │   │   ├── DebriefScreen.tsx
-    │   │   └── tabs/
-    │   │       ├── EmailTab.tsx
-    │   │       ├── ChatTab.tsx
-    │   │       ├── TicketingTab.tsx
-    │   │       ├── OpsDashboardTab.tsx
-    │   │       ├── LogsTab.tsx
-    │   │       ├── WikiTab.tsx
-    │   │       └── CICDTab.tsx
-    │   └── types/
-    │       └── events.ts              # Re-exports from shared/ via path alias
-    ├── __tests__/
-    │   ├── tabs/
-    │   └── components/
-    ├── index.html
-    ├── package.json
-    ├── tsconfig.json
-    └── vite.config.ts
+├── proxy/                             # Python / FastAPI + LiteLLM sidecar
+│   ├── main.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── .env.example
+│
+└── k8s/                               # Kubernetes deployment manifests
+    ├── deployment.yaml
+    └── secret.yaml.example
 ```
 
 ---
@@ -316,83 +319,90 @@ oncall-sim/
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Browser                                                            │
-│                                                                     │
-│  ┌─────────────────────────────────────┐   ┌─────────────────────┐ │
-│  │  Sim Shell                          │   │  Coach Panel        │ │
-│  │  [ Email ][ Chat ][ Tickets ]       │   │  (slide-out)        │ │
-│  │  [ Ops   ][ Logs ][ Wiki   ][ CICD ]│   │  Proactive nudges   │ │
-│  │  Speed: [1x][2x][5x][10x]  [Pause] │   │  + on-demand help   │ │
-│  └─────────────────────────────────────┘   └─────────────────────┘ │
-│                        │  SSE + REST                               │
-└────────────────────────┼────────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────────┐
-│  Node.js / Express Server                                           │
-│                                                                     │
-│  REST API          SSE Stream         Game Engine                   │
-│  /scenarios        /events            game-loop                     │
-│  /sessions         (per session)      event-scheduler               │
-│  /actions                             stakeholder-engine            │
-│                                       audit-log + evaluator         │
-│                                                                     │
-│  LLM Client (OpenAI-compat | Bedrock | Mock)                        │
-│  Metrics Generator (baseline + rhythm + noise + overlay)            │
-│  Scenario Loader + Zod Validator                                     │
-└─────────────────────────────────────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────────────┐
-│  File System                                                        │
-│  scenarios/<id>/scenario.yaml                                       │
-│  scenarios/<id>/mock-llm-responses.yaml                             │
-│  scenarios/<id>/email/ tickets/ wiki/                               │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Browser                                                                 │
+│                                                                          │
+│  ┌──────────────────────────────────────┐   ┌──────────────────────────┐ │
+│  │  Sim Shell                           │   │  Coach Panel (slide-out) │ │
+│  │  [ Email ][ Chat ][ Tickets ]        │   │  Proactive nudges        │ │
+│  │  [ Ops   ][ Logs ][ Wiki   ][ CI/CD ]│   │  + on-demand help        │ │
+│  │  Speed: [1×][2×][5×][10×]  [Pause]  │   └──────────────────────────┘ │
+│  └──────────────────────────────────────┘                               │
+│                                                                          │
+│  Game Engine (pure TypeScript — no server)                              │
+│  ├── GameLoop            tick-driven sim clock, pause/resume, speed     │
+│  ├── EventScheduler      fires scripted scenario events at sim time     │
+│  ├── StakeholderEngine   LLM-driven persona responses (chat + email)    │
+│  ├── MetricReactionEngine LLM-driven metric trajectory updates          │
+│  ├── MetricStore         live time-series generation (baseline+overlay) │
+│  ├── SimStateStore       in-memory session state                        │
+│  ├── AuditLog            records all trainee actions with sim timestamp │
+│  └── Evaluator           scores trainee against ideal response path     │
+│                                                                          │
+│  LLM Client                                                             │
+│  ├── local  — calls VITE_LLM_BASE_URL directly (key in browser)         │
+│  ├── proxy  — calls /llm forwarded to sidecar (key never in browser)    │
+│  └── mock   — reads bundled fixture YAML; zero network calls            │
+└────────────────────────────────┬─────────────────────────────────────────┘
+                                 │ (proxy mode only)
+┌────────────────────────────────▼─────────────────────────────────────────┐
+│  LLM Proxy Sidecar  (Python / FastAPI + LiteLLM)                         │
+│  Accepts OpenAI-compatible requests, forwards to any LLM provider.       │
+│  LLM credentials live only here — never in the browser bundle.           │
+│  Supports: OpenAI, Anthropic, AWS Bedrock, or any LiteLLM-compatible URL │
+└──────────────────────────────────────────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼─────────────────────────────────────────┐
+│  File System (bundled into client/dist at build time)                    │
+│  scenarios/<id>/scenario.yaml                                            │
+│  scenarios/<id>/mock-llm-responses.yaml                                  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key data flows:**
 
-1. Scenario loaded + validated at session start → metrics generated → stored in session
-2. Game loop ticks → event-scheduler fires scripted events → stakeholder-engine calls LLM → tool calls executed → SSE broadcast to client
-3. Trainee action → audit-log → stakeholder-engine triggered immediately → SSE broadcast
-4. Mark resolved → game loop stops → debrief LLM called → `debrief_ready` SSE → client polls debrief endpoint
+1. Scenario YAML loaded + validated in browser at session start → metrics pre-generated → stored in MetricStore
+2. GameLoop ticks → EventScheduler fires scripted events → StakeholderEngine calls LLM → tool calls update SimStateStore → React context re-renders UI
+3. Trainee action → AuditLog → MetricReactionEngine triggered → StakeholderEngine triggered → UI updates
+4. Mark resolved → GameLoop stops → debrief LLM called → DebriefScreen renders
 
 **Responsibility boundaries:**
 
-- LLM controls communication and dynamic events (via tool calls, server-validated)
-- Server controls mechanics (session state, metric generation, action execution)
-- Trainee controls remediation (rollback, restart, scale, etc.)
+- LLM controls communication and metric reactions (via tool calls, validated client-side)
+- Game engine controls mechanics (session state, metric generation, action execution)
+- Trainee controls remediation (rollback, restart, scale, deploy, feature flags, throttle)
 
 ---
 
 ## Technology Stack
 
-### Server
+### Client (the entire application)
 
-- **Runtime:** Node.js 20+
-- **Framework:** Express + TypeScript (`strict: true`)
-- **Schema validation:** Zod (scenario config validation at startup)
-- **YAML parsing:** js-yaml
-- **LLM providers:** OpenAI-compatible API, AWS Bedrock SDK
-- **Transport:** Server-Sent Events (SSE) for real-time delivery
-- **Testing:** Vitest
-
-### Client
-
+- **Runtime:** Browser — no Node.js server
 - **Framework:** React 18 + TypeScript (`strict: true`)
 - **Styling:** Tailwind CSS
 - **Charts:** Recharts (time-series metric graphs)
 - **Build:** Vite
+- **Schema validation:** Zod (scenario YAML validated in-browser at session start)
+- **YAML parsing:** js-yaml
+- **LLM providers:** OpenAI-compatible API (local or via proxy), Mock
 - **Testing:** Vitest + React Testing Library
+
+### Proxy Sidecar
+
+- **Language:** Python 3.12
+- **Framework:** FastAPI + Uvicorn
+- **LLM routing:** LiteLLM (supports OpenAI, Anthropic, AWS Bedrock, any OpenAI-compatible URL)
+- **Purpose:** Holds LLM credentials server-side so they are never exposed in the browser bundle
 
 ### Shared
 
-- **Types:** `shared/types/events.ts` — imported by both server and client via tsconfig path aliases (`@shared/types/events`)
+- **Types:** `shared/types/events.ts` — imported by the client via tsconfig path alias (`@shared/types/events`)
 - **No runtime shared code** — shared directory contains types only, no executable modules
 
 ### Environment
 
-- **Package manager:** npm workspaces (root + server + client)
+- **Package manager:** npm workspaces (root + client)
 - **Node version:** 20 LTS
 
 ---
@@ -430,65 +440,51 @@ Phase 7 can run in parallel with Phases 4–6.
 ### Setup
 
 ```bash
-# Install all dependencies (root + server + client)
+# Install all dependencies
 npm install
 
-# Copy env template
-cp .env.example .env
+# Copy proxy env template (for proxy/k8s mode)
+cp proxy/.env.example proxy/.env
 ```
 
 ### Development
 
 ```bash
-# Run server in dev mode (watch)
-npm run dev --workspace=server
+# Run client dev server (Vite HMR) — mock mode, no LLM needed
+VITE_MOCK_LLM=true npm run dev
 
-# Run client in dev mode (Vite HMR)
-npm run dev --workspace=client
-
-# Run both concurrently
+# Run with a real LLM (local mode — key in browser)
+# Set VITE_LLM_MODE, VITE_LLM_BASE_URL, VITE_LLM_API_KEY, VITE_LLM_MODEL in client/.env.local first
 npm run dev
+
+# Run full stack in proxy mode (client + LLM sidecar via Docker Compose)
+docker-compose up --build
 ```
 
 ### Testing
 
 ```bash
-# Run all tests (server + client)
+# Run all tests (mock LLM — no credentials needed)
 npm test
 
-# Run server tests only
-npm test --workspace=server
-
-# Run client tests only
-npm test --workspace=client
-
 # Run with coverage
-npm run test:coverage --workspace=server
 npm run test:coverage --workspace=client
 
 # Run a specific test file
-npx vitest run server/src/__tests__/engine/game-loop.test.ts
+npx vitest run client/__tests__/engine/game-loop.test.ts
 
 # Run in watch mode
-npx vitest --workspace=server
-```
-
-**ALWAYS run tests with mock LLM:**
-
-```bash
-MOCK_LLM=true npm test --workspace=server
+npx vitest --workspace=client
 ```
 
 ### Code Quality
 
 ```bash
 # Type check (no emit)
-npm run typecheck --workspace=server
-npm run typecheck --workspace=client
+npm run typecheck
 
 # Lint
-npm run lint --workspace=server
-npm run lint --workspace=client
+npm run lint
 
 # Format
 npm run format
@@ -497,11 +493,12 @@ npm run format
 ### Build
 
 ```bash
-# Build server
-npm run build --workspace=server
+# Build client (static bundle to client/dist/)
+npm run build
 
-# Build client
-npm run build --workspace=client
+# Build Docker images
+docker build -f client/Dockerfile -t oncall-sim-client .
+docker build -f proxy/Dockerfile  -t oncall-sim-proxy  proxy/
 ```
 
 ---
@@ -516,9 +513,9 @@ npm run build --workspace=client
 
 **Merged Branches:**
 
-| Branch       | Purpose | Merged | Commit |
-| ------------ | ------- | ------ | ------ |
-| _(none yet)_ | —       | —      | —      |
+| Branch                           | Purpose                                           | Merged     | Commit    |
+| -------------------------------- | ------------------------------------------------- | ---------- | --------- |
+| `feature/phase-client-migration` | Client-side engine migration + component topology | 2026-04-11 | `7d63c97` |
 
 **Branch naming:**
 
@@ -652,7 +649,7 @@ Every module must have:
 
 ### Mock LLM
 
-All server tests that touch the LLM must run with `MOCK_LLM=true`. The mock provider reads from `scenarios/_fixture/mock-llm-responses.yaml`.
+All tests that touch the LLM run with mock mode enabled automatically via the Vitest setup. The mock provider reads from `scenarios/_fixture/mock-llm-responses.yaml`.
 
 Mock response triggers:
 
@@ -667,9 +664,8 @@ If no matching trigger exists, the mock returns an empty response. This is valid
 
 ```bash
 # Must all pass before ✅
-MOCK_LLM=true npm test
-npm run typecheck --workspace=server
-npm run typecheck --workspace=client
+npm test
+npm run typecheck
 npm run lint
 ```
 
@@ -689,13 +685,13 @@ npm run lint
 - [ ] Tests written before code?
 - [ ] `strict: true` TypeScript — no `any`?
 - [ ] Shared types imported from `@shared/types/events`, not duplicated?
-- [ ] All LLM paths work with `MOCK_LLM=true`?
+- [ ] All LLM paths work with mock mode (automatic in tests)?
 - [ ] Error messages actionable (not just "invalid config")?
 - [ ] Game loop error paths logged and swallowed, not thrown?
 
 ### Before Marking Complete
 
-- [ ] All tests passing with `MOCK_LLM=true`?
+- [ ] All tests passing?
 - [ ] Type check clean (`npm run typecheck`)?
 - [ ] Lint clean?
 - [ ] Backlog story checklists updated?
@@ -708,13 +704,13 @@ npm run lint
 A: No. Define the type. If it's truly dynamic, use `unknown` and narrow it.
 
 **Q: Can I make a real LLM call in a test?**
-A: No. Set `MOCK_LLM=true` and add a fixture entry.
+A: No. Mock mode is enabled automatically in the test environment.
 
 **Q: The game loop is crashing on a bad LLM response — should I let it throw?**
 A: No. Log the error, skip the tool call, keep the loop running.
 
 **Q: I need to add a new SSE event type — where do I start?**
-A: Update `shared/types/events.ts` first. Then implement server emission, then client handling.
+A: Update `shared/types/events.ts` first. Then implement emission in the engine, then client handling.
 
 **Q: Should I add a comment explaining this code?**
 A: Only if it explains WHY, not WHAT. If the code is clear, skip the comment.
@@ -722,8 +718,8 @@ A: Only if it explains WHY, not WHAT. If the code is clear, skip the comment.
 **Q: I found a bug in a previous phase while working on the current one.**
 A: Fix it. Do not work around it. Update the relevant test if needed.
 
-**Q: A scenario config is malformed — should the server crash?**
-A: No. Log the error with scenario ID and field path, exclude that scenario from the list, continue loading other scenarios.
+**Q: A scenario config is malformed — should the app crash?**
+A: No. Log the error with scenario ID and field path, exclude that scenario from the picker, continue loading other scenarios.
 
 ---
 
@@ -765,7 +761,7 @@ log_patterns:
     interval_seconds: 15
     from_second: 0
     to_second: 840
-    jitter_seconds: 4          # timestamps vary ±4s — looks real, not metronomic
+    jitter_seconds: 4 # timestamps vary ±4s — looks real, not metronomic
 
   - id: pool-stats
     level: WARN
@@ -783,7 +779,7 @@ log_patterns:
     interval_seconds: 5
     from_second: 10
     to_second: 40
-    count: 5                   # cap at 5 entries regardless of window size
+    count: 5 # cap at 5 entries regardless of window size
 ```
 
 ### 3. `background_logs` — ambient profile noise (realism padding)
@@ -794,12 +790,12 @@ The profile's lines are sampled using a live RNG (different every session) so th
 
 **Available profiles** (defined in `server/src/scenario/log-profiles.ts`):
 
-| Profile | Typical for |
-|---|---|
-| `java_web_service` | Spring Boot / Dropwizard API with HikariCP |
-| `nodejs_api` | Express / Fastify API with Redis and a DB pool |
-| `python_worker` | Celery worker processing a task queue |
-| `sidecar_proxy` | Envoy / Istio sidecar next to any service |
+| Profile            | Typical for                                    |
+| ------------------ | ---------------------------------------------- |
+| `java_web_service` | Spring Boot / Dropwizard API with HikariCP     |
+| `nodejs_api`       | Express / Fastify API with Redis and a DB pool |
+| `python_worker`    | Celery worker processing a task queue          |
+| `sidecar_proxy`    | Envoy / Istio sidecar next to any service      |
 
 **`density`** controls entries per minute: `low` (×0.4), `medium` (×1.0, default), `high` (×2.2).
 
@@ -807,9 +803,9 @@ The profile's lines are sampled using a live RNG (different every session) so th
 background_logs:
   - profile: java_web_service
     service: payment-service
-    from_second: -300          # start 5 sim-minutes before the incident
+    from_second: -300 # start 5 sim-minutes before the incident
     to_second: 840
-    density: medium            # omit seed — every session gets its own stream
+    density: medium # omit seed — every session gets its own stream
 
   - profile: sidecar_proxy
     service: payment-service
@@ -837,13 +833,12 @@ my_service: {
 
 ---
 
-
-
-| Version | Date       | Changes                                                                      |
-| ------- | ---------- | ---------------------------------------------------------------------------- |
-| 1.2     | 2026-04-09 | Metric-aware personas; remediation controls (scale/bounce/deploy/flags)      |
-| 1.1     | 2026-04-08 | Log volume: `log_patterns` and `background_logs`                             |
-| 1.0     | 2026-04-07 | Initial creation                                                             |
+| Version | Date       | Changes                                                                                            |
+| ------- | ---------- | -------------------------------------------------------------------------------------------------- |
+| 1.3     | 2026-04-11 | Client-side engine migration complete; repo structure, arch, stack, commands, branch table updated |
+| 1.2     | 2026-04-09 | Metric-aware personas; remediation controls (scale/bounce/deploy/flags)                            |
+| 1.1     | 2026-04-08 | Log volume: `log_patterns` and `background_logs`                                                   |
+| 1.0     | 2026-04-07 | Initial creation                                                                                   |
 
 ---
 

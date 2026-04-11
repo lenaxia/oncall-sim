@@ -202,7 +202,7 @@ npm run lint
 npm run format
 ```
 
-There are 69 test files covering the game engine, metric system, scenario loader, all UI tabs, React contexts, LLM providers, and components.
+There are 70 test files covering the game engine, metric system, scenario loader, all UI tabs, React contexts, LLM providers, and components.
 
 ---
 
@@ -271,6 +271,33 @@ oncall-sim/
 └── k8s/                      # Kubernetes deployment manifests
     ├── deployment.yaml
     └── secret.yaml.example
+```
+
+---
+
+## Docker Images
+
+Pre-built images are published to the GitHub Container Registry on every release.
+
+| Image                               | Tag                           |
+| ----------------------------------- | ----------------------------- |
+| `ghcr.io/lenaxia/oncall-sim/client` | `latest`, `1.0.0`, `1.0`, `1` |
+| `ghcr.io/lenaxia/oncall-sim/proxy`  | `latest`, `1.0.0`, `1.0`, `1` |
+
+Pull and run with Docker Compose (proxy mode):
+
+```bash
+# No build required — images are pulled from GHCR
+cp proxy/.env.example proxy/.env
+# Edit proxy/.env with your LLM credentials
+docker-compose up
+```
+
+Or pull individual images:
+
+```bash
+docker pull ghcr.io/lenaxia/oncall-sim/client:latest
+docker pull ghcr.io/lenaxia/oncall-sim/proxy:latest
 ```
 
 ---
