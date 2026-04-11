@@ -232,6 +232,7 @@ export type ActionType =
   | "view_pipeline" // evaluation-tracked: trainee viewed a pipeline
   | "restart_service"
   | "scale_cluster"
+  | "scale_capacity"
   | "throttle_traffic"
   | "suppress_alarm"
   | "emergency_deploy"
@@ -260,6 +261,55 @@ export interface SessionSnapshot {
   pages: PageAlert[]; // pages sent by trainee
   auditLog: AuditEntry[];
   coachMessages: CoachMessage[];
+  throttles: ActiveThrottle[];
+}
+
+// ── Evaluation and debrief types ──────────────────────────────────────────────
+
+export interface EvaluationState {
+  relevantActionsTaken: Array<{
+    action: string;
+    service?: string;
+    why: string;
+    takenAt: number;
+  }>;
+  redHerringsTaken: Array<{
+    action: string;
+    why: string;
+    takenAt: number;
+  }>;
+  resolved: boolean;
+}
+
+export interface DebriefResult {
+  narrative: string;
+  evaluationState: EvaluationState;
+  auditLog: AuditEntry[];
+  eventLog: SimEventLogEntry[];
+  resolvedAtSimTime: number;
+}
+
+// ── Throttle state ────────────────────────────────────────────────────────────
+
+export type ThrottleScope =
+  | "endpoint" // HTTP path or named API surface
+  | "customer" // per-tenant / per-API-key (trainee supplies customer ID at apply time)
+  | "consumer" // queue consumer group or stream consumer
+  | "concurrent" // max simultaneous executions (Lambda, goroutines)
+  | "global"; // service-wide catch-all
+
+export type ThrottleUnit = "rps" | "msg_per_sec" | "concurrent";
+
+// An active throttle applied by the trainee during a session.
+export interface ActiveThrottle {
+  remediationActionId: string;
+  targetId: string; // matches ThrottleTargetConfig.id
+  scope: ThrottleScope;
+  label: string; // display label from scenario
+  unit: ThrottleUnit;
+  limitRate: number; // the limit the trainee set
+  appliedAtSimTime: number;
+  customerId?: string; // only for scope=customer
 }
 
 // ── SSE event discriminated union ─────────────────────────────────────────────
@@ -284,6 +334,17 @@ export type SimEvent =
       service: string;
       metricId: string;
       point: TimeSeriesPoint;
+    }
+  | {
+      // Batch of metric point updates emitted once per tick (replaces
+      // individual metric_update events). Contains the latest generated
+      // point for each metric that produced one this tick.
+      type: "metrics_tick";
+      updates: Array<{
+        service: string;
+        metricId: string;
+        point: TimeSeriesPoint;
+      }>;
     }
   | { type: "alarm_fired"; alarm: Alarm }
   | { type: "alarm_silenced"; alarmId: string }

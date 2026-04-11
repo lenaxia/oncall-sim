@@ -1,0 +1,478 @@
+id: cache-stampede
+title: "Recommendation Service: Cache Stampede After Cluster Restart"
+description: >
+  The recommendation service is degrading hard. p99 latency spiked and
+  error rate is climbing. Infra applied a patch to the Elasticache cluster
+  overnight. Something didn't go as planned.
+difficulty: hard
+tags: [cache, elasticache, stampede, rds, cold-start, recommendations]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 20
+  pre_incident_seconds: 28800
+  resolution_seconds: 180
+
+topology:
+  focal_service:
+    name: recommendation-service
+    description: "Personalised product recommendation service. Elasticache-backed — cache normally handles 82% of reads."
+    owner: yuki-tanaka
+    typical_rps: 250
+    traffic_profile: business_hours_web
+    health: degraded
+    components:
+      - id: alb
+        type: load_balancer
+        label: "ALB"
+        inputs: []
+      - id: ecs
+        type: ecs_cluster
+        label: "recommendation-service ECS"
+        instance_count: 6
+        utilization: 0.55
+        inputs: [alb]
+      - id: cache
+        type: elasticache
+        label: "recommendations-cache (Elasticache Redis)"
+        instance_count: 2
+        utilization: 0.15 # CPU low — cache is lightly loaded
+        inputs: [ecs]
+      - id: recs_db
+        type: rds
+        label: "recommendations-db (RDS Aurora)"
+        instance_count: 1
+        max_connections: 150
+        utilization: 0.30
+        connection_utilization: 0.20
+        inputs: [ecs]
+    incidents:
+      - id: cache_miss_spike
+        affected_component: cache
+        description: "Elasticache cluster restarted for OS patching at 2am — cache is cold. cache_hit_rate drops from 82% to ~2% as all requests miss and hit the DB."
+        onset_overlay: sudden_drop
+        onset_second: 90
+        magnitude: 0.02
+      - id: db_saturation
+        affected_component: recs_db
+        description: "RDS Aurora connection pool saturated by stampeding cache-miss reads — 250 RPS × 0.82 cache miss rate × 3 DB queries per recommendation = ~615 extra queries/second."
+        onset_overlay: saturation
+        onset_second: 90
+        magnitude: 1.0
+  upstream:
+    - name: storefront
+      description: "Storefront calls recommendation-service for personalised product lists."
+  downstream:
+    - name: recommendations-db
+      description: "Aurora PostgreSQL with user behaviour data."
+      correlation: upstream_impact
+
+engine:
+  tick_interval_seconds: 15
+  default_tab: email
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 2
+
+personas:
+  - id: yuki-tanaka
+    display_name: "Yuki Tanaka"
+    job_title: "Staff Software Engineer"
+    team: "Recommendations"
+    avatar_color: "#F97316"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Yuki Tanaka, Staff SWE on the Recommendations team. You own
+      recommendation-service. You're confused — there's no recent code deploy
+      and the DB is clearly being hammered, but you don't know why.
+
+      You don't know about the Elasticache maintenance window yet. You suspect
+      something changed in infra overnight but haven't confirmed.
+
+      If the trainee identifies the cache_hit_rate drop or asks about infra changes:
+      confirm you can see cache misses in the logs and you suspect something happened
+      to the cache cluster.
+
+      If asked directly about the fix: "If the cache is cold, we have a cache warming
+      script — warm_recommendations_cache.sh. It pre-populates the top 10k recommendation
+      sets. Takes about 8 minutes to run. That plus the cache auto-populating from
+      traffic should get us back to normal in ~15 minutes."
+
+      1-3 sentences. Collaborative but stressed.
+
+  - id: brendan-walsh
+    display_name: "Brendan Walsh"
+    job_title: "Infrastructure Engineer"
+    team: "Infrastructure"
+    avatar_color: "#84CC16"
+    initiates_contact: false
+    cooldown_seconds: 120
+    silent_until_contacted: true
+    system_prompt: |
+      You are Brendan Walsh, Infrastructure Engineer. You applied an OS security
+      patch to the Elasticache cluster (recommendations-cache) at 2:30am. Maintenance
+      windows are usually no-impact because Elasticache does a rolling restart. However
+      last night both nodes restarted simultaneously due to a coordination bug in the
+      patching tool — wiping the cache entirely.
+
+      If contacted and asked about the Elasticache cluster:
+      "Yeah, I patched recommendations-cache at 2:30am. Should have been rolling but
+      both nodes restarted at the same time — coordination bug in the patching tool.
+      Cache is completely cold. Really sorry about that."
+
+      Be direct and apologetic.
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-recs-degraded
+    from: yuki-tanaka
+    to: trainee
+    subject: "[ALERT] recommendation-service: DB hammered, p99 > 8s"
+    body: |
+      Hey,
+
+      recommendation-service p99 just spiked to 8+ seconds. DB connections are maxing
+      out — Aurora is getting crushed with queries. Error rate climbing.
+
+      No code changes overnight. Something in the infrastructure layer changed.
+      Opened REC-209.
+
+      — Yuki
+
+  - id: email-002
+    at_second: 240
+    thread_id: thread-recs-degraded
+    from: yuki-tanaka
+    to: trainee
+    subject: "[ALERT] recommendation-service: DB hammered, p99 > 8s"
+    body: |
+      Update: seeing massive cache miss rate in the logs. Like, almost everything
+      is missing the cache. cache_hit_rate metric is near zero.
+
+      Something happened to the Elasticache cluster. Are you seeing the same?
+
+      — Yuki
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: recs-team
+      name: "#recs-team"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: yuki-tanaka
+      text: "recommendation-service is in trouble — DB being hammered, p99 > 8s. No code changes. Investigating."
+    - id: chat-002
+      at_second: 120
+      channel: "#recs-team"
+      persona: yuki-tanaka
+      text: "Cache hit rate is near zero — something happened to the cache cluster. @infra-team did anything change in Elasticache last night?"
+    - id: chat-003
+      at_second: 300
+      channel: "#incidents"
+      persona: yuki-tanaka
+      text: "Cache is cold. Working on running the cache warming script. ETA ~8 minutes to get back to normal."
+
+ticketing:
+  - id: REC-209
+    title: "recommendation-service: cache stampede — Elasticache cold after maintenance"
+    severity: SEV2
+    status: open
+    description: |
+      ## Summary
+
+      recommendation-service degraded. RDS Aurora connection pool saturating.
+      Root cause: Elasticache cluster restarted simultaneously (not rolling) during
+      OS patching at 2:30am — cache wiped cold. 82% of reads now hitting DB directly.
+
+      ## Symptoms
+
+      - p99 latency: > 8s (baseline ~120ms)
+      - Error rate: ~15% (DB timeouts)
+      - cache_hit_rate: ~2% (baseline 82%)
+      - RDS connections: maxed out
+      - CPU on Elasticache: minimal (confirming cold cache — no hits to process)
+
+      ## Root Cause
+
+      Both Elasticache nodes restarted simultaneously due to patching tool coordination
+      bug. Cache empty. Stampede of DB reads from all cache misses.
+
+      ## Resolution
+
+      1. Run cache warming script (warm_recommendations_cache.sh) — 8 min
+      2. Cache auto-populates from traffic as TTLs fill in — 15-20 min total
+      3. Scale RDS to handle load until cache recovers (optional)
+
+    created_by: yuki-tanaka
+    assignee: trainee
+    at_second: -300
+
+alarms:
+  - id: alarm-latency
+    service: recommendation-service
+    metric_id: p99_latency_ms
+    condition: "p99 latency > 2000ms"
+    severity: SEV2
+    threshold: 2000
+    auto_fire: true
+    auto_page: true
+    page_message: "recommendation-service p99 latency exceeded 2s. DB may be overloaded."
+  - id: alarm-db-pool
+    service: recommendation-service
+    metric_id: connection_pool_used
+    condition: "DB connection pool > 120 connections"
+    severity: SEV2
+    threshold: 120
+    auto_fire: true
+    auto_page: false
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: WARN
+    service: recommendation-service
+    message: "Cache MISS rate: 98.1% (last 60s) — cache appears cold"
+  - id: log-002
+    at_second: 0
+    level: ERROR
+    service: recommendation-service
+    message: "DB connection pool exhausted — HikariCP timeout after 5000ms waiting for connection"
+  - id: log-003
+    at_second: 10
+    level: WARN
+    service: recommendation-service
+    message: "Elasticache GET: cache_miss key=recs:user:8821 (TTL miss — key not found)"
+  - id: log-004
+    at_second: 10
+    level: WARN
+    service: recommendation-service
+    message: "Elasticache GET: cache_miss key=recs:user:9104 (TTL miss — key not found)"
+  - id: log-005
+    at_second: 30
+    level: ERROR
+    service: recommendation-service
+    message: "DB query timeout: getRecommendations user_id=1942 duration=8234ms (pool_size=150 active=150 waiting=47)"
+  - id: log-006
+    at_second: 60
+    level: INFO
+    service: recommendation-service
+    message: "Elasticache cluster info: nodes=2 uptime=1842s keys=12847 (last restart: 02:30:18)"
+  - id: log-007
+    at_second: 120
+    level: WARN
+    service: recommendation-service
+    message: "Cache warming not configured — cold start recovery will be slow (TTL=3600s, ~250 req/s fill rate)"
+
+log_patterns:
+  - id: cache-miss
+    level: WARN
+    service: recommendation-service
+    message: "Elasticache GET: cache_miss key=recs:user:{n} (TTL miss — key not found)"
+    interval_seconds: 5
+    from_second: 5
+    to_second: 1200
+    jitter_seconds: 1
+
+  - id: db-timeout
+    level: ERROR
+    service: recommendation-service
+    message: "DB query timeout: getRecommendations duration={n}000ms (pool saturated)"
+    interval_seconds: 15
+    from_second: 15
+    to_second: 1200
+    jitter_seconds: 4
+
+background_logs:
+  - profile: java_web_service
+    service: recommendation-service
+    from_second: -300
+    to_second: 1200
+    density: medium
+
+wiki:
+  pages:
+    - title: "recommendation-service Runbook"
+      content: |
+        # recommendation-service Runbook
+
+        ## Architecture
+
+        recommendation-service caches all recommendation sets in Elasticache Redis.
+        - Cache TTL: 3600 seconds (1 hour)
+        - Typical cache hit rate: 80-85%
+        - On cache miss: 3 DB queries to recommendations-db (Aurora)
+
+        ## Cache Stampede Recovery
+
+        If Elasticache is restarted or cache is cold:
+
+        1. **Identify**: cache_hit_rate drops sharply, DB connections spike
+        2. **Immediate**: scale ECS to handle increased DB load (buys time)
+        3. **Warm cache**: run `warm_recommendations_cache.sh`
+           - Pre-populates top 10k recommendation sets
+           - Runtime: ~8 minutes
+           - Path: `/ops/scripts/warm_recommendations_cache.sh`
+        4. **Monitor**: cache_hit_rate should recover to 80%+ within 15-20 minutes
+
+        ## Elasticache Maintenance
+
+        Elasticache clusters should be patched with rolling restarts (one node at a time).
+        Both nodes restarting simultaneously wipes the cache entirely.
+
+        **Contact**: @brendan-walsh (Infrastructure) for maintenance coordination.
+
+    - title: "Cache Warming"
+      content: |
+        # Cache Warming Script
+
+        `warm_recommendations_cache.sh` pre-populates the top 10,000 recommendation
+        sets from the recommendations-db into Elasticache.
+
+        ## When to use
+
+        - After any Elasticache cluster restart or flush
+        - After recovering from a cache stampede
+        - After scaling up (new nodes start cold)
+
+        ## Usage
+
+        ```bash
+        # Run from any ECS task via ECS Exec
+        /ops/scripts/warm_recommendations_cache.sh --env prod --top-n 10000
+        ```
+
+        Runtime: ~8 minutes. Monitor cache_hit_rate in CloudWatch.
+
+host_groups:
+  - id: recs-ecs-us-east
+    label: "recommendation-service ECS (us-east-1)"
+    service: recommendation-service
+    instance_count: 6
+    description: "6 Fargate tasks — scales up under load"
+
+cicd:
+  pipelines:
+    - id: pipeline-recs
+      name: "recommendation-service"
+      service: recommendation-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v6.3.1
+          previous_version: v6.3.0
+          status: succeeded
+          deployed_at_sec: -518400
+          commit_message: "feat: add collaborative filtering model v2"
+          author: yuki-tanaka
+          blockers: []
+          alarm_watches: []
+          promotion_events:
+            - version: v6.3.1
+              sim_time: -518400
+              status: succeeded
+              note: "AutoPromote: all tests passed"
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v6.3.1
+          previous_version: v6.3.0
+          status: succeeded
+          deployed_at_sec: -511200
+          commit_message: "feat: add collaborative filtering model v2"
+          author: yuki-tanaka
+          blockers: []
+          alarm_watches: [alarm-latency]
+          promotion_events:
+            - version: v6.3.1
+              sim_time: -511200
+              status: succeeded
+              note: "AutoPromote: canary healthy after 1 hour"
+  deployments:
+    - service: recommendation-service
+      version: v6.3.1
+      deployed_at_sec: -511200
+      status: active
+      commit_message: "feat: add collaborative filtering model v2"
+      author: yuki-tanaka
+    - service: recommendation-service
+      version: v6.3.0
+      deployed_at_sec: -1036800
+      status: previous
+      commit_message: "perf: optimise recommendation ranking"
+      author: yuki-tanaka
+
+remediation_actions:
+  - id: scale_recs_cluster
+    type: scale_cluster
+    service: recommendation-service
+    is_correct_fix: false
+    label: "Scale ECS to 12 instances"
+    side_effect: "Reduces individual instance load but doesn't fix the cache stampede. DB still overloaded — each new instance generates more cache-miss queries. Buys time for cache to warm but doesn't fix it."
+
+  - id: rollback_recs
+    type: rollback
+    service: recommendation-service
+    is_correct_fix: false
+    target_version: v6.3.0
+    side_effect: "Last deploy was 6 days ago and unrelated. Rolling back doesn't restore the cache — it's empty regardless of code version. DB stays overloaded."
+
+  - id: restart_recs
+    type: restart_service
+    service: recommendation-service
+    is_correct_fix: false
+    side_effect: "Restarting ECS tasks clears their local state but doesn't warm the cache. Each restarted instance immediately starts generating cache-miss queries again."
+
+evaluation:
+  root_cause: >
+    The Elasticache cluster (recommendations-cache) was patched at 2:30am. A bug in
+    the patching tool caused both nodes to restart simultaneously instead of rolling,
+    wiping the entire cache. When morning traffic arrived, cache_hit_rate dropped from
+    82% to ~2%, flooding the RDS Aurora database with 615+ extra queries/second.
+    RDS connection pool saturated, p99 latency spiked, error rate climbed.
+    Fix: run the cache warming script and allow natural TTL repopulation.
+
+  relevant_actions:
+    - action: search_logs
+      why: "Logs show 98% cache miss rate and Elasticache node uptime of ~1842s — recently restarted, explains cold cache."
+    - action: read_wiki_page
+      why: "Runbook documents cache stampede recovery procedure including the warming script."
+    - action: direct_message_persona
+      why: "Paging @brendan-walsh confirms the simultaneous restart — validates the root cause hypothesis."
+    - action: scale_cluster
+      why: "Scaling ECS buys time for the cache to warm by reducing per-instance pressure."
+      service: recommendation-service
+      remediation_action_id: scale_recs_cluster
+    - action: monitor_recovery
+      why: "cache_hit_rate should climb back to 80%+ within 15-20 minutes of running the warming script."
+
+  red_herrings:
+    - action: trigger_rollback
+      why: "The last deploy was 6 days ago — temporal correlation is absent. Cache stampede is not a code issue."
+    - action: restart_service
+      why: "Restarting ECS doesn't warm the cache — each restarted instance immediately starts generating misses again."
+
+  debrief_context: |
+    This is the hardest scenario in the library because the root cause requires
+    connecting two observations: (1) cache_hit_rate has collapsed, and (2) DB is
+    saturated — and recognising that (2) is caused by (1), not an independent DB problem.
+
+    The trap: the DB connection pool alarm fires first, and it LOOKS like a DB problem.
+    Trainees who anchor on the DB will waste time investigating RDS, potentially scaling
+    the DB (which helps only marginally). The insight: if cache_hit_rate is 2%, you're
+    sending 82% × 250 RPS = 205 extra requests/second to the DB. That's why it's
+    saturated — fix the cache, not the DB.
+
+    Also tests: knowing to page infrastructure when you suspect an infra change, and
+    knowing about the cache warming script (documented in the runbook).

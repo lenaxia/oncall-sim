@@ -21,3 +21,6 @@ Low-level design documents, one per development phase.
 - `lld/07-ui-components.md` — Phase 7: shared UI component library
 - `lld/08-sim-tabs.md` — Phase 8: sim shell and all tab implementations
 - `lld/09-coach-debrief.md` — Phase 9: coach LLM and debrief screen
+- `lld/10-reactive-metrics.md` — Phase 10: reactive metrics, MetricStore, apply_metric_response
+- `lld/11-component-topology-and-reaction-menu.md` — Phase 11: component topology,
+  auto-generated metrics, multi-incident composition, select_metric_reaction tool

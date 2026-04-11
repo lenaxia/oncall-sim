@@ -3,24 +3,65 @@ title: "Payment Service: Database Connection Pool Exhausted"
 description: >
   The payment processing service is degrading. Customers are seeing slow checkouts
   and intermittent failures. A recent config change may be involved.
-service_type: api
 difficulty: medium
 tags: [database, connection-pool, config-change, payments]
 
 timeline:
   default_speed: 2
   duration_minutes: 15
+  pre_incident_seconds: 43200
+  resolution_seconds: 60
 
 topology:
-  focal_service: payment-service
-  upstream: [api-gateway]
-  downstream: [postgres-primary, fraud-service]
+  focal_service:
+    name: payment-service
+    description: "Payment processing microservice — Java/Spring, HikariCP connection pool."
+    owner: sara-chen
+    typical_rps: 200
+    traffic_profile: always_on_api
+    health: degraded
+    components:
+      - id: alb
+        type: load_balancer
+        label: "Application Load Balancer"
+        inputs: []
+      - id: ecs
+        type: ecs_cluster
+        label: "payment-service ECS (Fargate)"
+        instance_count: 4
+        utilization: 0.55
+        inputs: [alb]
+      - id: postgres
+        type: rds
+        label: "postgres-primary (HikariCP)"
+        instance_count: 1
+        max_connections: 5 # misconfigured — should be 20; set to 5 by typo in v2.4.1
+        utilization: 0.40
+        connection_utilization: 1.0 # immediately saturated — all 5 connections in use
+        inputs: [ecs]
+    incidents:
+      - id: db_pool_exhaustion
+        affected_component: postgres
+        description: "HikariCP connection pool exhausted — MAX_DB_CONNECTIONS misconfigured as 5 (should be 20). All connections active, requests queuing."
+        onset_overlay: saturation
+        onset_second: 0
+        magnitude: 1.0
+  upstream:
+    - name: api-gateway
+      description: "AWS API Gateway routes inbound payment API traffic."
+  downstream:
+    - name: postgres-primary
+      description: "Legacy PostgreSQL — the actual DB behind the RDS component above (read-only replica for fraud history)."
+      correlation: exonerated
+    - name: fraud-service
+      description: "Synchronous fraud scoring service. Called per checkout request."
+      correlation: independent
 
 engine:
   tick_interval_seconds: 15
   default_tab: email
   llm_event_tools:
-    - tool: apply_metric_response
+    - tool: select_metric_reaction
       enabled: true
     - tool: inject_log_entry
       enabled: true
@@ -48,7 +89,7 @@ personas:
       deployed about 20 minutes ago — MAX_DB_CONNECTIONS was supposed to go from 20 to 50
       but I'm seeing 5 in the running config. Looks like a typo in the PR."
 
-      Keep responses concise (1-3 sentences). Use Slack-style casual tone. 
+      Keep responses concise (1-3 sentences). Use Slack-style casual tone.
 
   - id: david-park
     display_name: "David Park"
@@ -160,63 +201,6 @@ ticketing:
     created_by: sara-chen
     assignee: trainee
     at_second: -60
-
-ops_dashboard:
-  pre_incident_seconds: 43200
-  resolution_seconds: 60
-  focal_service:
-    name: payment-service
-    scale:
-      typical_rps: 200
-      instance_count: 4
-      max_connections: 5
-    traffic_profile: always_on_api
-    health: degraded
-    incident_type: connection_pool_exhaustion
-    metrics:
-      - archetype: p99_latency_ms
-        label: "p99 Latency"
-        unit: "ms"
-        critical_threshold: 2000
-        warning_threshold: 500
-        incident_peak: 8400
-        onset_second: 0
-        noise: high
-      - archetype: error_rate
-        label: "Error Rate"
-        unit: "%"
-        critical_threshold: 5
-        warning_threshold: 2
-        incident_peak: 15.2
-        onset_second: 0
-        noise: high
-      - archetype: request_rate
-        label: "Request Rate"
-        unit: "rps"
-        noise: low
-      - archetype: connection_pool_used
-        label: "DB Pool Wait"
-        unit: "ms"
-        critical_threshold: 1000
-        incident_peak: 7800
-        onset_second: 0
-        noise: low
-  correlated_services:
-    - name: postgres-primary
-      correlation: exonerated
-      health: healthy
-      overrides:
-        - archetype: connection_pool_used
-          label: "Active Connections"
-          unit: "conns"
-          baseline_value: 18
-          incident_response:
-            overlay: step_down
-            onset_second: 0
-            peak_value: 4
-    - name: api-gateway
-      correlation: independent
-      health: healthy
 
 alarms:
   - id: alarm-latency-001
@@ -687,7 +671,39 @@ remediation_actions:
     service: payment-service
     is_correct_fix: false
     label: "Throttle payment-service traffic"
-    side_effect: "Drops inbound RPS by 75%. Reduces pool pressure but customers see rate-limit errors."
+    side_effect: "Rate limiting active — pool pressure reduces but customers see 429 errors."
+    throttle_targets:
+      - id: global
+        scope: global
+        label: "All traffic"
+        description: "Service-wide rate limit across all callers and endpoints"
+        llm_hint: "Blunt instrument. Sheds load uniformly but affects all customers. Pool pressure reduces proportionally to shed percentage. Does not fix MAX_DB_CONNECTIONS root cause."
+        unit: rps
+        baseline_rate: 200
+
+      - id: checkout
+        scope: endpoint
+        label: "POST /v1/charges"
+        description: "Payment checkout — creates a new charge against a payment method"
+        llm_hint: "Accounts for ~60% of DB pool connections and ~60% of total RPS. Throttling this endpoint provides significant pool relief. Still does not fix the root cause."
+        unit: rps
+        baseline_rate: 120
+
+      - id: payment_methods
+        scope: endpoint
+        label: "GET /v1/payment-methods"
+        description: "Returns saved payment methods for a customer"
+        llm_hint: "Read-only operation with low DB pool usage (~1 connection per request, no writes). Throttling this has minimal impact on pool exhaustion."
+        unit: rps
+        baseline_rate: 50
+
+      - id: per_customer
+        scope: customer
+        label: "Per-customer rate limit"
+        description: "Apply a rate limit to a specific customer by their account ID"
+        llm_hint: "The high-volume caller causing pool exhaustion is acme-payments (account ID: acme-payments). They are sending ~80 RPS, all to POST /v1/charges. Throttling acme-payments specifically will reduce pool pressure without affecting other customers. If the trainee throttles any other customer ID, there is no meaningful metric impact."
+        unit: rps
+        baseline_rate: 200
 
   - id: disable_request_queue
     type: toggle_feature_flag

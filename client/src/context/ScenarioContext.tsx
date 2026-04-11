@@ -1,230 +1,184 @@
-import React, { createContext, useContext, useEffect, useState } from 'react'
-import type { TabId } from './SessionContext'
+import React, { createContext, useContext, useState } from "react";
+import type { TabId } from "./SessionContext";
+import type { LoadedScenario } from "../scenario/types";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Re-exported types used by child components ─────────────────────────────────
 
-export interface RemediationAction {
-  id:             string
-  type:           'rollback' | 'roll_forward' | 'restart_service' | 'scale_cluster'
-                | 'throttle_traffic' | 'emergency_deploy' | 'toggle_feature_flag'
-  service:        string
-  isCorrectFix:   boolean
-  sideEffect?:    string
-  targetVersion?: string
-  flagId?:        string
-  flagEnabled?:   boolean
-  label?:         string
-}
+export type {
+  RemediationActionConfig as RemediationAction,
+  FeatureFlagConfig as FeatureFlag,
+  HostGroupConfig as HostGroup,
+  PersonaConfig,
+} from "../scenario/types";
 
-export interface FeatureFlag {
-  id:          string
-  label:       string
-  defaultOn:   boolean
-  description?: string
-}
-
-export interface HostGroup {
-  id:            string
-  label:         string
-  service:       string
-  instanceCount: number
-  description?:  string
-}
-
-export interface PersonaConfig {
-  id:           string
-  displayName:  string
-  jobTitle:     string
-  team:         string
-  systemPrompt: string
-}
+// ── Metric meta (display metadata for the Ops dashboard) ──────────────────────
 
 export interface MetricMeta {
-  label:              string
-  unit:               string
-  criticalThreshold?: number   // alarm threshold — shown as red reference line
+  label: string;
+  unit: string;
+  criticalThreshold?: number;
 }
 
+// ── ScenarioConfig (the shape child components read via useScenario()) ─────────
+// This is derived from LoadedScenario and shaped to match what the UI tabs expect.
+// Field names intentionally match the old ScenarioConfig shape consumed by tabs,
+// so no changes are needed in tab components.
+
 export interface ScenarioConfig {
-  id:          string
-  title:       string
-  description: string
-  serviceType: string
-  difficulty:  string
-  tags:        string[]
+  id: string;
+  title: string;
+  description: string;
+  difficulty: string;
+  tags: string[];
   topology: {
-    focalService: string
-    upstream:     string[]
-    downstream:   string[]
-  }
-  personas:           PersonaConfig[]
-  wikiPages:          Array<{ title: string; content: string }>
-  featureFlags:       FeatureFlag[]
-  hostGroups:         HostGroup[]
-  remediationActions: RemediationAction[]
-  cicd:         { pipelines: Array<{ service: string; steps: string[] }> }
-  /** Metric display metadata keyed by service → metricId */
-  metricsMeta:  Record<string, Record<string, MetricMeta>>
+    focalService: {
+      name: string;
+      components: import("../scenario/types").ServiceComponent[];
+    };
+    upstream: string[];
+    downstream: string[];
+  };
+  personas: import("../scenario/types").PersonaConfig[];
+  wikiPages: Array<{ title: string; content: string }>;
+  featureFlags: import("../scenario/types").FeatureFlagConfig[];
+  hostGroups: import("../scenario/types").HostGroupConfig[];
+  remediationActions: import("../scenario/types").RemediationActionConfig[];
+  cicd: { pipelines: Array<{ service: string; steps: string[] }> };
+  metricsMeta: Record<string, Record<string, MetricMeta>>;
   evaluation: {
-    rootCause:       string
-    relevantActions: Array<{ action: string; why: string }>
-    redHerrings:     Array<{ action: string; why: string }>
-    debriefContext:  string
-  }
+    rootCause: string;
+    relevantActions: Array<{ action: string; why: string }>;
+    redHerrings: Array<{ action: string; why: string }>;
+    debriefContext: string;
+  };
   engine: {
-    defaultTab:              TabId
-    timelineDurationSeconds: number
-    hasFeatureFlags:         boolean
-    hasHostGroups:           boolean
-  }
+    defaultTab: TabId;
+    timelineDurationSeconds: number;
+    hasFeatureFlags: boolean;
+    hasHostGroups: boolean;
+  };
 }
 
 export interface ScenarioContextValue {
-  scenario:          ScenarioConfig | null
-  /** Live instance counts per host group id — persists for the session lifetime. */
-  hostGroupCounts:   Record<string, number>
-  adjustHostGroup:   (groupId: string, delta: number) => void
+  scenario: ScenarioConfig | null;
+  hostGroupCounts: Record<string, number>;
+  adjustHostGroup: (groupId: string, delta: number) => void;
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
-const ScenarioContext = createContext<ScenarioContextValue | null>(null)
+const ScenarioContext = createContext<ScenarioContextValue | null>(null);
+
+// ── Provider (new API: accepts LoadedScenario directly) ───────────────────────
 
 export interface ScenarioProviderProps {
-  scenarioId: string
-  children:   React.ReactNode
+  scenario: LoadedScenario;
+  children: React.ReactNode;
 }
 
-export function ScenarioProvider({ scenarioId, children }: ScenarioProviderProps) {
-  const [scenario, setScenario] = useState<ScenarioConfig | null>(null)
-  const [hostGroupCounts, setHostGroupCounts] = useState<Record<string, number>>({})
-
-  useEffect(() => {
-    let cancelled = false
-    fetch(`/api/scenarios/${scenarioId}`)
-      .then(r => r.json())
-      .then((raw: Record<string, unknown>) => {
-        if (!cancelled) {
-          const normalised = normalise(raw)
-          setScenario(normalised)
-          // Initialise instance counts from scenario data
-          setHostGroupCounts(
-            Object.fromEntries(normalised.hostGroups.map(g => [g.id, g.instanceCount]))
-          )
-        }
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [scenarioId])
+export function ScenarioProvider({
+  scenario: loadedScenario,
+  children,
+}: ScenarioProviderProps) {
+  const scenario = toScenarioConfig(loadedScenario);
+  const [hostGroupCounts, setHostGroupCounts] = useState<
+    Record<string, number>
+  >(
+    Object.fromEntries(
+      loadedScenario.hostGroups.map((g) => [g.id, g.instanceCount]),
+    ),
+  );
 
   function adjustHostGroup(groupId: string, delta: number) {
-    setHostGroupCounts(prev => ({
+    setHostGroupCounts((prev) => ({
       ...prev,
       [groupId]: Math.max(0, (prev[groupId] ?? 0) + delta),
-    }))
+    }));
   }
 
   return (
-    <ScenarioContext.Provider value={{ scenario, hostGroupCounts, adjustHostGroup }}>
+    <ScenarioContext.Provider
+      value={{ scenario, hostGroupCounts, adjustHostGroup }}
+    >
       {children}
     </ScenarioContext.Provider>
-  )
+  );
 }
 
-// ── Normalise raw server response → ScenarioConfig ────────────────────────────
-// The server returns LoadedScenario (camelCase but with nested wiki.pages,
-// no featureFlags top-level, no hasFeatureFlags in engine). Map to the flat
-// ScenarioConfig shape the client expects.
+// ── Transform LoadedScenario → ScenarioConfig ─────────────────────────────────
 
-function normalise(raw: Record<string, unknown>): ScenarioConfig {
-  const wiki              = (raw.wiki as { pages?: Array<{ title: string; content: string }> } | undefined)
-  const engine            = (raw.engine as { defaultTab?: string; tickIntervalSeconds?: number } | undefined)
-  const cicd              = (raw.cicd as { pipelines?: Array<{ service: string }> } | undefined)
-  const rawFeatureFlags   = (raw.featureFlags as Array<Record<string, unknown>> | undefined) ?? []
-  const rawHostGroups     = (raw.hostGroups    as Array<Record<string, unknown>> | undefined) ?? []
-  const rawRemediations   = (raw.remediationActions as Array<Record<string, unknown>> | undefined) ?? []
+function toScenarioConfig(s: LoadedScenario): ScenarioConfig {
+  // Build metricsMeta from opsDashboard
+  const metricsMeta: Record<string, Record<string, MetricMeta>> = {};
 
-  const featureFlags: FeatureFlag[] = rawFeatureFlags.map(f => ({
-    id:          f['id'] as string,
-    label:       f['label'] as string,
-    defaultOn:   (f['defaultOn'] ?? false) as boolean,
-    description: f['description'] as string | undefined,
-  }))
-
-  const hostGroups: HostGroup[] = rawHostGroups.map(h => ({
-    id:            h['id'] as string,
-    label:         h['label'] as string,
-    service:       h['service'] as string,
-    instanceCount: h['instanceCount'] as number,
-    description:   h['description'] as string | undefined,
-  }))
-
-  const remediationActions: RemediationAction[] = rawRemediations.map(r => ({
-    id:             r['id'] as string,
-    type:           r['type'] as RemediationAction['type'],
-    service:        r['service'] as string,
-    isCorrectFix:   r['isCorrectFix'] as boolean,
-    sideEffect:     r['sideEffect'] as string | undefined,
-    targetVersion:  r['targetVersion'] as string | undefined,
-    flagId:         r['flagId'] as string | undefined,
-    flagEnabled:    r['flagEnabled'] as boolean | undefined,
-    label:          r['label'] as string | undefined,
-  }))
-
-  // Extract metric threshold/label metadata from opsDashboard
-  type RawMetric = { archetype: string; label?: string; unit?: string; warningThreshold?: number; criticalThreshold?: number }
-  type RawService = { name: string; metrics?: RawMetric[]; overrides?: RawMetric[] }
-  type RawOpsDashboard = { focalService?: RawService; correlatedServices?: RawService[] }
-  const ops = (raw.opsDashboard as RawOpsDashboard | undefined)
-  const metricsMeta: Record<string, Record<string, MetricMeta>> = {}
-
-  function addMetrics(svc: RawService) {
-    const metrics = [...(svc.metrics ?? []), ...(svc.overrides ?? [])]
-    if (metrics.length === 0) return
-    metricsMeta[svc.name] = metricsMeta[svc.name] ?? {}
+  function addMetrics(
+    serviceName: string,
+    metrics: import("../scenario/types").MetricConfig[],
+  ) {
+    if (metrics.length === 0) return;
+    metricsMeta[serviceName] = metricsMeta[serviceName] ?? {};
     for (const m of metrics) {
-      metricsMeta[svc.name][m.archetype] = {
-        label:             m.label ?? m.archetype,
-        unit:              m.unit  ?? '',
+      metricsMeta[serviceName][m.archetype] = {
+        label: m.label ?? m.archetype,
+        unit: m.unit ?? "",
         criticalThreshold: m.criticalThreshold,
-      }
+      };
     }
   }
 
-  if (ops?.focalService)       addMetrics(ops.focalService)
-  for (const cs of ops?.correlatedServices ?? []) addMetrics(cs)
+  addMetrics(
+    s.opsDashboard.focalService.name,
+    s.opsDashboard.focalService.metrics,
+  );
+  for (const cs of s.opsDashboard.correlatedServices) {
+    addMetrics(cs.name, cs.overrides ?? []);
+  }
 
   return {
-    id:          raw.id as string,
-    title:       raw.title as string,
-    description: raw.description as string,
-    serviceType: raw.serviceType as string,
-    difficulty:  raw.difficulty as string,
-    tags:        (raw.tags as string[]) ?? [],
-    topology:    raw.topology as ScenarioConfig['topology'],
-    personas:           (raw.personas as PersonaConfig[]) ?? [],
-    wikiPages:          wiki?.pages ?? [],
-    featureFlags,
-    hostGroups,
-    remediationActions,
+    id: s.id,
+    title: s.title,
+    description: s.description,
+    difficulty: s.difficulty,
+    tags: s.tags,
+    topology: {
+      focalService: {
+        name: s.topology.focalService.name,
+        components: s.topology.focalService.components,
+      },
+      upstream: s.topology.upstream.map((n) => n.name),
+      downstream: s.topology.downstream.map((n) => n.name),
+    },
+    personas: s.personas,
+    wikiPages: s.wiki.pages,
+    featureFlags: s.featureFlags,
+    hostGroups: s.hostGroups,
+    remediationActions: s.remediationActions,
     metricsMeta,
     cicd: {
-      pipelines: (cicd?.pipelines ?? []).map(p => ({ service: p.service, steps: [] })),
+      pipelines: s.cicd.pipelines.map((p) => ({
+        service: p.service,
+        steps: [],
+      })),
     },
-    evaluation:  raw.evaluation as ScenarioConfig['evaluation'],
+    evaluation: {
+      rootCause: s.evaluation.rootCause,
+      relevantActions: s.evaluation.relevantActions,
+      redHerrings: s.evaluation.redHerrings,
+      debriefContext: s.evaluation.debriefContext,
+    },
     engine: {
-      defaultTab:              (engine?.defaultTab ?? 'email') as import('./SessionContext').TabId,
-      timelineDurationSeconds: ((raw.timeline as { durationMinutes?: number } | undefined)?.durationMinutes ?? 10) * 60,
-      hasFeatureFlags: featureFlags.length > 0,
-      hasHostGroups:   hostGroups.length > 0,
+      defaultTab: s.engine.defaultTab as TabId,
+      timelineDurationSeconds: s.timeline.durationMinutes * 60,
+      hasFeatureFlags: s.featureFlags.length > 0,
+      hasHostGroups: s.hostGroups.length > 0,
     },
-  }
+  };
 }
 
 export function useScenario(): ScenarioContextValue {
-  const ctx = useContext(ScenarioContext)
+  const ctx = useContext(ScenarioContext);
   if (ctx === null) {
-    throw new Error('useScenario must be used inside <ScenarioProvider>')
+    throw new Error("useScenario must be used inside <ScenarioProvider>");
   }
-  return ctx
+  return ctx;
 }
