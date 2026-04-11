@@ -343,8 +343,8 @@ export const IncidentConfigSchema = z
       "sudden_drop",
     ]),
     onset_second: z.number(),
-    magnitude: z.number().positive(),
-    ramp_duration_seconds: z.number().positive().optional(),
+    magnitude: z.number().min(0),
+    ramp_duration_seconds: z.number().min(0).optional(),
     end_second: z.number().optional(),
   })
   .superRefine((val, ctx) => {
@@ -359,6 +359,14 @@ export const IncidentConfigSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `sudden_drop magnitude must be < 1.0 (got ${val.magnitude}); it is the fraction the metric drops TO`,
+        path: ["magnitude"],
+      });
+    }
+    // For all overlays except sudden_drop, magnitude must be > 0
+    if (val.onset_overlay !== "sudden_drop" && val.magnitude <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `magnitude must be > 0 for ${val.onset_overlay} (got ${val.magnitude})`,
         path: ["magnitude"],
       });
     }

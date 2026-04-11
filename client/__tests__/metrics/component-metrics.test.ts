@@ -57,7 +57,7 @@ describe("COMPONENT_METRICS.load_balancer", () => {
   };
   const specs = COMPONENT_METRICS["load_balancer"];
 
-  it("has request_rate, error_rate, fault_rate, p50, p95, p99 archetypes", () => {
+  it("has request_rate, error_rate, fault_rate, p50, p95, p99, cert_expiry archetypes", () => {
     const archetypes = specs.map((s) => s.archetype);
     expect(archetypes).toContain("request_rate");
     expect(archetypes).toContain("error_rate");
@@ -65,7 +65,8 @@ describe("COMPONENT_METRICS.load_balancer", () => {
     expect(archetypes).toContain("p50_latency_ms");
     expect(archetypes).toContain("p95_latency_ms");
     expect(archetypes).toContain("p99_latency_ms");
-    expect(archetypes).toHaveLength(6);
+    expect(archetypes).toContain("cert_expiry");
+    expect(archetypes).toHaveLength(7);
   });
 
   it("request_rate deriveBaseline returns typicalRps", () => {

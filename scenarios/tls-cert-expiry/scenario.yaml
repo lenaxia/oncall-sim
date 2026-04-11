@@ -1,0 +1,444 @@
+id: tls-cert-expiry
+title: "API Gateway: TLS Certificate Expired — Full Outage"
+description: >
+  The public API is completely down. All HTTPS requests are failing with
+  certificate errors. Customers are seeing SSL_ERROR_BAD_CERT_DOMAIN.
+  The cert_expiry alarm was silenced six months ago.
+difficulty: easy
+tags: [tls, certificate, api-gateway, outage, alarm-hygiene]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 15
+  pre_incident_seconds: 86400
+  resolution_seconds: 30
+
+topology:
+  focal_service:
+    name: api-platform
+    description: "Public API platform — API Gateway + ECS backend services."
+    owner: leo-santos
+    typical_rps: 300
+    traffic_profile: always_on_api
+    health: degraded
+    components:
+      - id: apigw
+        type: api_gateway
+        label: "API Gateway (public)"
+        inputs: []
+      - id: ecs
+        type: ecs_cluster
+        label: "api-platform ECS"
+        instance_count: 6
+        utilization: 0.45
+        inputs: [apigw]
+      - id: primary_db
+        type: rds
+        label: "api-db (RDS)"
+        instance_count: 1
+        max_connections: 200
+        utilization: 0.35
+        connection_utilization: 0.20
+        inputs: [ecs]
+    incidents:
+      - id: cert_expired
+        affected_component: apigw
+        description: "TLS certificate for api.acme.io expired at midnight. API Gateway rejects all HTTPS connections. fault_rate hits 100%."
+        onset_overlay: spike_and_sustain
+        onset_second: 0
+        magnitude: 25.0
+        ramp_duration_seconds: 0
+      - id: cert_countdown
+        affected_component: apigw
+        description: "cert_expiry metric reaches 0 at onset — certificate has expired."
+        onset_overlay: sudden_drop
+        onset_second: 0
+        magnitude: 0.0
+  upstream: []
+  downstream:
+    - name: partner-integrations
+      description: "Third-party partners consuming the API. All impacted."
+      correlation: upstream_impact
+    - name: mobile-app-backend
+      description: "Mobile app backend consuming API platform. Customers seeing errors."
+      correlation: upstream_impact
+
+engine:
+  tick_interval_seconds: 15
+  default_tab: email
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 2
+
+personas:
+  - id: leo-santos
+    display_name: "Leo Santos"
+    job_title: "Platform Engineer"
+    team: "API Platform"
+    avatar_color: "#14B8A6"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Leo Santos, Platform Engineer. You own the API Gateway and TLS cert
+      management for api.acme.io.
+
+      You know the cert_expiry alarm was silenced 6 months ago because it was
+      firing false positives (someone had misconfigured it to fire at 365 days
+      remaining instead of 30 days). Nobody fixed the alarm config — they just
+      silenced it. The cert expired at midnight.
+
+      You already have the replacement cert ready in AWS Certificate Manager
+      (arn:aws:acm:us-east-1:123456789:certificate/abc-123). The fix is an
+      emergency deploy to update the API Gateway custom domain to use the new cert.
+
+      Share alarm details only if the trainee asks about the cert_expiry alarm.
+      Share the replacement cert ARN only if asked about the fix.
+
+      Keep responses concise (1-2 sentences). Apologetic but professional.
+
+  - id: compliance-bot
+    display_name: "Cert Monitor Bot"
+    job_title: "Automated"
+    team: "Security"
+    avatar_color: "#6B7280"
+    initiates_contact: true
+    cooldown_seconds: 600
+    silent_until_contacted: false
+    system_prompt: |
+      You are an automated certificate monitoring bot. You send exactly one message
+      at t=0 and then never respond again (you're a bot). Your message:
+      "CERT ALERT: api.acme.io TLS certificate EXPIRED at 2026-05-01T00:00:00Z.
+      Issuer: DigiCert. SANs: api.acme.io, *.api.acme.io. Replace immediately."
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-cert-expired
+    from: leo-santos
+    to: trainee
+    subject: "[SEV1] api.acme.io TLS cert EXPIRED — full API outage"
+    body: |
+      Hey,
+
+      api.acme.io TLS certificate expired at midnight. Fault rate is 100% —
+      all HTTPS connections are being rejected. Customers are seeing
+      SSL_ERROR_BAD_CERT_DOMAIN.
+
+      I have a replacement cert in ACM already. Need an emergency deploy
+      to update the API Gateway domain config. Opened API-1001.
+
+      This is going to need VP comms to partners — they're all going to be
+      impacted.
+
+      — Leo
+
+  - id: email-002
+    at_second: 60
+    thread_id: thread-cert-expired
+    from: leo-santos
+    to: trainee
+    subject: "[SEV1] api.acme.io TLS cert EXPIRED — full API outage"
+    body: |
+      Quick note: the cert_expiry alarm was silenced 6 months ago after some
+      false positives. Should have been fixed. That's why no warning.
+
+      Replacement cert is ready. Just need the deploy approved and executed.
+
+      — Leo
+
+  - id: email-003
+    at_second: 0
+    thread_id: thread-cert-monitor
+    from: compliance-bot
+    to: trainee
+    subject: "[CERT ALERT] api.acme.io certificate EXPIRED"
+    body: |
+      CERT ALERT: api.acme.io TLS certificate EXPIRED at 2026-05-01T00:00:00Z.
+      Issuer: DigiCert
+      SANs: api.acme.io, *.api.acme.io
+      ACM Replacement ARN: arn:aws:acm:us-east-1:123456789:certificate/abc-123
+
+      Replace immediately.
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: api-platform
+      name: "#api-platform"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: leo-santos
+      text: "api.acme.io cert EXPIRED. Full API outage — fault rate 100%. Emergency deploy needed."
+    - id: chat-002
+      at_second: 0
+      channel: "#api-platform"
+      persona: leo-santos
+      text: "Cert expired at midnight. Replacement is in ACM. Need emergency deploy ASAP."
+    - id: chat-003
+      at_second: 300
+      channel: "#incidents"
+      persona: leo-santos
+      text: "Post-incident note: cert_expiry alarm was silenced 6 months ago and never fixed. We'll add that to the retro."
+
+ticketing:
+  - id: API-1001
+    title: "api.acme.io TLS certificate expired — full API outage"
+    severity: SEV1
+    status: open
+    description: |
+      ## Summary
+
+      api.acme.io TLS certificate expired at 2026-05-01T00:00:00Z. All HTTPS
+      connections to the API are being rejected. 100% fault rate.
+
+      ## Impact
+
+      - All API consumers impacted: mobile app, partner integrations
+      - Estimated customer impact: 100% of API traffic
+      - Revenue impact: active
+
+      ## Root Cause
+
+      TLS certificate for api.acme.io issued by DigiCert expired at midnight.
+      cert_expiry alarm was silenced 6 months ago — no advance warning.
+
+      ## Fix
+
+      Replacement certificate available in AWS Certificate Manager:
+      `arn:aws:acm:us-east-1:123456789:certificate/abc-123`
+
+      Emergency deploy to update API Gateway custom domain binding.
+
+      ## Follow-up
+
+      1. Fix cert_expiry alarm (lower threshold, don't silence)
+      2. Implement cert auto-renewal (AWS Certificate Manager ACM + auto-renew)
+      3. Add cert expiry to 90-day SRE review checklist
+
+    created_by: leo-santos
+    assignee: trainee
+    at_second: -60
+
+alarms:
+  - id: alarm-fault-rate
+    service: api-platform
+    metric_id: fault_rate
+    condition: "fault_rate > 50%"
+    severity: SEV1
+    threshold: 50
+    auto_fire: true
+    auto_page: true
+    page_message: "api-platform fault rate exceeded 50%. Possible outage — investigate immediately."
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: api-platform
+    message: "TLS handshake failed: certificate for api.acme.io expired at 2026-05-01T00:00:00Z (CERTIFICATE_EXPIRED)"
+  - id: log-002
+    at_second: 0
+    level: ERROR
+    service: api-platform
+    message: "TLS handshake failed: certificate for api.acme.io expired at 2026-05-01T00:00:00Z (CERTIFICATE_EXPIRED)"
+  - id: log-003
+    at_second: 5
+    level: ERROR
+    service: api-platform
+    message: "API Gateway: custom domain api.acme.io SSL error — all requests rejected (HANDSHAKE_FAILURE)"
+  - id: log-004
+    at_second: 10
+    level: INFO
+    service: api-platform
+    message: "Certificate details: subject=api.acme.io issuer=DigiCert expiry=2026-05-01T00:00:00Z status=EXPIRED"
+  - id: log-005
+    at_second: 60
+    level: WARN
+    service: api-platform
+    message: "cert_expiry alarm: SILENCED (silenced_by=ops-team silenced_at=2025-11-01 reason='false_positives')"
+
+log_patterns:
+  - id: tls-error
+    level: ERROR
+    service: api-platform
+    message: "TLS handshake failed: certificate expired (CERTIFICATE_EXPIRED)"
+    interval_seconds: 5
+    from_second: 5
+    to_second: 900
+    jitter_seconds: 1
+
+background_logs:
+  - profile: nodejs_api
+    service: api-platform
+    from_second: -86400
+    to_second: 0
+    density: low
+
+wiki:
+  pages:
+    - title: "API Platform Runbook"
+      content: |
+        # API Platform Runbook
+
+        ## TLS Certificate Renewal
+
+        api.acme.io certificate managed in AWS Certificate Manager (ACM).
+
+        **Emergency renewal procedure:**
+        1. Verify replacement cert in ACM: `aws acm list-certificates --query 'CertificateSummaryList[?DomainName==`api.acme.io`]'`
+        2. Emergency deploy to update API Gateway custom domain:
+           - `aws apigatewayv2 update-domain-name --domain-name api.acme.io --domain-name-configurations CertificateArn=<new_arn>`
+        3. Verify: `curl -I https://api.acme.io/health`
+        4. Confirm fault rate returns to 0%
+
+        **Certificate monitoring:**
+        - cert_expiry alarm should fire at ≤ 30 days remaining
+        - Auto-renewal is NOT enabled — manual renewal required 30 days before expiry
+        - Add to quarterly SRE review: check all cert expiry dates
+
+    - title: "Alarm Hygiene Policy"
+      content: |
+        # Alarm Hygiene Policy
+
+        ## Silencing Alarms
+
+        Alarms must NEVER be silenced permanently without a tracked follow-up item.
+
+        **Correct process for noisy alarms:**
+        1. Silence alarm temporarily (max 24 hours)
+        2. Create ticket to fix the alarm configuration
+        3. Resolve the ticket within 1 sprint
+
+        **Known silenced alarms that need fixing:**
+        - cert_expiry on api.acme.io — silenced 2025-11-01 — ticket API-887 (stale)
+
+        Silencing an alarm to avoid noise without fixing the root cause is a
+        policy violation and will be reviewed in the next SRE quarterly.
+
+cicd:
+  pipelines:
+    - id: pipeline-api
+      name: "api-platform"
+      service: api-platform
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v5.1.2
+          previous_version: v5.1.1
+          status: succeeded
+          deployed_at_sec: -604800
+          commit_message: "fix: improve rate limiting precision"
+          author: leo-santos
+          blockers: []
+          alarm_watches: []
+          promotion_events:
+            - version: v5.1.2
+              sim_time: -604800
+              status: succeeded
+              note: "AutoPromote: all tests passed"
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v5.1.2
+          previous_version: v5.1.1
+          status: succeeded
+          deployed_at_sec: -597600
+          commit_message: "fix: improve rate limiting precision"
+          author: leo-santos
+          blockers: []
+          alarm_watches: [alarm-fault-rate]
+          promotion_events:
+            - version: v5.1.2
+              sim_time: -597600
+              status: succeeded
+              note: "AutoPromote: canary healthy"
+  deployments:
+    - service: api-platform
+      version: v5.1.2
+      deployed_at_sec: -597600
+      status: active
+      commit_message: "fix: improve rate limiting precision"
+      author: leo-santos
+    - service: api-platform
+      version: v5.1.1
+      deployed_at_sec: -1209600
+      status: previous
+      commit_message: "feat: add GraphQL endpoint"
+      author: leo-santos
+
+remediation_actions:
+  - id: emergency_deploy_cert
+    type: emergency_deploy
+    service: api-platform
+    is_correct_fix: true
+    target_version: v5.1.2-cert
+    label: "Update API Gateway TLS cert (ACM arn:...abc-123)"
+    side_effect: "API Gateway updated to use replacement cert. TLS handshakes succeed. Fault rate drops to 0% within 30 seconds."
+
+  - id: rollback_api
+    type: rollback
+    service: api-platform
+    is_correct_fix: false
+    target_version: v5.1.1
+    side_effect: "Rolling back doesn't help — the certificate is managed separately from the service code. Fault rate unchanged."
+
+  - id: restart_api
+    type: restart_service
+    service: api-platform
+    is_correct_fix: false
+    side_effect: "Restarting ECS tasks doesn't affect the API Gateway TLS certificate. Fault rate unchanged."
+
+evaluation:
+  root_cause: >
+    The TLS certificate for api.acme.io expired at midnight. The cert_expiry alarm
+    was silenced 6 months ago after false positives and never reconfigured — no
+    advance warning was generated. Fix: emergency deploy to update API Gateway
+    custom domain binding to the replacement certificate already available in ACM.
+
+  relevant_actions:
+    - action: search_logs
+      why: "Logs immediately show CERTIFICATE_EXPIRED TLS errors — confirms the root cause without investigation."
+    - action: read_wiki_page
+      why: "API Platform Runbook documents the exact emergency cert renewal procedure including the aws CLI command."
+    - action: emergency_deploy
+      why: "Emergency deploy updates API Gateway to use the replacement cert from ACM."
+      service: api-platform
+      remediation_action_id: emergency_deploy_cert
+    - action: monitor_recovery
+      why: "Fault rate should drop to 0% within 30 seconds of the cert update."
+    - action: update_ticket
+      why: "Communicating to partners and updating the ticket is expected for a SEV1 full outage."
+
+  red_herrings:
+    - action: trigger_rollback
+      why: "Certificate is managed independently of service code. Rolling back changes nothing."
+    - action: restart_service
+      why: "Restarting ECS tasks doesn't affect API Gateway TLS configuration. Fault rate stays at 100%."
+    - action: suppress_alarm
+      why: "Silencing the fault_rate alarm (already an anti-pattern that caused this incident) makes the situation worse."
+
+  debrief_context: |
+    This is an easy scenario by design — the root cause is obvious from logs and
+    the fix is a single action. The learning is about:
+
+    1. **Alarm hygiene**: the cert_expiry alarm was silenced instead of fixed, which
+       is why no advance warning came. This is a policy violation documented in the wiki.
+
+    2. **Certificate management**: knowing that certs are separate from service code
+       (rolling back code won't help) and that ACM provides the replacement mechanism.
+
+    3. **Speed**: this is a full outage (100% fault rate). There's nothing to investigate —
+       the logs are unambiguous. Act immediately, communicate, then document.
+
+    Common mistakes: (1) rolling back the service code (wrong layer), (2) spending
+    time investigating the ECS or DB (both healthy), (3) not reading the wiki
+    which has the exact CLI command for the fix.

@@ -113,6 +113,17 @@ export const COMPONENT_METRICS: {
       ceiling: () => null,
       resolvedValue: () => 50,
     },
+    {
+      // cert_expiry: countdown from baseline (days remaining) to 0 at expiry.
+      // Incident uses sudden_drop with magnitude near 0 to model the cert expiring.
+      archetype: "cert_expiry",
+      deriveBaseline: () => 90, // 90 days remaining at scenario start
+      incidentPeakValue: (b, m) => b * m,
+      lagSeconds: 0,
+      overlayForIncident: () => "sudden_drop",
+      ceiling: () => null,
+      resolvedValue: () => 90,
+    },
   ] satisfies ComponentMetricSpec<LoadBalancerComponent>[],
 
   ecs_cluster: [
@@ -336,6 +347,18 @@ export const COMPONENT_METRICS: {
       ceiling: () => 100,
       resolvedValue: (c) => c.utilization * 100,
     },
+    {
+      // cache_hit_rate: percentage of requests served from cache.
+      // Healthy baseline is high (82%). A stampede or cold cache causes
+      // a sudden_drop to near 0; recovers as TTLs fill back in.
+      archetype: "cache_hit_rate",
+      deriveBaseline: () => 82,
+      incidentPeakValue: (b, m) => b * m,
+      lagSeconds: 0,
+      overlayForIncident: () => "sudden_drop",
+      ceiling: () => null,
+      resolvedValue: () => 82,
+    },
   ] satisfies ComponentMetricSpec<ElasticacheComponent>[],
 
   api_gateway: [
@@ -392,6 +415,15 @@ export const COMPONENT_METRICS: {
       overlayForIncident: () => "spike_and_sustain",
       ceiling: () => null,
       resolvedValue: () => 200,
+    },
+    {
+      archetype: "cert_expiry",
+      deriveBaseline: () => 90,
+      incidentPeakValue: (b, m) => b * m,
+      lagSeconds: 0,
+      overlayForIncident: () => "sudden_drop",
+      ceiling: () => null,
+      resolvedValue: () => 90,
     },
   ] satisfies ComponentMetricSpec<ApiGatewayComponent>[],
 

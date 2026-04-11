@@ -352,6 +352,12 @@ function deriveCriticalThreshold(
   baseline: number,
   ceiling: number | null,
 ): number | null {
+  // cache_hit_rate is an inverted metric (low = bad) — auto-alarm uses >=
+  // threshold which would only fire when the cache is healthy (high hit rate).
+  // Return null to suppress auto-alarm; scenario authors should add explicit
+  // alarms on correlated metrics (latency, error rate) instead.
+  if (archetype === "cache_hit_rate") return null;
+
   // Capacity-based: alarm at 85% of ceiling
   if (
     archetype === "write_capacity_used" ||

@@ -313,6 +313,17 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     minValue: 0,
     maxValue: Infinity,
   },
+  cache_hit_rate: {
+    label: "Cache Hit Rate",
+    unit: "percent",
+    noiseType: "gaussian",
+    inheritsRhythm: false,
+    defaultNoiseLevel: "low",
+    scaleField: null,
+    deriveBaseline: null,
+    minValue: 0,
+    maxValue: 100,
+  },
   custom: {
     label: "Custom Metric",
     unit: "",

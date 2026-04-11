@@ -97,6 +97,7 @@ describe("getArchetypeDefaults", () => {
       "cpu_utilization",
       "disk_usage",
       "conversion_rate",
+      "cache_hit_rate",
     ].forEach((a) => {
       expect(getArchetypeDefaults(a).maxValue).toBe(100);
     });
@@ -146,6 +147,7 @@ describe("getValidArchetypes", () => {
       "conversion_rate",
       "active_users",
       "cert_expiry",
+      "cache_hit_rate",
       "custom",
     ];
     required.forEach((a) => expect(valid.has(a)).toBe(true));

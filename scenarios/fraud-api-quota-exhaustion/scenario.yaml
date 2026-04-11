@@ -1,0 +1,463 @@
+id: fraud-api-quota-exhaustion
+title: "Checkout Service: Fraud API Rate Limit — External Dependency"
+description: >
+  Checkout is failing for a subset of customers. The fraud scoring API is
+  returning errors. You can't fix the vendor's infrastructure — your job is
+  to diagnose, communicate, and implement the right mitigation.
+difficulty: medium
+tags: [third-party, rate-limit, circuit-breaker, checkout, fault-rate]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 20
+  pre_incident_seconds: 21600
+  resolution_seconds: 60
+
+topology:
+  focal_service:
+    name: checkout-service
+    description: "Checkout and payment orchestration service. Calls FraudShield API synchronously on every checkout."
+    owner: nina-okafor
+    typical_rps: 180
+    traffic_profile: business_hours_web
+    health: degraded
+    components:
+      - id: alb
+        type: load_balancer
+        label: "ALB"
+        inputs: []
+      - id: ecs
+        type: ecs_cluster
+        label: "checkout-service ECS"
+        instance_count: 4
+        utilization: 0.50
+        inputs: [alb]
+      - id: checkout_db
+        type: rds
+        label: "checkout-db (RDS)"
+        instance_count: 1
+        max_connections: 100
+        utilization: 0.30
+        connection_utilization: 0.25
+        inputs: [ecs]
+    incidents:
+      - id: fraud_api_outage
+        affected_component: ecs
+        description: "FraudShield API returning 429 Too Many Requests — checkout-service has exhausted its monthly API quota 3 days early due to a billing tier misconfiguration. All fraud scoring calls fail, causing checkout failures. fault_rate spikes to ~40%."
+        onset_overlay: spike_and_sustain
+        onset_second: 0
+        magnitude: 20.0
+        ramp_duration_seconds: 0
+  upstream:
+    - name: storefront
+      description: "Customer-facing web/mobile checkout flow."
+  downstream:
+    - name: fraud-shield-api
+      description: "FraudShield third-party fraud scoring API. Currently returning 429."
+      correlation: independent
+    - name: payment-processor
+      description: "Stripe payment processing. Healthy — only reached after fraud check passes."
+      correlation: exonerated
+
+engine:
+  tick_interval_seconds: 15
+  default_tab: email
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 3
+
+personas:
+  - id: nina-okafor
+    display_name: "Nina Okafor"
+    job_title: "Senior Software Engineer"
+    team: "Checkout"
+    avatar_color: "#EC4899"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Nina Okafor, Senior SWE on the Checkout team. You own checkout-service.
+      You've identified that the FraudShield API is returning 429s — quota exhausted.
+
+      You know checkout-service has a circuit breaker feature flag (FRAUD_CIRCUIT_BREAKER)
+      that enables fail-open mode: if fraud scoring fails, the request passes through
+      without scoring (accept the fraud risk temporarily). This is the intended mitigation
+      for fraud API outages.
+
+      You're unsure if enabling the circuit breaker is the right call — it accepts
+      fraud risk. Share this trade-off if the trainee asks about options.
+
+      If asked about the vendor: "FraudShield support says the 429s are on their side —
+      a billing tier misconfiguration capped our API calls 3 days early. They're working
+      on it but ETA is unknown."
+
+      Keep responses concise (1-3 sentences). Professional tone.
+
+  - id: raj-patel
+    display_name: "Raj Patel"
+    job_title: "VP Engineering"
+    team: "Engineering"
+    avatar_color: "#6366F1"
+    initiates_contact: false
+    cooldown_seconds: 300
+    silent_until_contacted: true
+    system_prompt: |
+      You are Raj Patel, VP Engineering. You have authority to approve enabling
+      the fraud circuit breaker (fail-open mode), which accepts fraud risk.
+      If the trainee pages you and explains the situation, you approve it.
+
+      "Thanks for the heads up. Given FraudShield ETA is unknown and checkout is
+      down, enable the circuit breaker. Accept the fraud risk for now — the exposure
+      is manageable for a few hours. Page me if it goes beyond 4 hours or if fraud
+      volume looks abnormal."
+
+      Be direct. One or two sentences max.
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-checkout-fraud
+    from: nina-okafor
+    to: trainee
+    subject: "[ALERT] checkout-service: 40% fault rate — FraudShield API returning 429"
+    body: |
+      Hey,
+
+      checkout-service fault rate just spiked to ~40%. Looking at the logs —
+      every fraud scoring call to FraudShield is returning 429 Too Many Requests.
+
+      Opened CHK-542. This is impacting checkout for all customers (fraud check
+      is in the critical path).
+
+      Need to decide whether to enable the circuit breaker (fail-open) while we
+      wait on FraudShield. That's a business call — probably needs VP sign-off.
+
+      — Nina
+
+  - id: email-002
+    at_second: 180
+    thread_id: thread-checkout-fraud
+    from: nina-okafor
+    to: trainee
+    subject: "[ALERT] checkout-service: 40% fault rate — FraudShield API returning 429"
+    body: |
+      Update: confirmed with FraudShield support — billing tier misconfiguration
+      capped our quota early. Their ETA for fix is "investigating."
+
+      DB and payment processor are healthy. This is 100% FraudShield.
+
+      Circuit breaker is ready to enable — FRAUD_CIRCUIT_BREAKER feature flag.
+      Just needs a go-ahead from someone with authority.
+
+      — Nina
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: checkout-eng
+      name: "#checkout-eng"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: nina-okafor
+      text: "checkout-service fault rate 40% — FraudShield API quota exhausted. All fraud calls returning 429."
+    - id: chat-002
+      at_second: 60
+      channel: "#checkout-eng"
+      persona: nina-okafor
+      text: "Confirmed: not a code issue, not a DB issue. FraudShield billing tier misconfigured their side."
+    - id: chat-003
+      at_second: 300
+      channel: "#incidents"
+      persona: nina-okafor
+      text: "FraudShield ETA unknown. Circuit breaker (FRAUD_CIRCUIT_BREAKER flag) would restore checkout. Needs approval to enable."
+
+ticketing:
+  - id: CHK-542
+    title: "checkout-service: FraudShield API quota exhausted — checkout failing"
+    severity: SEV1
+    status: open
+    description: |
+      ## Summary
+
+      checkout-service fault rate ~40%. FraudShield fraud scoring API returning 429
+      Too Many Requests — monthly API quota exhausted 3 days early due to vendor
+      billing tier misconfiguration.
+
+      ## Symptoms
+
+      - Fault rate: ~40% (all FraudShield calls failing)
+      - Error rate: 0% (no 4xx client errors — failures are 5xx from fraud API)
+      - DB: healthy
+      - Payment processor: healthy (never reached — fraud check in critical path)
+      - FraudShield status page: degraded (quota management issue)
+
+      ## Impact
+
+      All checkout attempts that reach fraud scoring fail. Approximately 40% of
+      checkout requests are affected (some succeed due to cache hits on previously
+      scored sessions).
+
+      ## Options
+
+      1. **Wait for FraudShield fix** — ETA unknown, checkout remains degraded
+      2. **Enable circuit breaker** (FRAUD_CIRCUIT_BREAKER flag) — fail-open on fraud
+         scoring, checkout resumes but without fraud protection. Needs VP approval.
+      3. **Upgrade API tier** — contact FraudShield billing to increase quota. ETA hours.
+
+    created_by: nina-okafor
+    assignee: trainee
+    at_second: -60
+
+alarms:
+  - id: alarm-fault-rate
+    service: checkout-service
+    metric_id: fault_rate
+    condition: "fault_rate > 5%"
+    severity: SEV1
+    threshold: 5
+    auto_fire: true
+    auto_page: true
+    page_message: "checkout-service fault rate exceeded 5%. Checkout degraded — investigate immediately."
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: checkout-service
+    message: "FraudShield API error: HTTP 429 Too Many Requests — X-RateLimit-Remaining: 0, X-RateLimit-Reset: 1746662400"
+  - id: log-002
+    at_second: 0
+    level: ERROR
+    service: checkout-service
+    message: "FraudShield API error: HTTP 429 Too Many Requests — X-RateLimit-Remaining: 0, X-RateLimit-Reset: 1746662400"
+  - id: log-003
+    at_second: 5
+    level: ERROR
+    service: checkout-service
+    message: "Checkout failed: fraud_check_error=QUOTA_EXCEEDED order_id=ord_9182 customer=cust_4421"
+  - id: log-004
+    at_second: 10
+    level: WARN
+    service: checkout-service
+    message: "FraudShield circuit breaker: CLOSED (fail-open disabled). Failing checkout on fraud API errors."
+  - id: log-005
+    at_second: 30
+    level: ERROR
+    service: checkout-service
+    message: "FraudShield consecutive failures: 847 — circuit breaker threshold not met (FRAUD_CIRCUIT_BREAKER=false)"
+  - id: log-006
+    at_second: 60
+    level: INFO
+    service: checkout-service
+    message: "FraudShield client: retry_count=3 timeout_ms=2000 base_url=https://api.fraudshield.io/v2"
+
+log_patterns:
+  - id: fraud-429
+    level: ERROR
+    service: checkout-service
+    message: "FraudShield API error: HTTP 429 Too Many Requests — X-RateLimit-Remaining: 0"
+    interval_seconds: 8
+    from_second: 8
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: checkout-fail
+    level: ERROR
+    service: checkout-service
+    message: "Checkout failed: fraud_check_error=QUOTA_EXCEEDED"
+    interval_seconds: 10
+    from_second: 5
+    to_second: 1200
+    jitter_seconds: 3
+
+background_logs:
+  - profile: nodejs_api
+    service: checkout-service
+    from_second: -300
+    to_second: 1200
+    density: medium
+
+wiki:
+  pages:
+    - title: "checkout-service Runbook"
+      content: |
+        # checkout-service Runbook
+
+        ## Architecture
+
+        checkout-service calls FraudShield API synchronously on every checkout.
+        The fraud check is in the critical path — failures cause checkout failures.
+
+        ## FraudShield API Outage Playbook
+
+        If FraudShield returns 429 (quota) or 5xx (outage):
+
+        1. **Confirm it's FraudShield**: check logs for HTTP 429/5xx from `api.fraudshield.io`
+        2. **Check FraudShield status page**: https://status.fraudshield.io
+        3. **Assess duration**: contact FraudShield support for ETA
+        4. **Decision tree**:
+           - ETA < 15 min: wait, monitor
+           - ETA unknown or > 15 min: escalate to VP Eng for circuit breaker approval
+
+        ## Circuit Breaker (FRAUD_CIRCUIT_BREAKER Feature Flag)
+
+        When enabled, checkout-service operates in **fail-open** mode:
+        - Fraud API failures are treated as "pass" (no fraud detected)
+        - Orders proceed to payment without fraud scoring
+        - **Fraud risk accepted** — requires VP Engineering approval
+
+        To enable:
+        1. Get VP Eng approval (page @raj-patel for SEV1)
+        2. Toggle FRAUD_CIRCUIT_BREAKER = true in feature flag console
+        3. Monitor fault_rate — should drop to ~0% within 30 seconds
+        4. Notify FraudShield support that you're operating in bypass mode
+
+    - title: "Vendor Incident Management"
+      content: |
+        # Vendor Incident Management
+
+        ## Key Contacts
+
+        - **FraudShield support**: support@fraudshield.io, +1-800-555-0100
+        - **FraudShield status**: https://status.fraudshield.io
+        - **Account ID**: FS-ACME-10042
+
+        ## Escalation for Vendor Outages
+
+        1. Confirm root cause is vendor (not your code)
+        2. Contact vendor support with incident details
+        3. Implement mitigation if available (circuit breaker, fallback)
+        4. Communicate impact to stakeholders
+        5. Post-incident: review vendor SLA, evaluate alternatives
+
+feature_flags:
+  - id: FRAUD_CIRCUIT_BREAKER
+    label: "Fraud API Circuit Breaker (Fail-Open)"
+    default_on: false
+    description: "When enabled, checkout proceeds without fraud scoring if FraudShield API is unavailable. Accept fraud risk — requires VP approval."
+
+cicd:
+  pipelines:
+    - id: pipeline-checkout
+      name: "checkout-service"
+      service: checkout-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v2.8.3
+          previous_version: v2.8.2
+          status: succeeded
+          deployed_at_sec: -259200
+          commit_message: "fix: improve cart abandonment recovery"
+          author: nina-okafor
+          blockers: []
+          alarm_watches: []
+          promotion_events:
+            - version: v2.8.3
+              sim_time: -259200
+              status: succeeded
+              note: "AutoPromote: all tests passed"
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v2.8.3
+          previous_version: v2.8.2
+          status: succeeded
+          deployed_at_sec: -252000
+          commit_message: "fix: improve cart abandonment recovery"
+          author: nina-okafor
+          blockers: []
+          alarm_watches: [alarm-fault-rate]
+          promotion_events:
+            - version: v2.8.3
+              sim_time: -252000
+              status: succeeded
+              note: "AutoPromote: canary healthy after 1 hour"
+  deployments:
+    - service: checkout-service
+      version: v2.8.3
+      deployed_at_sec: -252000
+      status: active
+      commit_message: "fix: improve cart abandonment recovery"
+      author: nina-okafor
+    - service: checkout-service
+      version: v2.8.2
+      deployed_at_sec: -864000
+      status: previous
+      commit_message: "feat: add Apple Pay support"
+      author: nina-okafor
+
+remediation_actions:
+  - id: enable_circuit_breaker
+    type: toggle_feature_flag
+    service: checkout-service
+    is_correct_fix: true
+    flag_id: FRAUD_CIRCUIT_BREAKER
+    flag_enabled: true
+    label: "Enable fraud circuit breaker (fail-open)"
+    side_effect: "Checkout resumes. Fraud risk accepted — orders proceed without scoring. Monitor for fraud volume."
+
+  - id: rollback_checkout
+    type: rollback
+    service: checkout-service
+    is_correct_fix: false
+    target_version: v2.8.2
+    side_effect: "Rollback has no effect — the issue is FraudShield's API quota, not checkout-service code. Fault rate unchanged."
+
+  - id: restart_checkout
+    type: restart_service
+    service: checkout-service
+    is_correct_fix: false
+    side_effect: "Restart has no effect — FraudShield API continues returning 429. Fault rate returns to 40% within seconds."
+
+evaluation:
+  root_cause: >
+    FraudShield third-party fraud scoring API exhausted checkout-service's monthly
+    API quota 3 days early due to a vendor billing tier misconfiguration. All fraud
+    scoring calls return 429. This is entirely vendor-side — no code change or
+    infrastructure action can fix it. The correct mitigation is to enable the
+    FRAUD_CIRCUIT_BREAKER feature flag (fail-open mode) after VP Engineering approval,
+    restoring checkout at the cost of temporarily bypassing fraud scoring.
+
+  relevant_actions:
+    - action: search_logs
+      why: "Logs immediately show HTTP 429 from api.fraudshield.io with X-RateLimit-Remaining: 0 — confirms vendor quota issue."
+    - action: read_wiki_page
+      why: "FraudShield Outage Playbook documents the circuit breaker option and VP approval requirement."
+    - action: direct_message_persona
+      why: "Paging Raj Patel (VP Eng) is required before enabling the circuit breaker — this is a business risk decision."
+    - action: toggle_feature_flag
+      why: "Enabling FRAUD_CIRCUIT_BREAKER after VP approval restores checkout."
+      service: checkout-service
+      remediation_action_id: enable_circuit_breaker
+    - action: monitor_recovery
+      why: "Fault rate should drop to ~0% within 30 seconds of enabling the circuit breaker."
+
+  red_herrings:
+    - action: trigger_rollback
+      why: "The last deploy was 3 days ago and unrelated. Rolling back has zero effect on FraudShield's API quota."
+    - action: restart_service
+      why: "Restarting the service doesn't change the vendor's API quota state — 429s continue immediately."
+    - action: scale_cluster
+      why: "More instances make more fraud API calls, potentially exhausting quota faster. Makes it worse."
+
+  debrief_context: |
+    This scenario tests recognising when the root cause is external and outside
+    your control. The key skills: reading logs to identify the vendor error (HTTP 429,
+    X-RateLimit-Remaining: 0), not wasting time on code rollbacks or restarts, and
+    knowing when to escalate for a business decision (enabling fail-open mode).
+
+    The unusual pattern here: fault_rate spikes while error_rate stays near zero —
+    because 429s from a dependency manifest as 5xx to clients (fault), not 4xx (error).
+    This is a useful distinction to learn.
+
+    Common mistakes: (1) rolling back the service (unrelated), (2) not reading the
+    wiki playbook before acting, (3) enabling the circuit breaker without VP approval.
