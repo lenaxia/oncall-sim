@@ -134,7 +134,7 @@ describe("alarm autoFire — uses live MetricStore values (not static historical
       loop.start();
 
       // Advance 2 ticks — metric should spike to ~15 at t=15 and t=30
-      vi.advanceTimersByTime(15 * 1000 * 2);
+      vi.advanceTimersByTime(60 * 1000 * 2);
 
       const alarmFiredEvents = emitted.filter((e) => e.type === "alarm_fired");
       expect(
@@ -193,7 +193,7 @@ describe("alarm autoFire — uses live MetricStore values (not static historical
       loop.onEvent((e) => emitted.push(e));
       loop.start();
 
-      vi.advanceTimersByTime(15 * 1000 * 5);
+      vi.advanceTimersByTime(60 * 1000 * 5);
 
       const alarmFiredEvents = emitted.filter((e) => e.type === "alarm_fired");
       expect(alarmFiredEvents.length).toBe(0);
@@ -254,7 +254,7 @@ describe("alarm autoFire — uses live MetricStore values (not static historical
       loop.start();
 
       // Advance many ticks — alarm should only fire once
-      vi.advanceTimersByTime(15 * 1000 * 10);
+      vi.advanceTimersByTime(60 * 1000 * 10);
 
       const alarmFiredEvents = emitted.filter((e) => e.type === "alarm_fired");
       expect(alarmFiredEvents.length).toBe(1);

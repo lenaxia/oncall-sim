@@ -22,12 +22,10 @@ describe("generateAllMetrics with fixture scenario", () => {
     expect(series["fixture-service"]["error_rate"].length).toBeGreaterThan(0);
   });
 
-  it("series length = pre_incident_seconds / resolution_seconds + 1 (t <= 0 only)", () => {
+  it("series length = pre_incident_seconds / 60 + 1 (t <= 0, 1-minute resolution)", () => {
     const { series } = generateAllMetrics(_fixture, "session-1");
     const { preIncidentSeconds } = _fixture.opsDashboard;
-    const resolutionSeconds = 15;
-    const expectedLength =
-      Math.floor(preIncidentSeconds / resolutionSeconds) + 1;
+    const expectedLength = Math.floor(preIncidentSeconds / 60) + 1;
     const s = series["fixture-service"]["error_rate"];
     expect(s.length).toBe(expectedLength);
   });

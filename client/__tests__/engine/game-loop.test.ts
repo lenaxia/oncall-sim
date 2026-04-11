@@ -64,7 +64,7 @@ describe("GameLoop — tick sequence (timer-driven)", () => {
 
       loop.start();
       // Advance fake timers by one tick interval (10s × 1000 = 10000ms)
-      vi.advanceTimersByTime(_fixture.engine.tickIntervalSeconds * 1000);
+      vi.advanceTimersByTime(60 * 1000);
       loop.stop();
 
       // t=0 scripted events should have fired (email, chat, log, alarm, ticket)
@@ -98,7 +98,7 @@ describe("GameLoop — tick sequence (timer-driven)", () => {
       const deps = makeDeps({ onDirtyTick: dirtyTick });
       const loop = createGameLoop(deps);
       loop.start();
-      vi.advanceTimersByTime(_fixture.engine.tickIntervalSeconds * 1000);
+      vi.advanceTimersByTime(60 * 1000);
       loop.stop();
       // Fixture has t=0 events → dirty → onDirtyTick called
       expect(dirtyTick).toHaveBeenCalled();
@@ -119,7 +119,7 @@ describe("GameLoop — tick sequence (timer-driven)", () => {
       loop.start();
       // Advance one tick — no new events, no actions → clean tick
       (deps.clock as ReturnType<typeof buildTestClock>).advance(100);
-      vi.advanceTimersByTime(_fixture.engine.tickIntervalSeconds * 1000);
+      vi.advanceTimersByTime(60 * 1000);
       loop.stop();
       expect(dirtyTick).not.toHaveBeenCalled();
     } finally {
@@ -536,7 +536,7 @@ describe("GameLoop — metric_update SSE streaming", () => {
       loop.start();
 
       // Advance clock to cover the reactive window
-      vi.advanceTimersByTime(s.engine.tickIntervalSeconds * 1000 * 3);
+      vi.advanceTimersByTime(60 * 1000 * 3);
 
       // game-loop emits metrics_tick (batched) instead of individual metric_update events
       const metricsTicks = emitted.filter(

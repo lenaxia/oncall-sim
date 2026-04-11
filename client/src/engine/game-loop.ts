@@ -562,9 +562,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   return {
     start() {
       _lastRealMs = Date.now();
-      // Fire t=0 scripted events immediately on start (don't wait for first tick interval)
+      // Fire t=0 scripted events immediately on start
       tick();
-      const intervalMs = scenario.engine.tickIntervalSeconds * 1000;
+      // Tick interval = 60s sim / speed = one in-game minute per tick.
+      // At 1x: 60s real. At 2x: 30s real. At 5x: 12s real. At 10x: 6s real.
+      const intervalMs = Math.round(60000 / clock.getSpeed());
       _intervalId = setInterval(tick, intervalMs);
     },
 
@@ -583,6 +585,12 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     },
     setSpeed(speed) {
       clock.setSpeed(speed);
+      // Recreate interval so the cadence adjusts immediately
+      if (_intervalId) {
+        clearInterval(_intervalId);
+        const intervalMs = Math.round(60000 / speed);
+        _intervalId = setInterval(tick, intervalMs);
+      }
     },
 
     handleAction(action, params) {

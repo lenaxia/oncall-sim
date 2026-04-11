@@ -8,6 +8,7 @@ import { WallTimestamp } from "../Timestamp";
 import { EmptyState } from "../EmptyState";
 import { PageUserModal } from "../PageUserModal";
 import type { Alarm } from "@shared/types/events";
+import { prepareChartSeries } from "../../metrics/downsample";
 
 interface OpsDashboardTabProps {
   activeService: string;
@@ -135,7 +136,7 @@ export function OpsDashboardTab({
                 service={activeService}
                 label={meta?.label ?? metricId}
                 unit={meta?.unit ?? ""}
-                series={series}
+                series={prepareChartSeries(series)}
                 simTime={chartSimTime}
                 clockAnchorMs={state.clockAnchorMs}
                 criticalThreshold={meta?.criticalThreshold}

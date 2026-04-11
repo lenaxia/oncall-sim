@@ -47,7 +47,9 @@ export function resolveMetricParams(
 
   const fromSecond = -opsDashboard.preIncidentSeconds;
   const toSecond = scenarioConfig.timeline.durationMinutes * 60;
-  const resolutionSeconds = scenarioConfig.opsDashboard.resolutionSeconds;
+  // One data point per in-game minute — always 60s resolution regardless
+  // of scenario config. The tick interval adjusts to match: 60/speed seconds real.
+  const resolutionSeconds = 60;
 
   let baselineValue = metricConfig.baselineValue ?? 0;
   if (
