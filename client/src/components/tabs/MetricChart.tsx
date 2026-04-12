@@ -88,13 +88,17 @@ export const MetricChart = memo(function MetricChart({
   const [brushStart, setBrushStart] = useState(defaultStartIndex);
   const [brushEnd, setBrushEnd] = useState(defaultEndIndex);
 
-  // When the trailing edge of the default window moves forward (new point
-  // appended), auto-advance the brush end so the window tracks the present —
-  // but only when the user hasn't zoomed out (brushEnd was already at the last
-  // point before the new one arrived).
+  // Sync brush to the default window whenever defaultEndIndex changes.
+  // Two cases need handling:
+  // 1. New point appended (defaultEndIndex grows by 1) — auto-advance if
+  //    user is at the live end (brushEnd was at the previous last point).
+  // 2. Large jump in simTime (e.g. session load where clock starts at
+  //    preIncidentSeconds) — defaultEndIndex jumps from 0 to 480.
+  //    In this case brushEnd is stale and we must sync unconditionally.
   useEffect(() => {
-    if (brushEnd >= visible.length - 2) {
-      // User is viewing the live end — keep them there
+    const atLiveEnd = brushEnd >= defaultEndIndex - 2;
+    const stale = brushEnd < defaultEndIndex - 10; // large jump — always sync
+    if (atLiveEnd || stale) {
       setBrushEnd(defaultEndIndex);
       setBrushStart(defaultStartIndex);
     }
