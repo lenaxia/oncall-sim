@@ -90,7 +90,12 @@ export function createMetricReactionEngine(
   return {
     async react(context: StakeholderContext): Promise<void> {
       const tools = getMetricReactionTools(scenario);
-      if (tools.length === 0) return;
+      if (tools.length === 0) {
+        log.info(
+          "metric-reaction: skipped — no tools (select_metric_reaction not enabled for scenario)",
+        );
+        return;
+      }
       if (!context.triggeredByAction) return;
 
       // Skip if ALL new actions since last reaction are passive
@@ -99,6 +104,14 @@ export function createMetricReactionEngine(
         (a) => !PASSIVE_ACTIONS.has(a.action),
       );
       if (!hasActiveAction) return;
+
+      log.info(
+        {
+          newActions: newActions.map((a) => a.action),
+          isInFlight: _isInFlight,
+        },
+        "metric-reaction: react() called with active actions",
+      );
 
       if (_isInFlight) {
         // Save the latest context — it will be used once the in-flight call

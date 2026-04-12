@@ -333,7 +333,7 @@ describe("cache-stampede", () => {
     const { buildReactionTemplate } =
       await import("../../src/metrics/reaction-menu");
 
-    const { series, resolvedParams } = generateAllMetrics(s, 42);
+    const { series, resolvedParams } = generateAllMetrics(s, "test-session");
     const store = createMetricStore(series, resolvedParams);
 
     // Sim clock starts at pre_incident_seconds=28800; onset_second=90 so overlays
