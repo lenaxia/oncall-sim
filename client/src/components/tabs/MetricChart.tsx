@@ -1,4 +1,4 @@
-import { useMemo, memo, useState, useEffect } from "react";
+import { useMemo, memo } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -8,7 +8,6 @@ import {
   CartesianGrid,
   Tooltip,
   ReferenceLine,
-  Brush,
 } from "recharts";
 import type { TimeSeriesPoint } from "@shared/types/events";
 import { Badge } from "../Badge";
@@ -22,16 +21,12 @@ interface MetricChartProps {
   series: TimeSeriesPoint[];
   simTime: number;
   clockAnchorMs: number;
-  criticalThreshold?: number; // single alarm threshold — red line when breached
+  criticalThreshold?: number;
   onFirstHover?: () => void;
 }
 
-// Default visible window: 4 hours of sim-time
 const DEFAULT_WINDOW_SECONDS = 4 * 3600;
 
-// Binary search: returns index of first element where arr[i].t >= target.
-// Returns arr.length when all elements are before target.
-// O(log n) vs O(n) for findIndex on large pre-incident history arrays.
 function lowerBound(arr: TimeSeriesPoint[], target: number): number {
   let lo = 0;
   let hi = arr.length;
@@ -54,61 +49,17 @@ export const MetricChart = memo(function MetricChart({
   criticalThreshold,
   onFirstHover,
 }: MetricChartProps) {
-  // Downsample old history for chart rendering — memoised on the raw series
-  // reference so it only reruns when this specific metric gets a new point.
-  // This prevents all charts from repainting when any single metric updates.
   const prepared = useMemo(() => prepareChartSeries(series), [series]);
 
-  // All points up to now — memoised so the filter only re-runs when series
-  // reference changes (new reactive overlay spliced in) or simTime crosses a
-  // point boundary. At 10x speed simTime ticks every 100ms real-time; without
-  // memo this filter ran 40× per tick across the full dashboard.
-  const visible = useMemo(
-    () => prepared.filter((p) => p.t <= simTime),
-    [prepared, simTime],
-  );
-  const current = visible.length > 0 ? visible[visible.length - 1].v : null;
+  // Last 4 hours of visible data
+  const windowed = useMemo(() => {
+    const windowStart = simTime - DEFAULT_WINDOW_SECONDS;
+    const all = prepared.filter((p) => p.t <= simTime);
+    const startIdx = lowerBound(all, windowStart);
+    return all.slice(startIdx);
+  }, [prepared, simTime]);
 
-  // The chart line and XAxis render only the last 4h by default.
-  // The Brush minimap receives the full visible series so the trainee
-  // can slide the handles to pan back into older history.
-  const windowStart = simTime - DEFAULT_WINDOW_SECONDS;
-  const defaultStartIndex = useMemo(
-    () =>
-      Math.min(
-        lowerBound(visible, windowStart),
-        Math.max(0, visible.length - 1),
-      ),
-    [visible, windowStart],
-  );
-  const defaultEndIndex = visible.length > 0 ? visible.length - 1 : 0;
-
-  // Controlled brush indices — initialised to the 4h window, updated on drag.
-  // Reset to the default window whenever new points arrive (simTime advances).
-  const [brushStart, setBrushStart] = useState(defaultStartIndex);
-  const [brushEnd, setBrushEnd] = useState(defaultEndIndex);
-
-  // Sync brush to the default window whenever defaultEndIndex changes.
-  // Two cases need handling:
-  // 1. New point appended (defaultEndIndex grows by 1) — auto-advance if
-  //    user is at the live end (brushEnd was at the previous last point).
-  // 2. Large jump in simTime (e.g. session load where clock starts at
-  //    preIncidentSeconds) — defaultEndIndex jumps from 0 to 480.
-  //    In this case brushEnd is stale and we must sync unconditionally.
-  useEffect(() => {
-    const atLiveEnd = brushEnd >= defaultEndIndex - 2;
-    const stale = brushEnd < defaultEndIndex - 10; // large jump — always sync
-    if (atLiveEnd || stale) {
-      setBrushEnd(defaultEndIndex);
-      setBrushStart(defaultStartIndex);
-    }
-  }, [defaultStartIndex, defaultEndIndex]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // The data slice the chart actually renders
-  const windowed = useMemo(
-    () => visible.slice(brushStart, brushEnd + 1),
-    [visible, brushStart, brushEnd],
-  );
+  const current = windowed.length > 0 ? windowed[windowed.length - 1].v : null;
 
   const breaching =
     criticalThreshold != null &&
@@ -130,7 +81,6 @@ export const MetricChart = memo(function MetricChart({
   function fmtTooltipLabel(t: number): string {
     if (!clockAnchorMs) return String(t);
     const d = new Date(clockAnchorMs + t * 1000);
-    // Show full date+time if history spans multiple days
     const dayLabel = d.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
@@ -140,7 +90,6 @@ export const MetricChart = memo(function MetricChart({
 
   return (
     <div className="bg-sim-surface border border-sim-border rounded overflow-hidden">
-      {/* Header */}
       <div className="px-3 py-1.5 border-b border-sim-border flex items-center justify-between">
         <span className="text-xs font-medium text-sim-text">{label}</span>
         <div className="flex items-center gap-2">
@@ -153,12 +102,7 @@ export const MetricChart = memo(function MetricChart({
         </div>
       </div>
 
-      {/* Chart */}
-      {/* min-w-0 prevents the grid cell from overflowing its track, which would
-          collapse the measured width to 0 and cause Recharts NaN attribute errors. */}
       <div className="h-[220px] w-full min-w-0" onMouseEnter={onFirstHover}>
-        {/* minWidth={1} guards against the transient -1/0 dimensions that
-            ResponsiveContainer reports on the first paint before ResizeObserver fires. */}
         <ResponsiveContainer width="100%" height="100%" minWidth={1}>
           <LineChart
             data={windowed}
@@ -169,7 +113,12 @@ export const MetricChart = memo(function MetricChart({
               dataKey="t"
               type="number"
               scale="time"
-              tick={{ fill: "#8b949e", fontSize: 10, fontFamily: "monospace" }}
+              domain={["dataMin", "dataMax"]}
+              tick={{
+                fill: "#8b949e",
+                fontSize: 10,
+                fontFamily: "monospace",
+              }}
               tickFormatter={fmtTick}
               axisLine={{ stroke: "#30363d" }}
               tickLine={false}
@@ -181,7 +130,11 @@ export const MetricChart = memo(function MetricChart({
                 (dataMax: number) =>
                   Math.ceil(Math.max(dataMax, criticalThreshold ?? 0) * 1.1),
               ]}
-              tick={{ fill: "#8b949e", fontSize: 10, fontFamily: "monospace" }}
+              tick={{
+                fill: "#8b949e",
+                fontSize: 10,
+                fontFamily: "monospace",
+              }}
               axisLine={false}
               tickLine={false}
               width={48}
@@ -221,30 +174,6 @@ export const MetricChart = memo(function MetricChart({
               activeDot={{ r: 4, stroke: "none" }}
               isAnimationActive={false}
             />
-            {/* Brush: minimap over full history so trainee can pan back */}
-            {visible.length > 1 && (
-              <Brush
-                data={visible}
-                dataKey="t"
-                startIndex={brushStart}
-                endIndex={brushEnd}
-                onChange={(range) => {
-                  if (
-                    range &&
-                    typeof range.startIndex === "number" &&
-                    typeof range.endIndex === "number"
-                  ) {
-                    setBrushStart(range.startIndex);
-                    setBrushEnd(range.endIndex);
-                  }
-                }}
-                height={28}
-                stroke="#30363d"
-                fill="#161b22"
-                travellerWidth={6}
-                tickFormatter={fmtTick}
-              />
-            )}
           </LineChart>
         </ResponsiveContainer>
       </div>
