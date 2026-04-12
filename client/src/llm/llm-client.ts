@@ -56,29 +56,55 @@ export class LLMError extends Error {
  *   → MockProvider (reads bundled fixture YAML)
  * VITE_LLM_MODE=local | k8s (default)
  *   → OpenAIProvider (calls VITE_LLM_BASE_URL/chat/completions)
+ *
+ * When VITE_DEBUG=true the returned client is wrapped in a debug interceptor
+ * that records every request/response to llm-debug-store for the DebugPanel.
  */
 export async function createLLMClient(): Promise<LLMClient> {
   // Mock mode: unit tests or explicit VITE_MOCK_LLM=true
+  let client: LLMClient;
   if (
     import.meta.env.VITE_MOCK_LLM === "true" ||
     import.meta.env.MODE === "test"
   ) {
     const { createFixtureMockProvider } = await import("./mock-provider");
-    return createFixtureMockProvider();
+    client = createFixtureMockProvider();
+  } else {
+    // local or k8s — both use OpenAIProvider
+    const { OpenAIProvider } = await import("./openai-provider");
+    const baseUrl =
+      import.meta.env.VITE_LLM_BASE_URL ?? "https://ai.thekao.cloud/v1";
+    const apiKey = import.meta.env.VITE_LLM_API_KEY ?? "";
+    const model = import.meta.env.VITE_LLM_MODEL ?? "gpt-4o";
+
+    client = new OpenAIProvider({
+      apiKey,
+      baseUrl,
+      model,
+      timeoutMs: 30_000,
+      maxRetries: 2,
+    });
   }
 
-  // local or k8s — both use OpenAIProvider
-  const { OpenAIProvider } = await import("./openai-provider");
-  const baseUrl =
-    import.meta.env.VITE_LLM_BASE_URL ?? "https://ai.thekao.cloud/v1";
-  const apiKey = import.meta.env.VITE_LLM_API_KEY ?? "";
-  const model = import.meta.env.VITE_LLM_MODEL ?? "gpt-4o";
+  // Debug interceptor — wraps the real client and records every call.
+  // Tree-shaken in production builds (VITE_DEBUG is never "true" there).
+  if (import.meta.env.VITE_DEBUG === "true") {
+    const { recordRequest, recordResponse } = await import("./llm-debug-store");
+    return {
+      async call(request) {
+        const startMs = Date.now();
+        const id = recordRequest(request);
+        try {
+          const response = await client.call(request);
+          recordResponse(id, response, startMs);
+          return response;
+        } catch (err) {
+          recordResponse(id, "error", startMs);
+          throw err;
+        }
+      },
+    };
+  }
 
-  return new OpenAIProvider({
-    apiKey,
-    baseUrl,
-    model,
-    timeoutMs: 30_000,
-    maxRetries: 2,
-  });
+  return client;
 }
