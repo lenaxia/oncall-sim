@@ -90,51 +90,66 @@ export function createMetricReactionEngine(
   return {
     async react(context: StakeholderContext): Promise<void> {
       const tools = getMetricReactionTools(scenario);
+      console.log(
+        `[metric-react] react() entry at ${Date.now()}ms — triggeredByAction=`,
+        context.triggeredByAction,
+        "tools=",
+        tools.length,
+        "auditLog.length=",
+        context.auditLog.length,
+        "_isInFlight=",
+        _isInFlight,
+      );
       if (tools.length === 0) {
         log.info(
           "metric-reaction: skipped — no tools (select_metric_reaction not enabled for scenario)",
         );
         return;
       }
-      if (!context.triggeredByAction) return;
+      if (!context.triggeredByAction) {
+        console.log("[metric-react] skipped — triggeredByAction=false");
+        return;
+      }
 
-      // Skip if ALL new actions since last reaction are passive
       const newActions = context.auditLog.slice(_lastProcessedAuditLength);
       const hasActiveAction = newActions.some(
         (a) => !PASSIVE_ACTIONS.has(a.action),
       );
-      if (!hasActiveAction) return;
-
-      log.info(
-        {
-          newActions: newActions.map((a) => a.action),
-          isInFlight: _isInFlight,
-        },
-        "metric-reaction: react() called with active actions",
+      console.log(
+        "[metric-react] newActions=",
+        newActions.map((a) => a.action),
+        "hasActiveAction=",
+        hasActiveAction,
+        "_isInFlight=",
+        _isInFlight,
+        "_lastProcessedAuditLength=",
+        _lastProcessedAuditLength,
       );
 
       if (_isInFlight) {
-        // Save the latest context — it will be used once the in-flight call
-        // finishes. We always overwrite with the newest context so the batched
-        // follow-up call has the most up-to-date metric snapshot and full
-        // action window.
+        console.log(
+          `[metric-react] _isInFlight=true at ${Date.now()}ms — saving as pendingContext`,
+        );
         _pendingContext = context;
         return;
       }
 
       try {
+        console.log(
+          `[metric-react] setting _isInFlight=true at ${Date.now()}ms`,
+        );
         _isInFlight = true;
         await _react(context, tools);
       } catch (err) {
         log.error({ err }, "Unexpected error in metric reaction");
       } finally {
+        console.log(
+          `[metric-react] setting _isInFlight=false at ${Date.now()}ms, pendingContext=${_pendingContext !== null}`,
+        );
         _isInFlight = false;
-        // Drain any context that accumulated while we were in-flight.
         if (_pendingContext !== null) {
           const pending = _pendingContext;
           _pendingContext = null;
-          // Fire-and-forget — the outer finally has already released the lock,
-          // and the recursive react() will re-acquire it.
           void this.react(pending);
         }
       }
@@ -169,12 +184,23 @@ export function createMetricReactionEngine(
     // Skip LLM call when no incident metrics are active.
     // Do NOT advance the cursor in this case — keep the actions for the next call.
     if (template.activeMetrics.length === 0) {
+      console.log(
+        "[metric-react] _react() skipped — activeMetrics is empty, simTime=",
+        getSimTime(),
+      );
       log.debug(
         { actions: newActions.map((a) => a.action) },
         "metric-reaction: no active incident metrics — skipping LLM call",
       );
       return;
     }
+
+    console.log(
+      "[metric-react] _react() FIRING LLM call — activeMetrics=",
+      template.activeMetrics.map((m) => m.metricId),
+      "actions=",
+      newActions.map((a) => a.action),
+    );
 
     // Advance cursor now that we know we're making the call.
     // Tracked so we can roll back if the call fails.

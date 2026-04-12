@@ -399,7 +399,10 @@ function createSession(
   const sessionId = globalThis.crypto.randomUUID();
   const clockAnchorMs = Date.now();
 
-  const clock = createSimClock(scenario.timeline.defaultSpeed);
+  const clock = createSimClock(
+    scenario.timeline.defaultSpeed,
+    scenario.timeline.preIncidentSeconds,
+  );
   const scheduler = createEventScheduler(scenario);
   const auditLog = createAuditLog();
   const store = createSimStateStore();

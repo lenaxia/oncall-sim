@@ -333,10 +333,13 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   // so it never blocks persona responses and is never blocked by them.
   // Called directly whenever a trainee action is dispatched.
   function triggerMetricReact(): void {
-    // Build a context with triggeredByAction=true — we know this is always
-    // called from handleAction so the flag is always true at this point,
-    // regardless of whether triggerDirtyTick has already reset it.
     const ctx = { ...buildStakeholderContext(), triggeredByAction: true };
+    console.log(
+      `[metric-react] triggerMetricReact() called at ${Date.now()}ms, auditLog.length=`,
+      ctx.auditLog.length,
+      "lastAction=",
+      ctx.auditLog[ctx.auditLog.length - 1]?.action,
+    );
     onMetricReact(ctx).catch((err) => {
       log.error({ err }, "onMetricReact error");
     });

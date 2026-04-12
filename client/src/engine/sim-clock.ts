@@ -11,8 +11,11 @@ export interface SimClock {
   toSimTimeEvent(): Extract<SimEvent, { type: "sim_time" }>;
 }
 
-export function createSimClock(initialSpeed: 1 | 2 | 5 | 10 = 1): SimClock {
-  let _simTime = 0;
+export function createSimClock(
+  initialSpeed: 1 | 2 | 5 | 10 = 1,
+  initialSimTime = 0,
+): SimClock {
+  let _simTime = initialSimTime;
   let _speed: 1 | 2 | 5 | 10 = initialSpeed;
   let _paused = false;
 
