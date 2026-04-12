@@ -412,6 +412,24 @@ function createSession(
   const { series, resolvedParams } = generateAllMetrics(scenario, sessionId);
   const metricStore = createMetricStore(series, resolvedParams);
 
+  // Fast-forward metric store to the clock's starting position.
+  // generateAllMetrics produces historical points from t=-preIncidentSeconds to t=0.
+  // The clock starts at t=preIncidentSeconds, so we must generate all points from
+  // t=0 to t=preIncidentSeconds now — otherwise the chart window [simTime-4h, simTime]
+  // would have no data and graphs would appear blank at session start.
+  if (scenario.timeline.preIncidentSeconds > 0) {
+    const resolution = 60; // matches resolver.ts resolutionSeconds
+    for (
+      let t = resolution;
+      t <= scenario.timeline.preIncidentSeconds;
+      t += resolution
+    ) {
+      for (const { service, metricId } of metricStore.listMetrics()) {
+        metricStore.generatePoint(service, metricId, t);
+      }
+    }
+  }
+
   // Wire pipelines from scenario into store
   for (const pipeline of scenario.cicd.pipelines) {
     store.addPipeline({

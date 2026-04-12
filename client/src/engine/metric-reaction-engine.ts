@@ -259,10 +259,14 @@ export function createMetricReactionEngine(
         if (typeof metricId !== "string" || typeof outcome !== "string")
           continue;
 
-        // Find the active metric by metricId across all services
-        const metricEntry = [...activeMetricMap.values()].find(
-          (m) => m.metricId === metricId,
-        );
+        // Find the active metric by metricId across all services.
+        // Accept both plain "metricId" and "service/metricId" formats since the
+        // LLM sometimes qualifies the id with the service name.
+        const metricEntry = [...activeMetricMap.values()].find((m) => {
+          return (
+            m.metricId === metricId || `${m.service}/${m.metricId}` === metricId
+          );
+        });
 
         if (!metricEntry) {
           log.warn(
@@ -684,11 +688,15 @@ export function createMetricReactionEngine(
     }
 
     // Per-metric reaction guide — one entry per active incident metric
-    // showing current state and non-binding hints for each outcome
+    // showing current state and non-binding hints for each outcome.
+    // Use service/metricId as the canonical id so the LLM can distinguish
+    // same-named metrics across services (e.g. connection_pool_used appears
+    // on both recommendation-service and recommendations-db).
     const metricReactionLines = template.activeMetrics.map((m) => {
       const hint = template.hints[0]; // hints are action-derived, same for all metrics
+      const canonicalId = `${m.service}/${m.metricId}`;
       return (
-        `  ${m.metricId} (current=${m.currentValue.toFixed(2)}, ` +
+        `  ${canonicalId} (current=${m.currentValue.toFixed(2)}, ` +
         `baseline=${m.resolvedValue.toFixed(2)}, ` +
         `peak=${m.peakValue.toFixed(2)})\n` +
         `    full_recovery → ${m.resolvedValue.toFixed(2)} | ` +

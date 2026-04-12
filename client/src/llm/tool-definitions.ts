@@ -92,7 +92,7 @@ export const EVENT_TOOLS: LLMToolDefinition[] = [
               metric_id: {
                 type: "string",
                 description:
-                  "The metric_id as shown in the prompt (e.g. 'error_rate').",
+                  "The metric_id as shown in the Per-Metric Reactions section (e.g. 'recommendation-service/connection_pool_used'). Always use the full service/metricId format.",
               },
               outcome: {
                 type: "string",
