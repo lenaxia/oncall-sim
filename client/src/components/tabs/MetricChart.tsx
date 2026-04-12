@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type { TimeSeriesPoint } from "@shared/types/events";
 import { Badge } from "../Badge";
+import { prepareChartSeries } from "../../metrics/downsample";
 
 interface MetricChartProps {
   metricId: string;
@@ -51,10 +52,15 @@ export const MetricChart = memo(function MetricChart({
   criticalThreshold,
   onFirstHover,
 }: MetricChartProps) {
+  // Downsample old history for chart rendering — memoised on the raw series
+  // reference so it only reruns when this specific metric gets a new point.
+  // This prevents all charts from repainting when any single metric updates.
+  const prepared = useMemo(() => prepareChartSeries(series), [series]);
+
   // All points up to now
   const visible = useMemo(
-    () => series.filter((p) => p.t <= simTime),
-    [series, simTime],
+    () => prepared.filter((p) => p.t <= simTime),
+    [prepared, simTime],
   );
 
   const current = visible.length > 0 ? visible[visible.length - 1].v : null;
