@@ -147,95 +147,111 @@ export const MetricChart = memo(function MetricChart({
       {/* min-w-0 prevents the grid cell from overflowing its track, which would
           collapse the measured width to 0 and cause Recharts NaN attribute errors. */}
       <div className="h-[220px] w-full min-w-0" onMouseEnter={onFirstHover}>
-        {/* minWidth/minHeight guard against the transient -1 / 0 dimensions that
-            ResponsiveContainer reports on the first paint before ResizeObserver fires. */}
         <ResponsiveContainer width="100%" height="100%" minWidth={1}>
-          <LineChart
-            data={windowed}
-            margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
-          >
-            <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
-            <XAxis
-              dataKey="t"
-              type="number"
-              scale="time"
-              tick={{ fill: "#8b949e", fontSize: 10, fontFamily: "monospace" }}
-              tickFormatter={fmtTick}
-              axisLine={{ stroke: "#30363d" }}
-              tickLine={false}
-              minTickGap={50}
-            />
-            <YAxis
-              domain={[
-                0,
-                (dataMax: number) =>
-                  Math.ceil(Math.max(dataMax, criticalThreshold ?? 0) * 1.1),
-              ]}
-              tick={{ fill: "#8b949e", fontSize: 10, fontFamily: "monospace" }}
-              axisLine={false}
-              tickLine={false}
-              width={48}
-            />
-            <Tooltip
-              contentStyle={{
-                background: "#1c2128",
-                border: "1px solid #30363d",
-                borderRadius: 6,
-                fontSize: 13,
-                fontFamily: "monospace",
-                padding: "8px 12px",
-                lineHeight: "1.6",
-              }}
-              itemStyle={{ color: "#e6edf3", fontSize: 13 }}
-              labelStyle={{ color: "#8b949e", fontSize: 12, marginBottom: 4 }}
-              labelFormatter={fmtTooltipLabel}
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              formatter={
-                ((value: number) => `${value.toFixed(2)} ${unit}`.trim()) as any
-              }
-            />
-            {criticalThreshold != null && (
-              <ReferenceLine
-                y={criticalThreshold}
-                stroke="#f85149"
-                strokeDasharray="4 2"
-                strokeWidth={1}
-              />
-            )}
-            <Line
-              type="monotone"
-              dataKey="v"
-              stroke={lineColor}
-              strokeWidth={1.5}
-              dot={false}
-              activeDot={{ r: 4, stroke: "none" }}
-              isAnimationActive={false}
-            />
-            {/* Brush: minimap over full history so trainee can pan back */}
-            {visible.length > 1 && (
-              <Brush
-                data={visible}
+          {windowed.length < 2 ? (
+            <LineChart
+              data={[]}
+              margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
+            >
+              <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
+            </LineChart>
+          ) : (
+            <LineChart
+              data={windowed}
+              margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
+            >
+              <CartesianGrid stroke="#21262d" strokeDasharray="3 3" />
+              <XAxis
                 dataKey="t"
-                startIndex={brushStart}
-                endIndex={brushEnd}
-                onChange={(range) => {
-                  if (
-                    range &&
-                    typeof range.startIndex === "number" &&
-                    typeof range.endIndex === "number"
-                  ) {
-                    setBrushStart(range.startIndex);
-                    setBrushEnd(range.endIndex);
-                  }
+                type="number"
+                scale="time"
+                tick={{
+                  fill: "#8b949e",
+                  fontSize: 10,
+                  fontFamily: "monospace",
                 }}
-                height={28}
-                stroke="#30363d"
-                fill="#161b22"
-                travellerWidth={6}
                 tickFormatter={fmtTick}
+                axisLine={{ stroke: "#30363d" }}
+                tickLine={false}
+                minTickGap={50}
               />
-            )}
-          </LineChart>
+              <YAxis
+                domain={[
+                  0,
+                  (dataMax: number) =>
+                    Math.ceil(Math.max(dataMax, criticalThreshold ?? 0) * 1.1),
+                ]}
+                tick={{
+                  fill: "#8b949e",
+                  fontSize: 10,
+                  fontFamily: "monospace",
+                }}
+                axisLine={false}
+                tickLine={false}
+                width={48}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "#1c2128",
+                  border: "1px solid #30363d",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontFamily: "monospace",
+                  padding: "8px 12px",
+                  lineHeight: "1.6",
+                }}
+                itemStyle={{ color: "#e6edf3", fontSize: 13 }}
+                labelStyle={{ color: "#8b949e", fontSize: 12, marginBottom: 4 }}
+                labelFormatter={fmtTooltipLabel}
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                formatter={
+                  ((value: number) =>
+                    `${value.toFixed(2)} ${unit}`.trim()) as any
+                }
+              />
+              {criticalThreshold != null && (
+                <ReferenceLine
+                  y={criticalThreshold}
+                  stroke="#f85149"
+                  strokeDasharray="4 2"
+                  strokeWidth={1}
+                />
+              )}
+              <Line
+                type="monotone"
+                dataKey="v"
+                stroke={lineColor}
+                strokeWidth={1.5}
+                dot={false}
+                activeDot={{ r: 4, stroke: "none" }}
+                isAnimationActive={false}
+              />
+              {/* Brush: minimap over full history so trainee can pan back */}
+              {visible.length > 1 && (
+                <Brush
+                  data={visible}
+                  dataKey="t"
+                  startIndex={brushStart}
+                  endIndex={brushEnd}
+                  onChange={(range) => {
+                    if (
+                      range &&
+                      typeof range.startIndex === "number" &&
+                      typeof range.endIndex === "number"
+                    ) {
+                      setBrushStart(range.startIndex);
+                      setBrushEnd(range.endIndex);
+                    }
+                  }}
+                  height={28}
+                  stroke="#30363d"
+                  fill="#161b22"
+                  travellerWidth={6}
+                  tickFormatter={fmtTick}
+                />
+              )}
+            </LineChart>
+          )}
         </ResponsiveContainer>
       </div>
     </div>

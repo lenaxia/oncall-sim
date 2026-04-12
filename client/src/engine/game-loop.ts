@@ -20,6 +20,7 @@ import {
   computeMetricSummary,
   type MetricSummary,
 } from "../metrics/metric-summary";
+import { PASSIVE_ACTIONS } from "./metric-reaction-engine";
 import { logger } from "../logger";
 
 const log = logger.child({ component: "game-loop" });
@@ -1117,10 +1118,10 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       _dirty = true;
       triggerDirtyTick();
 
-      // Metric reaction fires immediately and independently — not gated on the
-      // stakeholder tick completing. The engine's internal passive-action filter
-      // and _isInFlight lock handle debouncing and passive-action skipping.
-      triggerMetricReact();
+      // Only fire metric reaction for active (non-passive) actions.
+      if (!PASSIVE_ACTIONS.has(action)) {
+        triggerMetricReact();
+      }
     },
 
     handleChatMessage(channel, text) {

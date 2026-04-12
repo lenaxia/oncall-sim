@@ -54,7 +54,8 @@ export interface MetricReactionEngine {
 
 // Actions that observe state but do not change the environment.
 // The metric reaction engine should not fire for these — no LLM call, no cost.
-const PASSIVE_ACTIONS = new Set<string>([
+// Exported so game-loop can skip triggerMetricReact() for passive actions.
+export const PASSIVE_ACTIONS = new Set<string>([
   "open_tab",
   "search_logs",
   "view_metric",
@@ -245,9 +246,16 @@ export function createMetricReactionEngine(
       const metricReactions = toolCall.params["metric_reactions"];
       if (!Array.isArray(metricReactions)) continue;
 
-      // Build a lookup of active metrics for fast validation
+      // Build a lookup of active metrics for fast validation.
+      // Key: "service/metricId" (slash-separated) to match the format shown in
+      // the prompt and returned by the LLM.
       const activeMetricMap = new Map(
-        template.activeMetrics.map((m) => [`${m.service}:${m.metricId}`, m]),
+        template.activeMetrics.map((m) => [`${m.service}/${m.metricId}`, m]),
+      );
+
+      // Also accept plain metricId for backwards compat (unqualified).
+      const activeMetricByPlainId = new Map(
+        template.activeMetrics.map((m) => [m.metricId, m]),
       );
 
       // Accumulate decisions for the history entry
@@ -259,14 +267,9 @@ export function createMetricReactionEngine(
         if (typeof metricId !== "string" || typeof outcome !== "string")
           continue;
 
-        // Find the active metric by metricId across all services.
-        // Accept both plain "metricId" and "service/metricId" formats since the
-        // LLM sometimes qualifies the id with the service name.
-        const metricEntry = [...activeMetricMap.values()].find((m) => {
-          return (
-            m.metricId === metricId || `${m.service}/${m.metricId}` === metricId
-          );
-        });
+        // Find the active metric — prefer service/metricId format, fall back to plain metricId.
+        const metricEntry =
+          activeMetricMap.get(metricId) ?? activeMetricByPlainId.get(metricId);
 
         if (!metricEntry) {
           log.warn(
