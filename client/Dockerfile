@@ -9,8 +9,9 @@ COPY shared/ ./shared/
 # Copy client package
 COPY client/package.json ./client/
 
-# Install deps (client workspace only)
-RUN npm install --workspace=client
+# Install deps (client workspace only) — explicitly use public npm registry
+# to prevent any host .npmrc registry overrides from leaking into the build.
+RUN npm ci --workspace=client --registry=https://registry.npmjs.org
 
 # Copy client source
 COPY client/ ./client/
