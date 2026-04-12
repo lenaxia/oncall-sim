@@ -8,7 +8,10 @@ import { App } from "./App";
 // (minWidth={1} + min-w-0) is already in place — this warning is noise only.
 const _warn = console.warn.bind(console);
 console.warn = (...args: unknown[]) => {
-  if (typeof args[0] === "string" && args[0].includes("width(0) and height(0)"))
+  if (
+    typeof args[0] === "string" &&
+    args[0].includes("of chart should be greater than 0")
+  )
     return;
   _warn(...args);
 };
