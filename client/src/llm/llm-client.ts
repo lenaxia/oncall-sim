@@ -82,7 +82,7 @@ export async function createLLMClient(): Promise<LLMClient> {
       apiKey,
       baseUrl,
       model,
-      timeoutMs: 30_000,
+      timeoutMs: 90_000,
       maxRetries: 2,
     });
   }

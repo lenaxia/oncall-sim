@@ -295,27 +295,23 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     _directlyAddressed.clear();
     _triggeredByAction = false; // reset after capture
 
-    // Stakeholder tick and metric reaction run concurrently — independent concerns.
-    Promise.all([
-      onDirtyTick(ctx)
-        .then((events) => {
-          for (const ev of events) {
-            applySimEventToStore(ev);
-            emit(ev);
-          }
-        })
-        .catch((err) => {
-          log.error({ err }, "onDirtyTick error");
-        }),
-      onMetricReact(ctx).catch((err) => {
-        log.error({ err }, "onMetricReact error");
-      }),
-    ]).finally(() => {
-      _inFlight = false;
-      // Re-trigger only if external input arrived while we were in-flight.
-      // _triggeredByAction may have been latched true again by a new action.
-      if (_dirty) triggerDirtyTick();
-    });
+    // Stakeholder tick owns _inFlight — serialised because it mutates shared store state.
+    // onMetricReact is NOT included here — it runs independently (see triggerMetricReact).
+    onDirtyTick(ctx)
+      .then((events) => {
+        for (const ev of events) {
+          applySimEventToStore(ev);
+          emit(ev);
+        }
+      })
+      .catch((err) => {
+        log.error({ err }, "onDirtyTick error");
+      })
+      .finally(() => {
+        _inFlight = false;
+        // Re-trigger only if external input arrived while we were in-flight.
+        if (_dirty) triggerDirtyTick();
+      });
 
     // Coach tick (every N dirty ticks)
     if (_coachTickCount % COACH_TICK_INTERVAL === 0) {
@@ -330,6 +326,20 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           log.error({ err }, "onCoachTick error");
         });
     }
+  }
+
+  // Metric reaction fires independently of the stakeholder tick.
+  // It has its own internal _isInFlight lock and pending-context queue,
+  // so it never blocks persona responses and is never blocked by them.
+  // Called directly whenever a trainee action is dispatched.
+  function triggerMetricReact(): void {
+    // Build a context with triggeredByAction=true — we know this is always
+    // called from handleAction so the flag is always true at this point,
+    // regardless of whether triggerDirtyTick has already reset it.
+    const ctx = { ...buildStakeholderContext(), triggeredByAction: true };
+    onMetricReact(ctx).catch((err) => {
+      log.error({ err }, "onMetricReact error");
+    });
   }
 
   function tick(): void {
@@ -1103,6 +1113,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       _triggeredByAction = true;
       _dirty = true;
       triggerDirtyTick();
+
+      // Metric reaction fires immediately and independently — not gated on the
+      // stakeholder tick completing. The engine's internal passive-action filter
+      // and _isInFlight lock handle debouncing and passive-action skipping.
+      triggerMetricReact();
     },
 
     handleChatMessage(channel, text) {
