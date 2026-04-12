@@ -1,8 +1,8 @@
 // llm-debug-store.ts — singleton ring buffer for LLM call tracing.
 //
 // Records every inbound request and outbound response so the DebugPanel can
-// display them in real time. Only active when VITE_DEBUG=true; in all other
-// builds the store is a no-op and the interceptor adds zero overhead.
+// display them in real time. Active when DEBUG=true is set at runtime
+// (server.js injects window.__CONFIG__ into index.html at container start).
 //
 // Architecture:
 //   - Pure module-level singleton (no React state) — survives component

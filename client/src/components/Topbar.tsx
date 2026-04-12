@@ -6,8 +6,6 @@ import { SpeedControl } from "./SpeedControl";
 import { CoachPanelShell } from "./CoachPanelShell";
 import { DebugPanelShell } from "./DebugPanelShell";
 
-const DEBUG = import.meta.env.VITE_DEBUG === "true";
-
 export function Topbar() {
   const { scenario } = useScenario();
   const { state } = useSession();
@@ -17,6 +15,7 @@ export function Topbar() {
     paused: state.paused,
     clockAnchorMs: state.clockAnchorMs,
   };
+  const debug = window.__CONFIG__?.debug === true;
 
   return (
     <SimClockContext.Provider value={clockInput}>
@@ -35,8 +34,8 @@ export function Topbar() {
         {/* Coach panel */}
         <CoachPanelShell />
 
-        {/* LLM debug panel — only rendered when VITE_DEBUG=true */}
-        {DEBUG && <DebugPanelShell />}
+        {/* LLM debug panel — only rendered when DEBUG=true at runtime */}
+        {debug && <DebugPanelShell />}
       </div>
     </SimClockContext.Provider>
   );

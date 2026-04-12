@@ -57,8 +57,9 @@ export class LLMError extends Error {
  * VITE_LLM_MODE=local | k8s (default)
  *   → OpenAIProvider (calls VITE_LLM_BASE_URL/chat/completions)
  *
- * When VITE_DEBUG=true the returned client is wrapped in a debug interceptor
- * that records every request/response to llm-debug-store for the DebugPanel.
+ * When DEBUG=true (set at runtime via server.js injecting window.__CONFIG__)
+ * the returned client is wrapped in a debug interceptor that records every
+ * request/response to llm-debug-store for the DebugPanel.
  */
 export async function createLLMClient(): Promise<LLMClient> {
   // Mock mode: unit tests or explicit VITE_MOCK_LLM=true
@@ -86,9 +87,9 @@ export async function createLLMClient(): Promise<LLMClient> {
     });
   }
 
-  // Debug interceptor — wraps the real client and records every call.
-  // Tree-shaken in production builds (VITE_DEBUG is never "true" there).
-  if (import.meta.env.VITE_DEBUG === "true") {
+  // Debug interceptor — wraps the real client when DEBUG=true at runtime.
+  // window.__CONFIG__ is injected into index.html by server.js at container start.
+  if (window.__CONFIG__?.debug === true) {
     const { recordRequest, recordResponse } = await import("./llm-debug-store");
     return {
       async call(request) {

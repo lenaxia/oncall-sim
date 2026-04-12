@@ -10,4 +10,7 @@ interface Window {
   __ONCALL_CONFIG__?: {
     scenarioUrls?: string[];
   };
+  __CONFIG__?: {
+    debug?: boolean;
+  };
 }

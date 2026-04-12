@@ -29,11 +29,12 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Install serve for static file serving
-RUN npm install -g serve
-
+# Copy built assets and the runtime server
 COPY --from=builder /app/client/dist ./dist
+COPY --from=builder /app/client/server.js ./server.js
+COPY --from=builder /app/client/package.json ./package.json
+COPY --from=builder /app/node_modules ./node_modules
 
 EXPOSE 3000
 
-CMD ["serve", "-s", "dist", "-l", "3000"]
+CMD ["node", "server.js"]

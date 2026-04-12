@@ -1,4 +1,4 @@
-// DebugPanelShell.tsx — LLM call inspector, shown when VITE_DEBUG=true.
+// DebugPanelShell.tsx — LLM call inspector, shown when DEBUG=true at runtime.
 //
 // Opens as a full-screen overlay with:
 //   - Filter tabs: All | Stakeholder | Metrics | Coach | Debrief
