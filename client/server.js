@@ -37,8 +37,8 @@ app.use(
   }),
 );
 
-// All routes get the config-injected index.html.
-app.get("/*splat", (_req, res) => {
+// All routes get the config-injected index.html (SPA fallback).
+app.use((_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Content-Type", "text/html");
   res.send(indexHtml);
