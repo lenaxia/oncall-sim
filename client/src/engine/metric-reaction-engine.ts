@@ -141,8 +141,10 @@ export function createMetricReactionEngine(
 
     if (newActions.length === 0) return;
 
-    // Record how far into the audit log we've processed.
-    _lastProcessedAuditLength = context.auditLog.length;
+    // Record how far into the audit log we've processed — done AFTER the LLM
+    // call resolves (or after activeMetrics check) to avoid silently swallowing
+    // actions if the call is skipped or fails.
+    const snapshotLength = context.auditLog.length;
 
     const template = buildReactionTemplate(
       newActions,
@@ -151,10 +153,28 @@ export function createMetricReactionEngine(
       getSimTime(),
     );
 
-    // Skip LLM call when no incident metrics are active
-    if (template.activeMetrics.length === 0) return;
+    // Skip LLM call when no incident metrics are active.
+    // Do NOT advance the cursor in this case — keep the actions for the next call.
+    if (template.activeMetrics.length === 0) {
+      log.debug(
+        { actions: newActions.map((a) => a.action) },
+        "metric-reaction: no active incident metrics — skipping LLM call",
+      );
+      return;
+    }
+
+    // Advance cursor now that we know we're making the call.
+    _lastProcessedAuditLength = snapshotLength;
 
     const messages = _buildPrompt(context, template, newActions);
+
+    log.info(
+      {
+        actions: newActions.map((a) => a.action),
+        activeMetrics: template.activeMetrics.map((m) => m.metricId),
+      },
+      "metric-reaction: firing LLM call",
+    );
 
     let response;
     try {

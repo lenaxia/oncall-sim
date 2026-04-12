@@ -320,4 +320,47 @@ describe("cache-stampede", () => {
     // cache_hit_rate is inverted (low = bad) — no auto-threshold generated
     expect(hitRate!.criticalThreshold).toBeUndefined();
   });
+
+  it("restart_service triggers non-empty activeMetrics for metric reaction engine", async () => {
+    // Regression test: restart_service on cache-stampede was not triggering LLM
+    // calls to the metric reaction engine because activeMetrics was being checked
+    // incorrectly. onset_second: 90 with pre_incident_seconds: 28800 means overlays
+    // are active from t=90 onward — well before the trainee can act.
+    const s = await loadOrFail(cacheYaml);
+    const { generateAllMetrics } = await import("../../src/metrics/generator");
+    const { createMetricStore } =
+      await import("../../src/metrics/metric-store");
+    const { buildReactionTemplate } =
+      await import("../../src/metrics/reaction-menu");
+
+    const { series, resolvedParams } = generateAllMetrics(s, 42);
+    const store = createMetricStore(series, resolvedParams);
+
+    // Sim clock starts at pre_incident_seconds=28800; onset_second=90 so overlays
+    // are already active. Generating points ensures currentValue is populated.
+    const SIM_TIME = 28800;
+    for (const svc of Object.keys(series)) {
+      for (const metricId of Object.keys(series[svc])) {
+        store.generatePoint(svc, metricId, SIM_TIME);
+      }
+    }
+
+    const template = buildReactionTemplate(
+      [
+        {
+          action: "restart_service" as const,
+          params: { remediationActionId: "restart_recs" },
+          simTime: SIM_TIME,
+        },
+      ],
+      s,
+      store,
+      SIM_TIME,
+    );
+
+    expect(template.activeMetrics.length).toBeGreaterThan(0);
+    const ids = template.activeMetrics.map((m) => m.metricId);
+    expect(ids).toContain("cache_hit_rate");
+    expect(ids).toContain("connection_pool_used");
+  });
 });
