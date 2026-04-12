@@ -52,18 +52,21 @@ function _notify() {
 }
 
 function _makeLabel(request: LLMRequest): string {
-  // Try to extract the most recent trainee action from the user message content
   const userMsg = [...request.messages]
     .reverse()
     .find((m) => m.role === "user");
   if (userMsg) {
-    // Look for "## Trainee Action(s)" pattern — action word follows on same or next line,
-    // possibly indented and prefixed with a t=<n> timestamp.
+    // For multi-action windows the last (primary) action is tagged [PRIMARY].
+    const primaryMatch = userMsg.content.match(
+      /t=[\d.]+\s+(\w+)[^\n]*\[PRIMARY\]/,
+    );
+    if (primaryMatch) return primaryMatch[1];
+
+    // Single action: look for "## Trainee Action(s)" header, action on next line.
     const actionMatch = userMsg.content.match(
-      /##\s*Trainee Actions?\b[^\n]*\n\s*(?:t=\d+\s+)?(\w+)/,
+      /##\s*Trainee Actions?\b[^\n]*\n\s*(?:t=[\d.]+\s+)?(\w+)/,
     );
     if (actionMatch) return actionMatch[1];
-    // Look for the first tool name in the system prompt as a fallback label
   }
   // Fall back to tool names
   if (request.tools.length > 0) return request.tools[0].name;

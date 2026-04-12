@@ -108,7 +108,40 @@ describe("recordRequest", () => {
           {
             role: "user",
             content:
-              "## Trainee Actions (2 since last reaction)\n  t=60 scale_cluster {}",
+              "## Trainee Actions (2 since last reaction)\n  t=60 scale_cluster {}\n  t=60 restart_service {} [PRIMARY]",
+          },
+        ],
+      }),
+    );
+    // [PRIMARY] tag takes priority — should return restart_service
+    expect(getEntries()[0].label).toBe("restart_service");
+  });
+
+  it("extracts label from [PRIMARY] tag for multi-action windows", () => {
+    recordRequest(
+      makeRequest({
+        messages: [
+          { role: "system", content: "sys" },
+          {
+            role: "user",
+            content:
+              "## Trainee Actions (3 since last reaction)\n  t=120.009 restart_service {}\n  t=120.009 restart_service {}\n  t=120.009 scale_cluster {} [PRIMARY]",
+          },
+        ],
+      }),
+    );
+    expect(getEntries()[0].label).toBe("scale_cluster");
+  });
+
+  it("handles decimal sim times in [PRIMARY] tag extraction", () => {
+    recordRequest(
+      makeRequest({
+        messages: [
+          { role: "system", content: "sys" },
+          {
+            role: "user",
+            content:
+              "## Trainee Actions (2 since last reaction)\n  t=120.00999999999999 restart_service {}\n  t=120.00999999999999 scale_cluster {} [PRIMARY]",
           },
         ],
       }),

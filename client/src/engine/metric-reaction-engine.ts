@@ -177,6 +177,8 @@ export function createMetricReactionEngine(
     }
 
     // Advance cursor now that we know we're making the call.
+    // Tracked so we can roll back if the call fails.
+    const previousLength = _lastProcessedAuditLength;
     _lastProcessedAuditLength = snapshotLength;
 
     const messages = _buildPrompt(context, template, newActions);
@@ -198,8 +200,14 @@ export function createMetricReactionEngine(
         sessionId: context.sessionId,
       });
     } catch (err) {
+      // Cursor was already advanced — on failure, roll it back so the actions
+      // are included in the next call window rather than silently dropped.
+      _lastProcessedAuditLength = previousLength;
       if (err instanceof LLMError) {
-        log.error({ code: err.code, err: err.message }, "LLM error");
+        log.error(
+          { code: err.code, err: err.message },
+          "LLM error — rolling back cursor for retry",
+        );
         return;
       }
       throw err;
