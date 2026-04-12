@@ -124,8 +124,10 @@ export function OpsDashboardTab({
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-3">
-        {/* Metric charts */}
-        <div className="grid grid-cols-2 gap-3">
+        {/* Metric charts — min-w-0 on the grid ensures each cell constrains its
+            children instead of expanding to fit content, preventing ResponsiveContainer
+            from measuring a zero-width track on the initial render. */}
+        <div className="grid grid-cols-2 gap-3 min-w-0">
           {Object.entries(serviceMetrics).map(([metricId, series]) => {
             const key = `${activeService}:${metricId}`;
             const meta = scenario?.metricsMeta?.[activeService]?.[metricId];

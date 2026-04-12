@@ -144,8 +144,12 @@ export const MetricChart = memo(function MetricChart({
       </div>
 
       {/* Chart */}
-      <div className="h-[220px] w-full" onMouseEnter={onFirstHover}>
-        <ResponsiveContainer width="100%" height="100%">
+      {/* min-w-0 prevents the grid cell from overflowing its track, which would
+          collapse the measured width to 0 and cause Recharts NaN attribute errors. */}
+      <div className="h-[220px] w-full min-w-0" onMouseEnter={onFirstHover}>
+        {/* minWidth/minHeight guard against the transient -1 / 0 dimensions that
+            ResponsiveContainer reports on the first paint before ResizeObserver fires. */}
+        <ResponsiveContainer width="100%" height="100%" minWidth={1}>
           <LineChart
             data={windowed}
             margin={{ top: 8, right: 8, bottom: 4, left: 0 }}

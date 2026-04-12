@@ -27,6 +27,27 @@ import type {
 
 const log = logger.child({ component: "metric-reaction-engine" });
 
+// ── Reaction history ──────────────────────────────────────────────────────────
+
+// One entry per completed LLM call. Captured after tool call resolution so the
+// LLM can see the full cause→effect chain on subsequent calls:
+// "at t=180 I saw trigger_rollback, connection_pool_used was at 98%, I chose
+//  full_recovery/cliff/1m → now at t=240 it's at 42% and recovering."
+interface ReactionDecision {
+  metricId: string;
+  service: string;
+  outcome: ReactionOutcome;
+  pattern: ActiveOverlayPattern;
+  speed: ReactiveSpeedTier;
+  valueAtDecision: number; // metric value when the decision was made
+}
+
+interface ReactionHistoryEntry {
+  simTime: number; // sim time when the LLM call was made
+  actions: string[]; // action types in the window (e.g. ["trigger_rollback"])
+  decisions: ReactionDecision[];
+}
+
 export interface MetricReactionEngine {
   react(context: StakeholderContext): Promise<void>;
 }
@@ -61,6 +82,10 @@ export function createMetricReactionEngine(
   let _isInFlight = false;
   let _pendingContext: StakeholderContext | null = null;
   let _lastProcessedAuditLength = 0;
+
+  // Ordered log of past LLM decisions — used to show the LLM the cause→effect
+  // chain so it can reason about whether prior reactions are still in progress.
+  const _reactionHistory: ReactionHistoryEntry[] = [];
 
   return {
     async react(context: StakeholderContext): Promise<void> {
@@ -158,6 +183,9 @@ export function createMetricReactionEngine(
         template.activeMetrics.map((m) => [`${m.service}:${m.metricId}`, m]),
       );
 
+      // Accumulate decisions for the history entry
+      const decisions: ReactionDecision[] = [];
+
       for (const entry of metricReactions as Record<string, unknown>[]) {
         const metricId = entry["metric_id"];
         const outcome = entry["outcome"];
@@ -207,7 +235,26 @@ export function createMetricReactionEngine(
           cycleSeconds,
           metricEntry,
         );
+
+        decisions.push({
+          metricId,
+          service: metricEntry.service,
+          outcome: outcome as ReactionOutcome,
+          pattern,
+          speed: speedTier,
+          valueAtDecision: metricEntry.currentValue,
+        });
       }
+
+      // Record this reaction in history so future calls see the causal chain
+      if (decisions.length > 0) {
+        _reactionHistory.push({
+          simTime: getSimTime(),
+          actions: newActions.map((a) => a.action),
+          decisions,
+        });
+      }
+
       break;
     }
   }
@@ -300,7 +347,11 @@ export function createMetricReactionEngine(
   ): LLMMessage[] {
     const focalService = scenario.opsDashboard.focalService;
 
-    // ── System prompt: stable instructions ──────────────────────────────────
+    // ── System prompt ────────────────────────────────────────────────────────
+    // Tells the LLM what it is, what the incident is, what actually causes it,
+    // and which remediation actions are correct fixes vs. red herrings.
+    // This is the ground truth the LLM needs to judge whether actions help.
+
     const serviceLines: string[] = [];
     for (const svc of [
       focalService,
@@ -316,24 +367,128 @@ export function createMetricReactionEngine(
       );
     }
 
+    // Remediation catalogue: id, action type, service, correct/not, side effects.
+    // The id is critical — action params include remediationActionId so the LLM
+    // can cross-reference the action window to the catalogue entry.
+    const remediationLines = scenario.remediationActions.map((ra) => {
+      const parts = [
+        `  [${ra.id}] ${ra.type} on ${ra.service}`,
+        ra.isCorrectFix ? "(CORRECT FIX)" : "(not a fix)",
+      ];
+      if (ra.sideEffect) parts.push(`— side effect: ${ra.sideEffect}`);
+      if (ra.targetVersion) parts.push(`— target version: ${ra.targetVersion}`);
+      if (ra.flagId)
+        parts.push(
+          `— flag: ${ra.flagId} → ${ra.flagEnabled ? "enabled" : "disabled"}`,
+        );
+      return parts.join(" ");
+    });
+
+    // Incident mechanism: per-component incident descriptions from the topology.
+    // This is the causal narrative — what is actually broken and how.
+    // Gives the LLM the system-state context it needs to judge whether an action
+    // addresses the mechanism, not just whether it matches a "correct fix" label.
+    const incidentLines: string[] = [];
+    for (const component of scenario.topology.focalService.components) {
+      const incidents = scenario.topology.focalService.incidents.filter(
+        (inc) => inc.affectedComponent === component.id,
+      );
+      for (const inc of incidents) {
+        incidentLines.push(`  ${component.label}: ${inc.description}`);
+      }
+    }
+
+    // Service correlation map: tells the LLM which downstream/upstream services
+    // are causally linked to the incident vs. exonerated, so it can reason about
+    // whether actions targeting correlated services affect incident metrics.
+    const correlationLines: string[] = [];
+    for (const svc of scenario.topology.downstream) {
+      if (svc.correlation) {
+        correlationLines.push(
+          `  ${svc.name} (downstream): ${svc.correlation}${svc.description ? ` — ${svc.description}` : ""}`,
+        );
+      }
+    }
+    for (const svc of scenario.topology.upstream) {
+      correlationLines.push(
+        `  ${svc.name} (upstream)${svc.description ? ` — ${svc.description}` : ""}`,
+      );
+    }
+
     const systemContent = [
       "You are the environment simulator for an on-call training scenario.",
-      "Assess the cumulative effect of the trainee's recent actions and call",
+      "Assess the cumulative effect of the trainee's actions and call",
       "select_metric_reaction with: the outcome category, the pattern that best",
       "models how metrics will visibly change, the speed, and optionally a scope",
       "(list of metric_ids to affect — defaults to all active incident metrics).",
       "Hints are provided per outcome but are non-binding.",
       "",
-      "Available services and metrics:",
+      "## Incident",
+      `${scenario.title}: ${scenario.description}`,
+      "",
+      "## Root Cause",
+      scenario.evaluation.rootCause,
+      ...(incidentLines.length > 0
+        ? ["", "## Incident Mechanism", ...incidentLines]
+        : []),
+      ...(correlationLines.length > 0
+        ? ["", "## Service Correlations", ...correlationLines]
+        : []),
+      "",
+      "## Available Services and Metrics",
       ...serviceLines,
+      "",
+      "## Remediation Actions",
+      "Match action params (remediationActionId) to [id] to identify which action was taken.",
+      ...remediationLines,
     ].join("\n");
 
     // ── User message: live session state ─────────────────────────────────────
 
-    // Action window: all active actions taken since the last reaction.
-    // The most recent action is labelled PRIMARY — this drives the reaction menu.
-    // Earlier actions in the window provide context (the LLM should reason about
-    // the cumulative effect, not just the most recent one in isolation).
+    // Full prior audit log (all actions before this window, passive included for
+    // context). The LLM needs this to reason about cumulative state — e.g. if the
+    // correct fix was applied in a prior window, it should not re-trigger full
+    // recovery for an unrelated new action while metrics are already recovering.
+    const priorActions = context.auditLog.slice(
+      0,
+      context.auditLog.length - newActions.length,
+    );
+    let priorAuditSection: string | null = null;
+    if (priorActions.length > 0) {
+      const lines = priorActions.map(
+        (a) => `  [t=${a.simTime}] ${a.action} ${JSON.stringify(a.params)}`,
+      );
+      priorAuditSection = `## Prior Actions (full history)\n${lines.join("\n")}`;
+    }
+
+    // Reaction history: one entry per past LLM decision, showing what actions
+    // triggered it, what values were seen at decision time, and what outcome was
+    // chosen — then the current metric value so the LLM can see whether that
+    // reaction is complete, still in progress, or was superseded.
+    let reactionHistorySection: string | null = null;
+    if (_reactionHistory.length > 0) {
+      const lines: string[] = [];
+      for (const entry of _reactionHistory) {
+        lines.push(
+          `  [t=${entry.simTime}] actions: ${entry.actions.join(", ")}`,
+        );
+        for (const d of entry.decisions) {
+          const nowValue = metricStore.getCurrentValue(
+            d.service,
+            d.metricId,
+            context.simTime,
+          );
+          const nowStr = nowValue !== null ? nowValue.toFixed(2) : "no data";
+          lines.push(
+            `    ${d.metricId}: was ${d.valueAtDecision.toFixed(2)} → decided ${d.outcome}/${d.pattern}/${d.speed} → now ${nowStr}`,
+          );
+        }
+      }
+      reactionHistorySection = `## Past Reactions (cause → effect)\n${lines.join("\n")}`;
+    }
+
+    // Current action window: new active actions since the last reaction.
+    // The most recent is labelled PRIMARY — it drives the reaction menu hints.
     const lastAction = newActions[newActions.length - 1];
     let actionSection: string;
     if (newActions.length === 1) {
@@ -346,7 +501,8 @@ export function createMetricReactionEngine(
       actionSection = `## Trainee Actions (${newActions.length} since last reaction)\n${lines.join("\n")}`;
     }
 
-    // Current metric values for every tracked metric
+    // Current metric values for every tracked metric, with thresholds so the LLM
+    // can reason about whether a partial recovery would still breach an alarm boundary.
     const metricLines: string[] = [];
     for (const svc of [
       focalService,
@@ -369,8 +525,17 @@ export function createMetricReactionEngine(
         const currentStr =
           current !== null ? `${current.toFixed(2)}${unit}` : "no data";
         const baselineStr = rp ? `baseline=${rp.baselineValue}${unit}` : "";
+        const thresholdParts: string[] = [];
+        if (m.warningThreshold != null)
+          thresholdParts.push(`warn=${m.warningThreshold}${unit}`);
+        if (m.criticalThreshold != null)
+          thresholdParts.push(`crit=${m.criticalThreshold}${unit}`);
+        const thresholdStr =
+          thresholdParts.length > 0
+            ? ` thresholds=${thresholdParts.join("/")}`
+            : "";
         metricLines.push(
-          `  ${svc.name}/${m.archetype} (${label}): current=${currentStr} ${baselineStr}`.trimEnd(),
+          `  ${svc.name}/${m.archetype} (${label}): current=${currentStr} ${baselineStr}${thresholdStr}`.trimEnd(),
         );
       }
     }
@@ -384,6 +549,44 @@ export function createMetricReactionEngine(
               `  ${a.id} ${a.service} ${a.condition} status=${a.status} severity=${a.severity}`,
           )
         : ["  (none)"];
+
+    // Pipeline state — needed to interpret rollback/deploy actions correctly.
+    // Shows current deployed version and previous version per stage.
+    const pipelines = context.simState.pipelines;
+    let pipelineSection: string | null = null;
+    if (pipelines.length > 0) {
+      const lines: string[] = [];
+      for (const p of pipelines) {
+        lines.push(`  ${p.name} (${p.service}):`);
+        for (const s of p.stages) {
+          lines.push(
+            `    ${s.name}: current=${s.currentVersion} previous=${s.previousVersion ?? "none"} status=${s.status}`,
+          );
+        }
+      }
+      pipelineSection = `## Pipeline State\n${lines.join("\n")}`;
+    }
+
+    // Feature flag state — current effective state derived from defaults plus
+    // any toggle_feature_flag actions already applied in the audit log.
+    const flagStateMap = new Map(
+      scenario.featureFlags.map((f) => [f.id, f.defaultOn]),
+    );
+    for (const entry of context.auditLog) {
+      if (entry.action === "toggle_feature_flag") {
+        const flagId = entry.params["flagId"] as string | undefined;
+        const enabled = entry.params["enabled"] as boolean | undefined;
+        if (flagId && enabled !== undefined) flagStateMap.set(flagId, enabled);
+      }
+    }
+    let featureFlagSection: string | null = null;
+    if (scenario.featureFlags.length > 0) {
+      const lines = scenario.featureFlags.map((f) => {
+        const current = flagStateMap.get(f.id) ?? f.defaultOn;
+        return `  ${f.id} (${f.label}): ${current ? "enabled" : "disabled"}${f.description ? ` — ${f.description}` : ""}`;
+      });
+      featureFlagSection = `## Feature Flags\n${lines.join("\n")}`;
+    }
 
     // Host group counts from scenario (environmental state)
     const hostLines =
@@ -437,11 +640,14 @@ export function createMetricReactionEngine(
       `Patterns: smooth_decay | cliff | stepped | blip_then_decay | queue_burndown | oscillating | sawtooth_rebound`;
 
     const userContent = [
-      `## Scenario\n${scenario.title}`,
       `## Sim Time\nt=${context.simTime}`,
+      ...(priorAuditSection ? [priorAuditSection] : []),
+      ...(reactionHistorySection ? [reactionHistorySection] : []),
       actionSection,
       `## Current Metric Values\n${metricLines.join("\n")}`,
       `## Active Alarms\n${alarmLines.join("\n")}`,
+      ...(pipelineSection ? [pipelineSection] : []),
+      ...(featureFlagSection ? [featureFlagSection] : []),
       `## Host Groups\n${hostLines.join("\n")}`,
       ...(activeThrottleSection ? [activeThrottleSection] : []),
       reactionsSection,
