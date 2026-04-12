@@ -1,4 +1,4 @@
-import { useMemo, memo, useState, useRef } from "react";
+import { useMemo, memo, useState, useRef, useEffect } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -54,7 +54,6 @@ export const MetricChart = memo(function MetricChart({
 }: MetricChartProps) {
   // Downsample old history for chart rendering — memoised on the raw series
   // reference so it only reruns when this specific metric gets a new point.
-  // This prevents all charts from repainting when any single metric updates.
   const prepared = useMemo(() => prepareChartSeries(series), [series]);
 
   // All points up to now
@@ -78,11 +77,9 @@ export const MetricChart = memo(function MetricChart({
   const defaultEndIndex = Math.max(0, visible.length - 1);
 
   // User-override brush indices. null = use the auto-computed default.
-  // Set when the user drags the brush, cleared when they drag back to the live end.
   const [userBrushStart, setUserBrushStart] = useState<number | null>(null);
   const [userBrushEnd, setUserBrushEnd] = useState<number | null>(null);
 
-  // Effective brush indices: prefer user override, fall back to auto-computed
   const brushStart =
     userBrushStart !== null
       ? Math.min(userBrushStart, defaultEndIndex)
@@ -92,11 +89,30 @@ export const MetricChart = memo(function MetricChart({
       ? Math.min(userBrushEnd, defaultEndIndex)
       : defaultEndIndex;
 
-  // The data slice the chart actually renders
   const windowed = useMemo(
     () => visible.slice(brushStart, brushEnd + 1),
     [visible, brushStart, brushEnd],
   );
+
+  // Track whether the container div has been measured by the browser.
+  // Recharts Brush computes traveller positions as (index/total)*containerWidth.
+  // If the container width is 0 or -1 (before ResizeObserver fires), those
+  // positions are NaN and the Brush renders broken. We defer the Brush until
+  // the container has a real positive width.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerReady, setContainerReady] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (w > 0) setContainerReady(true);
+    });
+    ro.observe(el);
+    // Also check immediately in case it's already laid out
+    if (el.offsetWidth > 0) setContainerReady(true);
+    return () => ro.disconnect();
+  }, []);
 
   const breaching =
     criticalThreshold != null &&
@@ -143,7 +159,11 @@ export const MetricChart = memo(function MetricChart({
       </div>
 
       {/* Chart — min-w-0 prevents grid cell overflow collapsing measured width to 0 */}
-      <div className="h-[220px] w-full min-w-0" onMouseEnter={onFirstHover}>
+      <div
+        ref={containerRef}
+        className="h-[220px] w-full min-w-0"
+        onMouseEnter={onFirstHover}
+      >
         <ResponsiveContainer width="100%" height="100%" minWidth={1}>
           <LineChart
             data={hasData ? windowed : []}
@@ -224,8 +244,9 @@ export const MetricChart = memo(function MetricChart({
                   activeDot={{ r: 4, stroke: "none" }}
                   isAnimationActive={false}
                 />
-                {/* Brush minimap — full history, clamped indices */}
-                {visible.length > 2 && (
+                {/* Brush minimap — deferred until container has a real pixel
+                    width so Recharts doesn't compute NaN traveller positions */}
+                {visible.length > 2 && containerReady && (
                   <Brush
                     data={visible}
                     dataKey="t"
@@ -238,8 +259,6 @@ export const MetricChart = memo(function MetricChart({
                         typeof range.endIndex === "number"
                       ) {
                         const atLiveEnd = range.endIndex >= visible.length - 1;
-                        // If user dragged back to the live end, clear overrides
-                        // so auto-advance resumes
                         if (atLiveEnd) {
                           setUserBrushStart(null);
                           setUserBrushEnd(null);
