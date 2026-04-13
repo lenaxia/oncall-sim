@@ -30,6 +30,8 @@ export interface OverlayApplication {
   ceiling: number;
   rampDurationSeconds: number;
   saturationDurationSeconds: number;
+  /** ID of the incident that produced this overlay — used for deduplication. */
+  incidentId: string;
 }
 
 export interface ResolvedMetricParams {

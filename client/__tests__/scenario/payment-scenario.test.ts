@@ -164,15 +164,19 @@ describe("payment-db-pool-exhaustion — upstream incident propagation", () => {
     expect(cp!.incidentResponses![0].overlay).toBe("saturation");
   });
 
-  it("p99_latency_ms has overlays from both rds and ecs_cluster specs", async () => {
+  it("p99_latency_ms has exactly ONE overlay after deduplication (highest-impact wins)", async () => {
     // Both postgres (rds) and ecs are in the blast radius, both define p99_latency_ms.
-    // Result: p99 gets multiple overlay entries (one per component spec).
+    // Before dedup: two overlays would stack (rds peak=100, ecs peak=200 → adds both deltas).
+    // After dedup: only the highest-impact overlay is kept (ecs peak=200).
     const result = await loadPayment();
     const p99 = result.opsDashboard.focalService.metrics.find(
       (m) => m.archetype === "p99_latency_ms",
-    );
+    )!;
     expect(p99).toBeDefined();
-    expect(p99!.incidentResponses!.length).toBeGreaterThanOrEqual(2);
+    // Exactly one overlay per incident after dedup
+    expect(p99.incidentResponses!.length).toBe(1);
+    // The kept overlay should be the ecs one (higher peak) not the rds one
+    expect(p99.incidentResponses![0].peakValue).toBeGreaterThan(100);
   });
 
   it("ecs p95 overlay onsetSecond reflects propagation lag from postgres", async () => {

@@ -413,17 +413,25 @@ export function createMetricReactionEngine(
         return m.currentValue + (m.resolvedValue - m.currentValue) * mag;
       }
       case "worsening": {
-        // magnitude scales how far toward an effective peak.
         // Worsening direction: away from resolvedValue toward (and past) peakValue.
         // peakValue > resolvedValue → worsening goes up (e.g. latency, error_rate).
         // peakValue < resolvedValue → worsening goes down (e.g. cache_hit_rate, availability).
         const mag = magnitude ?? 1.0;
-        // If current is already within 20% of the headroom to scripted peak,
-        // extend the effective peak 30% further in the worsening direction so
-        // the animation is always visibly noticeable.
         const worseningGoesUp = m.peakValue >= m.resolvedValue;
+
+        // Compute the effective peak — the target the worsening should push toward.
+        // Three cases:
+        //   1. current has blown PAST peakValue (prior reactions already exceeded it):
+        //      extend 30% further beyond current in the worsening direction.
+        //   2. current is within 20% of peakValue (near-peak, would be invisible):
+        //      extend 30% further beyond current.
+        //   3. normal case: use peakValue as the target anchor.
+        const alreadyBeyondPeak = worseningGoesUp
+          ? m.currentValue >= m.peakValue
+          : m.currentValue <= m.peakValue;
+
         let effectivePeak: number;
-        if (peakIsClose(m.currentValue, m.peakValue)) {
+        if (alreadyBeyondPeak || peakIsClose(m.currentValue, m.peakValue)) {
           effectivePeak = worseningGoesUp
             ? m.currentValue * 1.3
             : m.currentValue * 0.7;

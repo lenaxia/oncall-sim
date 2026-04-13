@@ -509,10 +509,36 @@ function deriveFocalServiceConfig(node: ServiceNode): FocalServiceConfig {
     }
   }
 
-  // Attach sorted overlay applications to each MetricConfig
+  // Attach sorted overlay applications to each MetricConfig.
+  // Deduplicate: if multiple components in the blast radius all contributed
+  // an overlay for the same (incident, archetype) combination, keep only the
+  // most-impactful one. Stacking additive overlays from different components
+  // for the same incident would double-count the degradation.
   const metrics: MetricConfig[] = [];
   for (const [archetype, metricConfig] of metricByArchetype) {
-    const overlays = (overlaysByArchetype.get(archetype) ?? []).sort(
+    const rawOverlays = overlaysByArchetype.get(archetype) ?? [];
+
+    // Deduplicate per (incidentId, archetype): keep the overlay whose peakValue
+    // is furthest from baseline (most degraded). Direction is inferred from
+    // whether peakValue is above or below baseline.
+    const baseline = metricConfig.baselineValue ?? 0;
+    const deduped = new Map<string, OverlayApplication>();
+    for (const app of rawOverlays) {
+      const key = app.incidentId;
+      const existing = deduped.get(key);
+      if (!existing) {
+        deduped.set(key, app);
+      } else {
+        // Keep the overlay that is further from baseline in the degraded direction
+        const existingDist = Math.abs(existing.peakValue - baseline);
+        const newDist = Math.abs(app.peakValue - baseline);
+        if (newDist > existingDist) {
+          deduped.set(key, app);
+        }
+      }
+    }
+
+    const overlays = [...deduped.values()].sort(
       (a, b) => a.onsetSecond - b.onsetSecond,
     );
     metrics.push({ ...metricConfig, incidentResponses: overlays });
@@ -568,6 +594,7 @@ function buildOverlayApplication(
     ceiling,
     rampDurationSeconds: incident.rampDurationSeconds ?? 30,
     saturationDurationSeconds: 60,
+    incidentId: incident.id,
   };
 }
 

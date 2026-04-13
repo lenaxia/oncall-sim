@@ -545,18 +545,25 @@ export function createMetricStore(
             // Worsening direction: away from resolvedValue toward peakValue.
             // peakValue > resolvedValue → worsening goes up (e.g. latency).
             // peakValue < resolvedValue → worsening goes down (e.g. cache_hit_rate).
-            // If current is within 20% of headroom to scripted peak, extend the
-            // effective peak 30% further in the worsening direction so the
-            // animation is always visibly noticeable.
+            //
+            // Three cases for the effective peak:
+            //   1. current has blown PAST peakValue (prior reactions already exceeded it):
+            //      extend 30% further beyond current in the worsening direction.
+            //   2. current is within 20% of peakValue (near-peak, would be invisible):
+            //      extend 30% further beyond current.
+            //   3. normal case: use peakValue.
+            const worseningGoesUp = peakValue >= resolvedValue;
+            const alreadyBeyondPeak = worseningGoesUp
+              ? anchoredStartValue >= peakValue
+              : anchoredStartValue <= peakValue;
             const headroom = Math.abs(peakValue - anchoredStartValue);
             const scale = Math.max(
               Math.abs(anchoredStartValue),
               Math.abs(peakValue),
               0.001,
             );
-            const worseningGoesUp = peakValue >= resolvedValue;
             let effectivePeak: number;
-            if (headroom / scale < 0.2) {
+            if (alreadyBeyondPeak || headroom / scale < 0.2) {
               effectivePeak = worseningGoesUp
                 ? anchoredStartValue * 1.3
                 : anchoredStartValue * 0.7;
