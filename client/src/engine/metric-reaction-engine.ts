@@ -372,6 +372,12 @@ export function createMetricReactionEngine(
       ...(pattern === "oscillating"
         ? { oscillationMode: oscillatingMode, cycleSeconds }
         : {}),
+      _intent: {
+        outcome: outcome as Exclude<ReactionOutcome, "no_effect">,
+        magnitude: magnitude ?? (outcome === "worsening" ? 1.0 : 0.5),
+        resolvedValue: m.resolvedValue,
+        peakValue: m.peakValue,
+      },
     };
 
     metricStore.applyActiveOverlay(m.service, m.metricId, overlay);

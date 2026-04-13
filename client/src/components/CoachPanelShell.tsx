@@ -46,7 +46,20 @@ function isTraineeMessage(id: string): boolean {
   return id.startsWith("trainee:");
 }
 
-// ── Main component ─────────────────────────────────────────────────────────────
+// ── Typing indicator ──────────────────────────────────────────────────────────
+
+function TypingIndicator() {
+  return (
+    <div className="px-3 py-2 border-t border-sim-border-muted flex flex-col gap-0.5 items-start">
+      <span className="text-[10px] text-sim-text-faint font-mono">Coach</span>
+      <div className="px-2.5 py-2 rounded bg-sim-border self-start flex items-center gap-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-sim-text-faint animate-bounce [animation-delay:0ms]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-sim-text-faint animate-bounce [animation-delay:150ms]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-sim-text-faint animate-bounce [animation-delay:300ms]" />
+      </div>
+    </div>
+  );
+}
 
 export function CoachPanelShell() {
   const { state, sendCoachMessage, setCoachLevel } = useSession();
@@ -70,7 +83,7 @@ export function CoachPanelShell() {
     if (open) setLastSeenCount(messageCount);
   }, [open, messageCount]);
 
-  // Scroll to bottom on new messages while panel is open
+  // Scroll to bottom on new messages or when typing indicator appears
   useEffect(() => {
     if (
       open &&
@@ -79,7 +92,7 @@ export function CoachPanelShell() {
     ) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages.length, open]);
+  }, [messages.length, open, sending]);
 
   async function handleSend() {
     const text = input.trim();
@@ -195,6 +208,13 @@ export function CoachPanelShell() {
                     </div>
                   );
                 })}
+                {sending && <TypingIndicator />}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+            {messages.length === 0 && sending && (
+              <div className="flex flex-col">
+                <TypingIndicator />
                 <div ref={messagesEndRef} />
               </div>
             )}

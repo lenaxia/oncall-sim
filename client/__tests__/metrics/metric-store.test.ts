@@ -355,6 +355,89 @@ describe("MetricStore — applyActiveOverlay", () => {
       store.applyActiveOverlay("no-svc", "error_rate", makeOverlay()),
     ).not.toThrow();
   });
+
+  it("re-anchors startValue and startSimTime to the most recent generated point when overlay arrives late", () => {
+    // Simulate: LLM call was made at t=60, but response arrives at t=180.
+    // Overlay was built with startValue from t=60, but must animate from t=180.
+    const store = createMetricStore(
+      { svc: { error_rate: makeHistorical(1) } },
+      { svc: { error_rate: makeRp({ overlay: "none", baselineValue: 1 }) } },
+    );
+
+    // Advance the store to t=60, t=120, t=180 — simulating 3 ticks before overlay arrives.
+    nextPoint(store, "svc", "error_rate", 60);
+    nextPoint(store, "svc", "error_rate", 120);
+    nextPoint(store, "svc", "error_rate", 180);
+
+    const valueAtT180 = store.getCurrentValue("svc", "error_rate", 180)!;
+
+    // Overlay built at t=60 (stale anchor) but applied at t=180
+    store.applyActiveOverlay(
+      "svc",
+      "error_rate",
+      makeOverlay({
+        startSimTime: 60, // stale — from when LLM call was made
+        startValue: 999, // stale — should be overridden
+        targetValue: 10,
+        pattern: "smooth_decay",
+        speedSeconds: 300,
+        sustained: true,
+      }),
+    );
+
+    // The overlay stored in the state should be anchored to t=180, not t=60
+    const p240 = nextPoint(store, "svc", "error_rate", 240);
+    // With fresh anchor (startValue≈valueAtT180, startSimTime=180), at t=240 (elapsed=60s)
+    // smooth_decay moves toward targetValue=10 from ~1, so value should be > valueAtT180.
+    expect(p240.v).toBeGreaterThan(valueAtT180);
+  });
+
+  it("re-computes targetValue from fresh anchor when _intent is provided (worsening)", () => {
+    // currentValue at LLM call time was 5. By the time overlay is applied, metric is at 8.
+    // Without re-anchoring: target = 5 + (10 - 5) * 1.0 = 10 (from old anchor of 5).
+    // With re-anchoring:    target = 8 + (10 - 8) * 1.0 = 10 (from new anchor of 8).
+    // Key invariant: worsening should always move AWAY from baseline, never backwards.
+    const store = createMetricStore(
+      { svc: { error_rate: makeHistorical(5) } },
+      {
+        svc: {
+          error_rate: makeRp({
+            overlay: "none",
+            baselineValue: 1,
+            peakValue: 10,
+          }),
+        },
+      },
+    );
+
+    // Advance to t=60, t=120 — metric has drifted from its t=0 value of 5
+    nextPoint(store, "svc", "error_rate", 60);
+    nextPoint(store, "svc", "error_rate", 120);
+
+    store.applyActiveOverlay(
+      "svc",
+      "error_rate",
+      makeOverlay({
+        startSimTime: 0,
+        startValue: 5, // stale LLM-call-time value
+        targetValue: 10, // will be recomputed
+        pattern: "cliff",
+        speedSeconds: 60,
+        sustained: true,
+        _intent: {
+          outcome: "worsening",
+          magnitude: 1.0,
+          resolvedValue: 1,
+          peakValue: 10,
+        },
+      }),
+    );
+
+    // At t=180, cliff has elapsed (speedSeconds=60 from anchor at t=120), should be at target
+    const p180 = nextPoint(store, "svc", "error_rate", 180);
+    // Target is recomputed from anchored value (~5) toward peak (10) — should be moving up
+    expect(p180.v).toBeGreaterThan(5);
+  });
 });
 
 // ── getResolvedParams ─────────────────────────────────────────────────────────

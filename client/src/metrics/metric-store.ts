@@ -39,7 +39,7 @@ interface NoiseState {
 // Active behavioral overlay — set by LLM, persists until overwritten.
 export interface ActiveOverlay {
   startSimTime: number;
-  startValue: number; // metric value when overlay was applied
+  startValue: number; // metric value when overlay was applied (re-anchored to latest point)
   targetValue: number;
   pattern: ActiveOverlayPattern;
   speedSeconds: number;
@@ -47,6 +47,14 @@ export interface ActiveOverlay {
   // oscillating only
   oscillationMode?: "damping" | "sustained";
   cycleSeconds?: number;
+  // Carry the original intent so applyActiveOverlay can recompute targetValue
+  // from the fresh anchor when the LLM response is late.
+  _intent?: {
+    outcome: "full_recovery" | "partial_recovery" | "worsening";
+    magnitude: number;
+    resolvedValue: number;
+    peakValue: number;
+  };
 }
 
 export type ActiveOverlayPattern =
@@ -497,7 +505,50 @@ export function createMetricStore(
     ): void {
       const state = _getState(service, metricId);
       if (!state) return;
-      state.activeOverlay = overlay;
+
+      // Anchor the overlay to the most recent generated point so that it always
+      // animates forward from "now", regardless of how long the LLM took to
+      // respond. Re-compute targetValue from the fresh anchor so that
+      // worsening/recovery directions are always relative to the real current value.
+      const latestPoint =
+        state.generatedPoints[state.generatedPoints.length - 1];
+      const anchoredStartValue = latestPoint?.v ?? overlay.startValue;
+      const anchoredStartSimTime = latestPoint?.t ?? overlay.startSimTime;
+
+      let targetValue = overlay.targetValue;
+      if (overlay._intent) {
+        const { outcome, magnitude, resolvedValue, peakValue } =
+          overlay._intent;
+        switch (outcome) {
+          case "full_recovery":
+            targetValue =
+              anchoredStartValue +
+              (resolvedValue - anchoredStartValue) * magnitude;
+            break;
+          case "partial_recovery":
+            targetValue =
+              anchoredStartValue +
+              (resolvedValue - anchoredStartValue) * magnitude;
+            break;
+          case "worsening":
+            // If already at or beyond peak, push 20% further above current
+            if (anchoredStartValue >= peakValue) {
+              targetValue = anchoredStartValue * 1.2;
+            } else {
+              targetValue =
+                anchoredStartValue +
+                (peakValue - anchoredStartValue) * magnitude;
+            }
+            break;
+        }
+      }
+
+      state.activeOverlay = {
+        ...overlay,
+        startValue: anchoredStartValue,
+        startSimTime: anchoredStartSimTime,
+        targetValue,
+      };
     },
 
     updateResolvedValue(

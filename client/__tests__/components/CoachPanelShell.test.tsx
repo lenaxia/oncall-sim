@@ -311,4 +311,39 @@ describe("CoachPanelShell — send input", () => {
     expect(screen.getByRole("button", { name: /send/i })).toBeDisabled();
     act(() => resolveResponse());
   });
+
+  it("shows typing indicator while waiting for coach response", async () => {
+    const user = userEvent.setup();
+    let resolveResponse!: () => void;
+    const sendCoachMessage = vi.fn().mockReturnValue(
+      new Promise<void>((res) => {
+        resolveResponse = res;
+      }),
+    );
+    const { getByLabelText } = renderCoach({ sendCoachMessage });
+    await user.click(getByLabelText(/toggle coach panel/i));
+    await user.type(screen.getByPlaceholderText(/ask the coach/i), "Help");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    // Typing indicator: three bouncing dots rendered while awaiting response
+    expect(document.querySelectorAll(".animate-bounce").length).toBe(3);
+    act(() => resolveResponse());
+  });
+
+  it("hides typing indicator once response resolves", async () => {
+    const user = userEvent.setup();
+    let resolveResponse!: () => void;
+    const sendCoachMessage = vi.fn().mockReturnValue(
+      new Promise<void>((res) => {
+        resolveResponse = res;
+      }),
+    );
+    const { getByLabelText } = renderCoach({ sendCoachMessage });
+    await user.click(getByLabelText(/toggle coach panel/i));
+    await user.type(screen.getByPlaceholderText(/ask the coach/i), "Help");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    act(() => resolveResponse());
+    await waitFor(() =>
+      expect(document.querySelectorAll(".animate-bounce").length).toBe(0),
+    );
+  });
 });
