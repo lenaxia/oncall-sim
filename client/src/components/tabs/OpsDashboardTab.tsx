@@ -141,6 +141,7 @@ export function OpsDashboardTab({
                 simTime={chartSimTime}
                 clockAnchorMs={state.clockAnchorMs}
                 criticalThreshold={meta?.criticalThreshold}
+                thresholdDirection={meta?.thresholdDirection ?? "high"}
                 onFirstHover={() => {
                   if (!viewedMetrics.current.has(key)) {
                     viewedMetrics.current.add(key);

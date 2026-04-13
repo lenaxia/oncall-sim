@@ -39,6 +39,7 @@ import type {
 } from "./types";
 import type { OverlayApplication } from "../metrics/types";
 import { COMPONENT_METRICS } from "../metrics/component-metrics";
+import { getArchetypeDefaults } from "../metrics/archetypes";
 import {
   findEntrypoint,
   propagationPath,
@@ -354,11 +355,28 @@ function deriveCriticalThreshold(
   baseline: number,
   ceiling: number | null,
 ): number | null {
-  // cache_hit_rate is an inverted metric (low = bad) — auto-alarm uses >=
-  // threshold which would only fire when the cache is healthy (high hit rate).
-  // Return null to suppress auto-alarm; scenario authors should add explicit
-  // alarms on correlated metrics (latency, error rate) instead.
-  if (archetype === "cache_hit_rate") return null;
+  const archDef = getArchetypeDefaults(archetype);
+
+  // "low" direction metrics: alarm fires when value drops TO OR BELOW threshold.
+  // Threshold is a minimum acceptable value.
+  if (archDef.thresholdDirection === "low") {
+    switch (archetype) {
+      case "cert_expiry":
+        // Alarm when ≤ 30 days remaining
+        return 30;
+      case "cache_hit_rate":
+        // Suppress auto-alarm — authors should alarm on correlated latency/error metrics
+        return null;
+      case "availability":
+      case "conversion_rate":
+        // Alarm when drops below 99% of baseline (e.g. availability < 99.0%)
+        return baseline > 0 ? Math.round(baseline * 0.99 * 100) / 100 : null;
+      default:
+        return baseline > 0 ? Math.round(baseline * 0.5 * 100) / 100 : null;
+    }
+  }
+
+  // "high" direction metrics: alarm fires when value rises TO OR ABOVE threshold.
 
   // Capacity-based: alarm at 85% of ceiling
   if (
@@ -385,7 +403,7 @@ function deriveCriticalThreshold(
     return baseline > 0 ? Math.round(baseline * 2 * 100) / 100 : null;
   }
 
-  // Everything else: 3× baseline (latency, error/fault rate, memory, throttles, queues)
+  // Everything else: 3× baseline (latency, error/fault rate, memory, etc.)
   return baseline > 0 ? Math.round(baseline * 3 * 100) / 100 : null;
 }
 
@@ -833,18 +851,28 @@ async function transform(
     })),
   );
 
-  const alarms: AlarmConfig[] = raw.alarms.map((a) => ({
-    id: a.id,
-    service: a.service,
-    metricId: a.metric_id,
-    condition: a.condition,
-    severity: a.severity,
-    threshold: a.threshold,
-    autoFire: a.auto_fire ?? true,
-    onsetSecond: a.onset_second,
-    autoPage: a.auto_page ?? false,
-    pageMessage: a.page_message,
-  }));
+  const alarms: AlarmConfig[] = raw.alarms.map((a) => {
+    // Infer thresholdDirection from the metric archetype if available.
+    let thresholdDirection: "high" | "low" = "high";
+    try {
+      thresholdDirection = getArchetypeDefaults(a.metric_id).thresholdDirection;
+    } catch {
+      // Unknown archetype (custom metric) — default to "high"
+    }
+    return {
+      id: a.id,
+      service: a.service,
+      metricId: a.metric_id,
+      condition: a.condition,
+      severity: a.severity,
+      threshold: a.threshold,
+      thresholdDirection,
+      autoFire: a.auto_fire ?? true,
+      onsetSecond: a.onset_second,
+      autoPage: a.auto_page ?? false,
+      pageMessage: a.page_message,
+    };
+  });
 
   // Auto-generate alarms for every MetricConfig that has a criticalThreshold,
   // unless the author has already defined an alarm for that service+metric pair.
@@ -855,13 +883,17 @@ async function transform(
     if (metric.criticalThreshold == null) continue;
     const key = `${opsDashboard.focalService.name}:${metric.archetype}`;
     if (authoredAlarmKeys.has(key)) continue;
+    const archDef = getArchetypeDefaults(metric.archetype);
+    const op = archDef.thresholdDirection === "low" ? "<" : ">";
+    const unit = metric.unit ? ` ${metric.unit}` : "";
     alarms.push({
       id: `auto-${opsDashboard.focalService.name}-${metric.archetype}`,
       service: opsDashboard.focalService.name,
       metricId: metric.archetype,
-      condition: `${metric.archetype} > ${metric.criticalThreshold}${metric.unit ? " " + metric.unit : ""}`,
+      condition: `${metric.archetype} ${op} ${metric.criticalThreshold}${unit}`,
       severity: "SEV2",
       threshold: metric.criticalThreshold,
+      thresholdDirection: archDef.thresholdDirection,
       autoFire: true,
       autoPage: false,
     });

@@ -13,6 +13,13 @@ export interface ArchetypeDefaults {
   deriveBaseline: ((scaleValue: number) => number) | null;
   maxValue: number;
   minValue: number;
+  /**
+   * Direction the metric is "bad" in — determines alarm firing and chart rendering.
+   *   "high" — bad when high (fire when value >= threshold). Default. Most metrics.
+   *   "low"  — bad when low  (fire when value <= threshold). cert_expiry, cache_hit_rate,
+   *            availability, conversion_rate.
+   */
+  thresholdDirection: "high" | "low";
 }
 
 const ARCHETYPES: Record<string, ArchetypeDefaults> = {
@@ -26,28 +33,31 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   error_rate: {
     label: "Error Rate",
     unit: "percent",
     noiseType: "sporadic_spikes",
     inheritsRhythm: false,
-    defaultNoiseLevel: "low",
+    defaultNoiseLevel: "high",   // bad actors, misconfigured clients, transient failures
     scaleField: null,
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "high",
   },
   fault_rate: {
     label: "Fault Rate",
     unit: "percent",
     noiseType: "sporadic_spikes",
     inheritsRhythm: false,
-    defaultNoiseLevel: "low",
+    defaultNoiseLevel: "high",   // faults are inherently spiky
     scaleField: null,
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "high",
   },
   availability: {
     label: "Availability",
@@ -59,6 +69,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "low",   // bad when availability drops
   },
   throughput_bytes: {
     label: "Throughput",
@@ -70,39 +81,43 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps * 2048,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   p50_latency_ms: {
     label: "p50 Latency",
     unit: "ms",
-    noiseType: "gaussian",
+    noiseType: "random_walk",    // correlated variation — busy periods show as sustained rises
     inheritsRhythm: false,
     defaultNoiseLevel: "medium",
     scaleField: null,
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   p95_latency_ms: {
     label: "p95 Latency",
     unit: "ms",
-    noiseType: "gaussian",
+    noiseType: "random_walk",    // p95 drifts more than p50
     inheritsRhythm: false,
-    defaultNoiseLevel: "medium",
+    defaultNoiseLevel: "high",
     scaleField: null,
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   p99_latency_ms: {
     label: "p99 Latency",
     unit: "ms",
-    noiseType: "gaussian",
+    noiseType: "random_walk",    // p99 tail latency is inherently noisy
     inheritsRhythm: false,
-    defaultNoiseLevel: "medium",
+    defaultNoiseLevel: "high",
     scaleField: null,
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   cpu_utilization: {
     label: "CPU Utilization",
@@ -114,6 +129,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "high",
   },
   memory_heap: {
     label: "Heap Memory",
@@ -125,17 +141,19 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (count) => count * 512,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   memory_jvm: {
     label: "JVM Memory",
     unit: "mb",
     noiseType: "sawtooth_gc",
     inheritsRhythm: false,
-    defaultNoiseLevel: "low",
+    defaultNoiseLevel: "medium",  // medium makes the GC sawtooth clearly visible
     scaleField: "instanceCount",
     deriveBaseline: (count) => count * 768,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   memory_system: {
     label: "System Memory",
@@ -147,6 +165,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (count) => count * 1024,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   thread_count: {
     label: "Thread Count",
@@ -158,6 +177,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (count) => count * 50,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   disk_usage: {
     label: "Disk Usage",
@@ -169,6 +189,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "high",
   },
   disk_iops: {
     label: "Disk IOPS",
@@ -180,6 +201,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps * 0.5,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   network_in_bytes: {
     label: "Network In",
@@ -191,6 +213,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps * 1500,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   network_out_bytes: {
     label: "Network Out",
@@ -202,6 +225,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps * 3000,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   connection_pool_used: {
     label: "Connection Pool Used",
@@ -213,6 +237,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (max) => max * 0.4,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   write_capacity_used: {
     label: "Write Capacity Used",
@@ -224,6 +249,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   write_throttles: {
     label: "Write Throttle Events",
@@ -235,6 +261,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   read_capacity_used: {
     label: "Read Capacity Used",
@@ -246,6 +273,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   concurrent_executions: {
     label: "Concurrent Executions",
@@ -257,6 +285,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   queue_depth: {
     label: "Queue Depth",
@@ -268,6 +297,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps * 0.1,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   queue_age_ms: {
     label: "Queue Age",
@@ -279,6 +309,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   conversion_rate: {
     label: "Conversion Rate",
@@ -290,6 +321,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "low",   // bad when conversion drops
   },
   active_users: {
     label: "Active Users",
@@ -301,6 +333,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: (rps) => rps * 10,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
   cert_expiry: {
     label: "TLS Cert Days Remaining",
@@ -312,6 +345,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "low",   // bad when days remaining drops — alarm at ≤ 30 days
   },
   cache_hit_rate: {
     label: "Cache Hit Rate",
@@ -323,6 +357,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: 100,
+    thresholdDirection: "low",   // bad when hit rate drops
   },
   custom: {
     label: "Custom Metric",
@@ -334,6 +369,7 @@ const ARCHETYPES: Record<string, ArchetypeDefaults> = {
     deriveBaseline: null,
     minValue: 0,
     maxValue: Infinity,
+    thresholdDirection: "high",
   },
 };
 

@@ -215,6 +215,8 @@ export interface AlarmConfig {
   condition: string;
   severity: AlarmSeverity;
   threshold?: number;
+  /** Whether the alarm fires when value is high (>=) or low (<=). Default: "high". */
+  thresholdDirection: "high" | "low";
   autoFire: boolean;
   onsetSecond?: number;
   autoPage: boolean;

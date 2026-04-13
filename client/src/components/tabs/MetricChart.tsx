@@ -22,6 +22,8 @@ interface MetricChartProps {
   simTime: number;
   clockAnchorMs: number;
   criticalThreshold?: number;
+  /** Whether the metric is bad when high (>=) or bad when low (<=). Default: "high". */
+  thresholdDirection?: "high" | "low";
   onFirstHover?: () => void;
 }
 
@@ -47,6 +49,7 @@ export const MetricChart = memo(function MetricChart({
   simTime,
   clockAnchorMs,
   criticalThreshold,
+  thresholdDirection = "high",
   onFirstHover,
 }: MetricChartProps) {
   const prepared = useMemo(() => prepareChartSeries(series), [series]);
@@ -64,7 +67,9 @@ export const MetricChart = memo(function MetricChart({
   const breaching =
     criticalThreshold != null &&
     current != null &&
-    current >= criticalThreshold;
+    (thresholdDirection === "low"
+      ? current <= criticalThreshold
+      : current >= criticalThreshold);
   const lineColor = breaching ? "#f85149" : "#1f6feb";
 
   const valueDisplay =
@@ -125,11 +130,19 @@ export const MetricChart = memo(function MetricChart({
               minTickGap={50}
             />
             <YAxis
-              domain={[
-                0,
-                (dataMax: number) =>
-                  Math.ceil(Math.max(dataMax, criticalThreshold ?? 0) * 1.1),
-              ]}
+              domain={
+                thresholdDirection === "low"
+                  ? // For low-direction metrics (cert_expiry, availability): show from 0
+                    // to slightly above the max data value, with the threshold line visible
+                    [0, (dataMax: number) => Math.ceil(dataMax * 1.1)]
+                  : [
+                      0,
+                      (dataMax: number) =>
+                        Math.ceil(
+                          Math.max(dataMax, criticalThreshold ?? 0) * 1.1,
+                        ),
+                    ]
+              }
               tick={{
                 fill: "#8b949e",
                 fontSize: 10,

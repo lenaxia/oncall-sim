@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState } from "react";
 import type { TabId } from "./SessionContext";
 import type { LoadedScenario } from "../scenario/types";
+import { getArchetypeDefaults } from "../metrics/archetypes";
 
 // ── Re-exported types used by child components ─────────────────────────────────
 
@@ -17,6 +18,7 @@ export interface MetricMeta {
   label: string;
   unit: string;
   criticalThreshold?: number;
+  thresholdDirection: "high" | "low";
 }
 
 // ── ScenarioConfig (the shape child components read via useScenario()) ─────────
@@ -122,6 +124,13 @@ function toScenarioConfig(s: LoadedScenario): ScenarioConfig {
         label: m.label ?? m.archetype,
         unit: m.unit ?? "",
         criticalThreshold: m.criticalThreshold,
+        thresholdDirection: (() => {
+          try {
+            return getArchetypeDefaults(m.archetype).thresholdDirection;
+          } catch {
+            return "high" as const;
+          }
+        })(),
       };
     }
   }

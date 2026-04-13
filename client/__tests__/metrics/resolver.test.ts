@@ -56,8 +56,8 @@ describe("resolveMetricParams — noise", () => {
       scenario,
       "session-1",
     );
-    // fixture health = 'healthy' (1.0x), error_rate default = 'low' (0.5x)
-    expect(params.noiseLevelMultiplier).toBeCloseTo(0.5);
+    // fixture health = 'healthy' (1.0x), error_rate default = 'high' (2.0x)
+    expect(params.noiseLevelMultiplier).toBeCloseTo(2.0);
   });
 
   it("author-supplied noise level overrides archetype default", async () => {

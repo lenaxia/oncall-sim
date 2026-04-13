@@ -529,7 +529,12 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       );
       if (currentValue == null) continue;
 
-      if (currentValue >= threshold) {
+      const breaches =
+        alarmConfig.thresholdDirection === "low"
+          ? currentValue <= threshold
+          : currentValue >= threshold;
+
+      if (breaches) {
         const alarm: import("@shared/types/events").Alarm = {
           id: alarmConfig.id,
           service: alarmConfig.service,
