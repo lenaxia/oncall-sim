@@ -56,7 +56,7 @@ export function Topbar() {
           rel="noopener noreferrer"
           aria-label="View source on GitHub"
           title="View source on GitHub"
-          className="flex-shrink-0 text-sim-text-faint hover:text-sim-text transition-colors duration-75"
+          className="flex-shrink-0 text-sim-text-muted hover:text-sim-text transition-colors duration-75"
         >
           <GitHubIcon className="w-4 h-4" />
         </a>
