@@ -182,6 +182,10 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   const _eventLog: SimEventLogEntry[] = [];
   const _directlyAddressed = new Set<string>(); // cleared after each LLM tick
   let _triggeredByAction = false; // true only when dirty tick was caused by trainee input
+  // True when the current dirty tick was triggered by a meaningful (non-passive) action.
+  // Passive actions (open_tab, search_logs, etc.) should not fire a coach tick — they
+  // generate too much noise and carry no signal about whether the trainee needs help.
+  let _triggeredByMeaningfulAction = false;
 
   const COACH_TICK_INTERVAL = 3; // call onCoachTick every 3 dirty ticks
 
@@ -291,10 +295,14 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     _dirty = false;
     _coachTickCount++;
 
+    // Capture whether this tick was triggered by a meaningful action before resetting.
+    const triggeredByMeaningful = _triggeredByMeaningfulAction;
+
     // Build context BEFORE resetting _triggeredByAction so it captures the correct value.
     const ctx = buildStakeholderContext();
     _directlyAddressed.clear();
     _triggeredByAction = false; // reset after capture
+    _triggeredByMeaningfulAction = false; // reset after capture
 
     // Stakeholder tick owns _inFlight — serialised because it mutates shared store state.
     // onMetricReact is NOT included here — it runs independently (see triggerMetricReact).
@@ -314,8 +322,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         if (_dirty) triggerDirtyTick();
       });
 
-    // Coach tick (every N dirty ticks)
-    if (_coachTickCount % COACH_TICK_INTERVAL === 0) {
+    // Coach tick (every N dirty ticks) — but only when the tick was triggered
+    // by a meaningful action or by the time-based clock (not passive navigation).
+    if (_coachTickCount % COACH_TICK_INTERVAL === 0 && triggeredByMeaningful) {
       onCoachTick(ctx)
         .then((msg) => {
           if (msg) {
@@ -1118,8 +1127,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       _dirty = true;
       triggerDirtyTick();
 
-      // Only fire metric reaction for active (non-passive) actions.
+      // Only fire metric reaction and meaningful-action flag for non-passive actions.
       if (!PASSIVE_ACTIONS.has(action)) {
+        _triggeredByMeaningfulAction = true;
         triggerMetricReact();
       }
     },
@@ -1164,6 +1174,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       }
 
       _triggeredByAction = true;
+      _triggeredByMeaningfulAction = true;
       _dirty = true;
       triggerDirtyTick();
     },
@@ -1185,6 +1196,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       emit({ type: "email_received", email });
 
       _triggeredByAction = true;
+      _triggeredByMeaningfulAction = true;
       _dirty = true;
       triggerDirtyTick();
     },

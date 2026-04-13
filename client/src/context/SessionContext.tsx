@@ -40,6 +40,8 @@ import { createLLMClient } from "../llm/llm-client";
 import type { LLMClient } from "../llm/llm-client";
 import { createStakeholderEngine } from "../engine/stakeholder-engine";
 import { createMetricReactionEngine } from "../engine/metric-reaction-engine";
+import { createCoachEngine } from "../engine/coach-engine";
+import type { CoachLevel } from "../engine/coach-engine";
 
 // ── Tab IDs ───────────────────────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ export interface SessionState {
   paused: boolean;
   clockAnchorMs: number;
   status: "active" | "resolved" | "expired";
+  coachLevel: CoachLevel;
 
   tickets: Ticket[];
   alarms: Alarm[];
@@ -86,6 +89,7 @@ const INITIAL_STATE: SessionState = {
   paused: false,
   clockAnchorMs: Date.now(),
   status: "active",
+  coachLevel: "novice",
   tickets: [],
   alarms: [],
   emails: [],
@@ -108,7 +112,8 @@ type Action =
   | { type: "SET_STATUS"; status: SessionState["status"] }
   | { type: "SET_RECONNECTING"; reconnecting: boolean }
   | { type: "SET_SPEED"; speed: 1 | 2 | 5 | 10 }
-  | { type: "SET_PAUSED"; paused: boolean };
+  | { type: "SET_PAUSED"; paused: boolean }
+  | { type: "SET_COACH_LEVEL"; level: CoachLevel };
 
 function isTraineeEcho(
   emails: EmailMessage[],
@@ -134,6 +139,8 @@ function reducer(state: SessionState, action: Action): SessionState {
       return { ...state, speed: action.speed, paused: false };
     case "SET_PAUSED":
       return { ...state, paused: action.paused };
+    case "SET_COACH_LEVEL":
+      return { ...state, coachLevel: action.level };
 
     case "ENGINE_EVENT": {
       const ev = action.event;
@@ -381,6 +388,8 @@ export interface SessionContextValue {
   setPaused: (paused: boolean) => void;
   resolveSession: () => Promise<void>;
   resolving: boolean;
+  sendCoachMessage: (text: string) => Promise<void>;
+  setCoachLevel: (level: CoachLevel) => void;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -390,11 +399,13 @@ const SessionContext = createContext<SessionContextValue | null>(null);
 interface SessionInstance {
   gameLoop: GameLoop;
   llmClient: LLMClient;
+  coachEngine: ReturnType<typeof createCoachEngine>;
 }
 
 function createSession(
   scenario: LoadedScenario,
   getLLMClient: () => LLMClient,
+  coachLevel: CoachLevel,
 ): SessionInstance {
   const sessionId = globalThis.crypto.randomUUID();
   const clockAnchorMs = Date.now();
@@ -483,6 +494,9 @@ function createSession(
     () => clock.getSimTime(),
   );
 
+  // Build coach engine
+  const coachEngine = createCoachEngine(getLLMClient, scenario, coachLevel);
+
   const gameLoop = createGameLoop({
     scenario,
     sessionId,
@@ -496,10 +510,17 @@ function createSession(
     clockAnchorMs,
     onDirtyTick: (ctx) => stakeholderEngine.tick(ctx),
     onMetricReact: (ctx) => metricReactionEngine.react(ctx),
-    onCoachTick: () => Promise.resolve(null),
+    onCoachTick: (ctx) =>
+      coachEngine.proactiveTick({
+        sessionId: ctx.sessionId,
+        scenario: ctx.scenario,
+        simTime: ctx.simTime,
+        auditLog: ctx.auditLog,
+        simState: ctx.simState,
+      }),
   });
 
-  return { gameLoop, llmClient: getLLMClient() };
+  return { gameLoop, llmClient: getLLMClient(), coachEngine };
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
@@ -512,6 +533,8 @@ export interface SessionProviderProps {
   children: React.ReactNode;
   /** Test-only: inject a mock game loop. Bypasses engine creation. */
   _testGameLoop?: GameLoop;
+  /** Test-only: override sendCoachMessage for unit tests. */
+  _testSendCoachMessage?: (text: string) => Promise<void>;
 }
 
 export function SessionProvider({
@@ -521,6 +544,7 @@ export function SessionProvider({
   onError,
   children,
   _testGameLoop,
+  _testSendCoachMessage,
 }: SessionProviderProps) {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const [resolving, setResolving] = useState(false);
@@ -533,6 +557,9 @@ export function SessionProvider({
   onDebriefReadyRef.current = onDebriefReady;
   onErrorRef.current = onError;
 
+  // Keep coachLevelRef in sync so the engine always uses the latest level
+  const coachLevelRef = useRef<CoachLevel>(INITIAL_STATE.coachLevel);
+
   const llmClientRef = useRef<LLMClient | null>(null);
   const sessionRef = useRef<SessionInstance | null>(null);
 
@@ -543,7 +570,12 @@ export function SessionProvider({
       const tempLlm: LLMClient = {
         call: () => Promise.resolve({ toolCalls: [] }),
       };
-      sessionRef.current = { gameLoop: _testGameLoop, llmClient: tempLlm };
+      const tempCoach = createCoachEngine(() => tempLlm, scenario, "novice");
+      sessionRef.current = {
+        gameLoop: _testGameLoop,
+        llmClient: tempLlm,
+        coachEngine: tempCoach,
+      };
     } else {
       const tempLlm: LLMClient = {
         call: () => Promise.resolve({ toolCalls: [] }),
@@ -553,6 +585,7 @@ export function SessionProvider({
       sessionRef.current = createSession(
         scenario,
         () => llmClientRef.current ?? tempLlm,
+        coachLevelRef.current,
       );
     }
   }
@@ -657,6 +690,50 @@ export function SessionProvider({
     }
   }
 
+  function setCoachLevel(level: CoachLevel): void {
+    coachLevelRef.current = level;
+    dispatch({ type: "SET_COACH_LEVEL", level });
+  }
+
+  async function sendCoachMessage(text: string): Promise<void> {
+    if (_testSendCoachMessage) {
+      return _testSendCoachMessage(text);
+    }
+    if (state.status !== "active") return;
+    const { gameLoop, coachEngine } = sessionRef.current!;
+    const snapshot = gameLoop.getSnapshot();
+    const simState = gameLoop.getSimStateSnapshot();
+
+    const coachCtx = {
+      sessionId: snapshot.sessionId,
+      scenario,
+      simTime: snapshot.simTime,
+      auditLog: snapshot.auditLog,
+      simState,
+    };
+
+    // Append the trainee's message immediately as a pseudo-coach-message so it
+    // appears in the chat before the response arrives.
+    const traineeMsg: import("@shared/types/events").CoachMessage = {
+      id: globalThis.crypto.randomUUID(),
+      text,
+      simTime: snapshot.simTime,
+      proactive: false,
+    };
+    // We tag trainee messages via the proactive flag being false and a
+    // special sentinel in the id so the UI can distinguish them from coach replies.
+    // The simplest approach: prepend "trainee:" to the id.
+    const taggedTraineeMsg = { ...traineeMsg, id: `trainee:${traineeMsg.id}` };
+    gameLoop.handleCoachMessage(taggedTraineeMsg);
+
+    try {
+      const response = await coachEngine.respondToTrainee(text, coachCtx);
+      gameLoop.handleCoachMessage(response);
+    } catch (err) {
+      onErrorRef.current(`Coach response failed: ${String(err)}`);
+    }
+  }
+
   async function resolveSession(): Promise<void> {
     setResolving(true);
     try {
@@ -717,6 +794,8 @@ export function SessionProvider({
     setPaused,
     resolveSession,
     resolving,
+    sendCoachMessage,
+    setCoachLevel,
   };
 
   return (
