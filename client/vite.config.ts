@@ -1,15 +1,25 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
-import { readFileSync } from "fs";
+import { execSync } from "child_process";
 
-const pkg = JSON.parse(
-  readFileSync(path.resolve(__dirname, "package.json"), "utf-8"),
-) as { version: string };
+function getVersion(): string {
+  try {
+    // e.g. "v1.0.26" or "v1.0.26-3-gabcdef" if commits exist after the tag
+    return execSync("git describe --tags --always --dirty", {
+      cwd: path.resolve(__dirname, ".."),
+      encoding: "utf-8",
+    }).trim();
+  } catch {
+    return "dev";
+  }
+}
+
+const APP_VERSION = getVersion();
 
 export default defineConfig({
   define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
   plugins: [react()],
   resolve: {
