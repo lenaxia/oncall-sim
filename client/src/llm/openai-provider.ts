@@ -32,12 +32,19 @@ export class OpenAIProvider implements LLMClient {
           this.config.timeoutMs,
         );
         try {
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.config.apiKey}`,
+          };
+          // Attach the short-lived proxy token when present (injected by server.js
+          // into window.__CONFIG__.proxyToken at page-serve time).
+          const proxyToken = window.__CONFIG__?.proxyToken;
+          if (proxyToken) {
+            headers["X-Proxy-Token"] = proxyToken;
+          }
           resp = await fetch(`${this.config.baseUrl}/chat/completions`, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${this.config.apiKey}`,
-            },
+            headers,
             body: JSON.stringify(body),
             signal: controller.signal,
           });
@@ -56,7 +63,10 @@ export class OpenAIProvider implements LLMClient {
       }
 
       if (resp.status === 429) {
-        const retryAfter = Number(resp.headers.get("retry-after") ?? 1);
+        const retryAfter = Math.min(
+          Number(resp.headers.get("retry-after") ?? 1),
+          60,
+        );
         await this._sleep(retryAfter * 1000);
         attempt--;
         continue;

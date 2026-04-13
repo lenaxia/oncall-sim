@@ -73,8 +73,13 @@ export async function createLLMClient(): Promise<LLMClient> {
   } else {
     // local or k8s — both use OpenAIProvider
     const { OpenAIProvider } = await import("./openai-provider");
-    const baseUrl =
-      import.meta.env.VITE_LLM_BASE_URL ?? "https://ai.thekao.cloud/v1";
+    const baseUrl = import.meta.env.VITE_LLM_BASE_URL;
+    if (!baseUrl) {
+      throw new Error(
+        "VITE_LLM_BASE_URL is not set. " +
+          "Set it to your proxy URL (e.g. /llm for k8s mode) before building.",
+      );
+    }
     const apiKey = import.meta.env.VITE_LLM_API_KEY ?? "";
     const model = import.meta.env.VITE_LLM_MODEL ?? "gpt-4o";
 

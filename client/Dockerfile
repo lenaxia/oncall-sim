@@ -23,6 +23,15 @@ ARG VITE_LLM_BASE_URL=/llm
 ARG VITE_LLM_API_KEY=
 ARG VITE_LLM_MODEL=
 
+# Safety check: refuse to bake a non-empty API key into the bundle.
+# API keys must never be embedded in a browser-served JS bundle.
+# Use the proxy sidecar (VITE_LLM_BASE_URL=/llm) instead.
+RUN if [ -n "$VITE_LLM_API_KEY" ]; then \
+      echo "ERROR: VITE_LLM_API_KEY must not be set — it would be baked into the public JS bundle." \
+        "Use the proxy sidecar instead."; \
+      exit 1; \
+    fi
+
 RUN npm run build --workspace=client
 
 # ── Runtime image ──────────────────────────────────────────────────────────────

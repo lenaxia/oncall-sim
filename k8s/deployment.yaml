@@ -15,12 +15,22 @@ spec:
         app: oncall-sim
     spec:
       containers:
-        # Static client container — serves pre-built dist/ via npx serve
+        # Static client container — serves pre-built dist/ via server.js
         - name: client
           image: oncall-client:latest
           ports:
             - containerPort: 3000
-          # No env vars needed — VITE_* vars are baked into the bundle at build time
+          env:
+            # Shared HMAC secret — server.js signs tokens with this; proxy validates them.
+            # This ensures only page loads served by this container can call the proxy.
+            - name: PROXY_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oncall-secrets
+                  key: proxy-token-secret
+            # Token TTL in seconds (optional — defaults to 3600)
+            # - name: PROXY_TOKEN_TTL_SECONDS
+            #   value: "3600"
 
         # LLM proxy sidecar — credentials never reach the browser
         - name: proxy
@@ -43,9 +53,18 @@ spec:
                 secretKeyRef:
                   name: oncall-secrets
                   key: llm-base-url
+            # Same shared HMAC secret — proxy validates tokens signed by server.js
+            - name: PROXY_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oncall-secrets
+                  key: proxy-token-secret
             # Limit CORS to the client container (same pod, localhost)
             - name: CORS_ORIGINS
               value: "http://localhost:3000"
+            # Per-IP rate limit in requests/minute (optional — defaults to 20)
+            # - name: RATE_LIMIT_PER_MINUTE
+            #   value: "20"
 ---
 apiVersion: v1
 kind: Service

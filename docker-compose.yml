@@ -12,21 +12,33 @@ services:
       dockerfile: client/Dockerfile
       args:
         VITE_LLM_MODE: k8s
-        VITE_LLM_BASE_URL: http://localhost:8000/llm
+        # Points to the proxy service by its compose service name on the sim-net bridge
+        VITE_LLM_BASE_URL: http://proxy:8000/llm
         VITE_LLM_API_KEY: ""
         VITE_LLM_MODEL: ""
     ports:
       - "3000:3000"
-    network_mode: host # share localhost with proxy sidecar
+    environment:
+      # Pass the same token secret to server.js so it can sign tokens
+      PROXY_TOKEN_SECRET: "${PROXY_TOKEN_SECRET:-}"
+    networks:
+      - sim-net
 
   proxy:
     build:
       context: proxy
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    # Port NOT exposed to the host — only reachable from the client container on sim-net.
+    # Remove the `ports:` block below if you don't need direct proxy access from the host.
+    # ports:
+    #   - "127.0.0.1:8000:8000"
     env_file:
       - proxy/.env
     environment:
       CORS_ORIGINS: "http://localhost:3000"
-    network_mode: host
+    networks:
+      - sim-net
+
+networks:
+  sim-net:
+    driver: bridge

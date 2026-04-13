@@ -1,3 +1,9 @@
 fastapi
 uvicorn[standard]
 litellm
+slowapi
+# Pin security-sensitive dependencies to versions with no known critical CVEs.
+# Update these periodically; check https://pypi.org/project/<pkg>/#history
+cryptography>=43.0.0
+pyOpenSSL>=24.0.0
+certifi>=2024.6.0

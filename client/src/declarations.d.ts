@@ -12,5 +12,11 @@ interface Window {
   };
   __CONFIG__?: {
     debug?: boolean;
+    /**
+     * Short-lived HMAC-signed proxy token injected by server.js at page-serve time.
+     * Sent as X-Proxy-Token on every LLM request to authenticate against the proxy.
+     * Null when PROXY_TOKEN_SECRET is not configured (token protection disabled).
+     */
+    proxyToken?: string | null;
   };
 }

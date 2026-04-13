@@ -14,6 +14,49 @@ interface ScenarioPickerProps {
   onStart: (scenario: LoadedScenario) => void;
 }
 
+/**
+ * Returns true if the URL is safe to fetch a remote scenario from.
+ * Accepts only http: and https: schemes; rejects javascript:, data:, blob:, etc.
+ * In production builds (non-localhost origin) also rejects private/loopback targets
+ * to prevent SSRF from the browser against internal network resources.
+ */
+function isSafeScenarioUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+
+  // Only allow http and https
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+
+  // When the app itself is served over HTTPS (production), block private/loopback
+  // targets — there is no legitimate reason for a public demo to fetch from them.
+  if (window.location.protocol === "https:") {
+    const h = url.hostname;
+    if (
+      h === "localhost" ||
+      h === "127.0.0.1" ||
+      h === "[::1]" ||
+      h.startsWith("192.168.") ||
+      h.startsWith("10.") ||
+      h.startsWith("172.16.") ||
+      h.startsWith("172.17.") ||
+      h.startsWith("172.18.") ||
+      h.startsWith("172.19.") ||
+      h.startsWith("172.2") ||
+      h.startsWith("172.30.") ||
+      h.startsWith("172.31.") ||
+      h === "0.0.0.0"
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function ScenarioPicker({ onStart }: ScenarioPickerProps) {
   const [scenarios, setScenarios] = useState<Array<{
     summary: ScenarioSummary;
@@ -47,6 +90,12 @@ export function ScenarioPicker({ onStart }: ScenarioPickerProps) {
         remoteUrls.push(...configUrls);
 
         for (const baseUrl of remoteUrls) {
+          if (!isSafeScenarioUrl(baseUrl)) {
+            console.warn(
+              `[ScenarioPicker] Skipping unsafe remote scenario URL: ${baseUrl}`,
+            );
+            continue;
+          }
           const result = await loadRemoteScenario(baseUrl);
           if (!isScenarioLoadError(result)) {
             items.push({ summary: toScenarioSummary(result), loaded: result });
