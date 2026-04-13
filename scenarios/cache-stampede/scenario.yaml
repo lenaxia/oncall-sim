@@ -20,7 +20,7 @@ topology:
     owner: yuki-tanaka
     typical_rps: 250
     traffic_profile: business_hours_web
-    health: degraded
+    health: healthy
     components:
       - id: alb
         type: load_balancer
@@ -51,14 +51,14 @@ topology:
         affected_component: cache
         description: "Elasticache cluster restarted for OS patching at 2am — cache is cold. cache_hit_rate drops from 82% to ~2% as all requests miss and hit the DB."
         onset_overlay: sudden_drop
-        onset_second: 90
+        onset_second: 18000 # incident starts 3h before session open (1h into the 4h chart window)
         magnitude: 0.02
         propagation_direction: both # cache miss floods recs_db downstream AND slows ecs upstream
       - id: db_saturation
         affected_component: recs_db
         description: "RDS Aurora connection pool saturated by stampeding cache-miss reads — 250 RPS × 0.82 cache miss rate × 3 DB queries per recommendation = ~615 extra queries/second."
         onset_overlay: saturation
-        onset_second: 90
+        onset_second: 18000 # db saturation follows cache miss at same sim-time
         magnitude: 1.0
         propagation_direction: upstream # db saturation is felt by callers (ecs service)
   upstream:

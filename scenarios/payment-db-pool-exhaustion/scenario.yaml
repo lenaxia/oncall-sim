@@ -19,7 +19,7 @@ topology:
     owner: sara-chen
     typical_rps: 200
     traffic_profile: always_on_api
-    health: degraded
+    health: healthy
     components:
       - id: alb
         type: load_balancer
@@ -44,7 +44,7 @@ topology:
         affected_component: postgres
         description: "HikariCP connection pool exhausted — MAX_DB_CONNECTIONS misconfigured as 5 (should be 20). All connections active, requests queuing."
         onset_overlay: saturation
-        onset_second: 0
+        onset_second: 32400 # incident starts 3h before session open (1h into the 4h chart window)
         magnitude: 1.0
         propagation_direction: upstream # pool exhaustion is felt by callers (ecs service)
   upstream:

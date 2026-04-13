@@ -203,14 +203,14 @@ describe("tls-cert-expiry", () => {
     expect(certExpiry).toBeDefined();
   });
 
-  it("cert_expiry has sudden_drop overlay at onset_second=0", async () => {
+  it("cert_expiry has sudden_drop overlay at onset_second=32400 (3h before session open)", async () => {
     const s = await loadOrFail(certYaml);
     const certExpiry = s.opsDashboard.focalService.metrics.find(
       (m) => m.archetype === "cert_expiry",
     );
     expect(certExpiry!.incidentResponses!.length).toBeGreaterThan(0);
     expect(certExpiry!.incidentResponses![0].overlay).toBe("sudden_drop");
-    expect(certExpiry!.incidentResponses![0].onsetSecond).toBe(0);
+    expect(certExpiry!.incidentResponses![0].onsetSecond).toBe(32400);
   });
 
   it("fault_rate also has spike_and_sustain overlay from cert_expired incident", async () => {
