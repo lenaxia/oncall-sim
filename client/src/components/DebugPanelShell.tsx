@@ -287,6 +287,9 @@ function DebugPanel({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <span className="text-[10px] font-mono text-sim-text-faint select-all">
+              v{__APP_VERSION__}
+            </span>
             <button
               onClick={clear}
               className="text-xs text-sim-text-muted hover:text-sim-text px-2 py-0.5 rounded hover:bg-sim-border transition-colors"

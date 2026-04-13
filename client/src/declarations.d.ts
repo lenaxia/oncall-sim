@@ -6,6 +6,9 @@ declare module "*.css" {
   export default content;
 }
 
+/** Injected at build time by vite.config.ts from package.json */
+declare const __APP_VERSION__: string;
+
 interface Window {
   __ONCALL_CONFIG__?: {
     scenarioUrls?: string[];
