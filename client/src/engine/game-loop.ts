@@ -20,6 +20,7 @@ import {
   computeMetricSummary,
   type MetricSummary,
 } from "../metrics/metric-summary";
+import type { CoachContext, CoachTriggerReason } from "./coach-engine";
 import { PASSIVE_ACTIONS } from "./metric-reaction-engine";
 import { logger } from "../logger";
 
@@ -91,7 +92,7 @@ export interface GameLoopDependencies {
   clockAnchorMs: number;
   onDirtyTick?: (context: StakeholderContext) => Promise<SimEvent[]>;
   onMetricReact?: (context: StakeholderContext) => Promise<void>;
-  onCoachTick?: (context: StakeholderContext) => Promise<CoachMessage | null>;
+  onCoachTick?: (context: CoachContext) => Promise<CoachMessage | null>;
 }
 
 // Read-only MetricStore built from a plain series Record when no full MetricStore
@@ -187,6 +188,31 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   // generate too much noise and carry no signal about whether the trainee needs help.
   let _triggeredByMeaningfulAction = false;
 
+  // ── Coach trigger tracking ────────────────────────────────────────────────
+  //
+  // Each trigger type fires at most once per "arm" — it must reset before it
+  // can fire again.  Wall-clock timestamps are used so inactivity is measured
+  // in real time regardless of sim speed.
+
+  /** Wall-ms when the trainee last took a meaningful (non-passive) action. */
+  let _lastMeaningfulActionWallMs: number = Date.now();
+
+  /** Passive-browse tracking: count of open_tab actions since last meaningful action. */
+  let _passiveBrowseTabCount = 0;
+  /** Wall-ms when passive-browse stall window started (set when last meaningful action fired). */
+  let _passiveBrowseStartWallMs: number = Date.now();
+
+  // One-shot flags: each flips to true when the trigger fires and back to
+  // false when the underlying condition resets.  Guards prevent double-firing.
+  let _inactivityFired = false;
+  let _passiveBrowseFired = false;
+  // SEV1: track which alarm IDs have already triggered a coach ping.
+  const _sev1FiredAlarmIds = new Set<string>();
+  // Red herring: track which action names have already triggered a coach ping.
+  const _redHerringFiredActions = new Set<string>();
+  // Resolve-with-alarms: fires once per mark_resolved call while alarms fire.
+  let _resolveWithAlarmsFired = false;
+
   const COACH_TICK_INTERVAL = 3; // call onCoachTick every 3 dirty ticks
 
   function emit(event: SimEvent): void {
@@ -214,6 +240,118 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       ),
       triggeredByAction: _triggeredByAction,
     };
+  }
+
+  function buildCoachContext(reason: CoachTriggerReason): CoachContext {
+    return {
+      sessionId,
+      scenario,
+      simTime: clock.getSimTime(),
+      auditLog: auditLog.getAll(),
+      simState: store.snapshot(),
+      triggerReason: reason,
+    };
+  }
+
+  /**
+   * Checks all trigger conditions and returns the highest-priority pending
+   * reason, or null if nothing should fire right now.
+   *
+   * Priority order (highest first):
+   *   1. resolve_with_alarms_firing   — objective mistake, all levels
+   *   2. red_herring                  — just went down the wrong path
+   *   3. sev1_unacknowledged          — urgency escalated
+   *   4. passive_browse_stall         — browsing without a plan
+   *   5. inactivity                   — nothing happening
+   */
+  function computeCoachTrigger(): CoachTriggerReason | null {
+    const nowMs = Date.now();
+    const snap = store.snapshot();
+    const allEntries = auditLog.getAll();
+    const evalState = evaluator.evaluate(auditLog, scenario);
+
+    // 1. resolve_with_alarms_firing
+    if (!_resolveWithAlarmsFired) {
+      const justResolved =
+        allEntries[allEntries.length - 1]?.action === "mark_resolved";
+      if (justResolved) {
+        const firingCount = snap.alarms.filter(
+          (a) => a.status === "firing",
+        ).length;
+        if (firingCount > 0) {
+          _resolveWithAlarmsFired = true;
+          return {
+            type: "resolve_with_alarms_firing",
+            firingAlarmCount: firingCount,
+          };
+        }
+      }
+    }
+
+    // 2. red_herring — fire once per unique red-herring action
+    for (const rh of evalState.redHerringsTaken) {
+      if (!_redHerringFiredActions.has(rh.action)) {
+        _redHerringFiredActions.add(rh.action);
+        return { type: "red_herring", action: rh.action, why: rh.why };
+      }
+    }
+
+    // 3. sev1_unacknowledged — fire once per SEV1 alarm that fired
+    for (const alarm of snap.alarms) {
+      if (
+        alarm.severity === "SEV1" &&
+        alarm.status === "firing" &&
+        !_sev1FiredAlarmIds.has(alarm.id)
+      ) {
+        _sev1FiredAlarmIds.add(alarm.id);
+        return {
+          type: "sev1_unacknowledged",
+          alarmId: alarm.id,
+          service: alarm.service,
+          condition: alarm.condition,
+        };
+      }
+    }
+
+    // 4. passive_browse_stall
+    if (!_passiveBrowseFired) {
+      const wallSecondsStalled = (nowMs - _passiveBrowseStartWallMs) / 1000;
+      if (_passiveBrowseTabCount > 0 && wallSecondsStalled > 0) {
+        // Thresholds are checked by shouldFireForLevel in the engine —
+        // we always pass the raw values here.
+        return {
+          type: "passive_browse_stall",
+          tabsSwitched: _passiveBrowseTabCount,
+          wallSecondsStalled,
+        };
+      }
+    }
+
+    // 5. inactivity
+    if (!_inactivityFired) {
+      const wallSecondsSinceLastAction =
+        (nowMs - _lastMeaningfulActionWallMs) / 1000;
+      if (wallSecondsSinceLastAction > 0) {
+        return { type: "inactivity", wallSecondsSinceLastAction };
+      }
+    }
+
+    return null;
+  }
+
+  /** Called whenever the trainee takes a meaningful action — resets inactivity
+   *  and passive-browse state so those triggers can arm again. */
+  function onMeaningfulAction(): void {
+    const nowMs = Date.now();
+    _lastMeaningfulActionWallMs = nowMs;
+    // Reset inactivity trigger so it can fire again after next silence period
+    _inactivityFired = false;
+    // Reset passive-browse counters
+    _passiveBrowseTabCount = 0;
+    _passiveBrowseStartWallMs = nowMs;
+    _passiveBrowseFired = false;
+    // resolve_with_alarms resets on each new mark_resolved attempt
+    _resolveWithAlarmsFired = false;
   }
 
   function handleScriptedEvent(se: ScriptedEvent): void {
@@ -325,16 +463,24 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     // Coach tick (every N dirty ticks) — but only when the tick was triggered
     // by a meaningful action or by the time-based clock (not passive navigation).
     if (_coachTickCount % COACH_TICK_INTERVAL === 0 && triggeredByMeaningful) {
-      onCoachTick(ctx)
-        .then((msg) => {
-          if (msg) {
-            _coachMessages.push(msg);
-            emit({ type: "coach_message", message: msg });
-          }
-        })
-        .catch((err) => {
-          log.error({ err }, "onCoachTick error");
-        });
+      const reason = computeCoachTrigger();
+      if (reason !== null) {
+        const coachCtx = buildCoachContext(reason);
+        onCoachTick(coachCtx)
+          .then((msg) => {
+            if (msg) {
+              // Mark the trigger as fired so it doesn't re-fire until reset
+              if (reason.type === "inactivity") _inactivityFired = true;
+              if (reason.type === "passive_browse_stall")
+                _passiveBrowseFired = true;
+              _coachMessages.push(msg);
+              emit({ type: "coach_message", message: msg });
+            }
+          })
+          .catch((err) => {
+            log.error({ err }, "onCoachTick error");
+          });
+      }
     }
   }
 
@@ -1127,10 +1273,14 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       _dirty = true;
       triggerDirtyTick();
 
-      // Only fire metric reaction and meaningful-action flag for non-passive actions.
+      // Track passive vs meaningful for coach trigger system and metric reactions.
       if (!PASSIVE_ACTIONS.has(action)) {
         _triggeredByMeaningfulAction = true;
+        onMeaningfulAction();
         triggerMetricReact();
+      } else if (action === "open_tab") {
+        // Count tab switches for passive-browse-stall detection.
+        _passiveBrowseTabCount++;
       }
     },
 
@@ -1176,6 +1326,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       _triggeredByAction = true;
       _triggeredByMeaningfulAction = true;
       _dirty = true;
+      onMeaningfulAction();
       triggerDirtyTick();
     },
 
@@ -1198,6 +1349,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       _triggeredByAction = true;
       _triggeredByMeaningfulAction = true;
       _dirty = true;
+      onMeaningfulAction();
       triggerDirtyTick();
     },
 

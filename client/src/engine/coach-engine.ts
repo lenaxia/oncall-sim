@@ -4,9 +4,9 @@
 // It has read-only access to sim state and writes only to the coach panel.
 //
 // Three helpfulness levels control proactive behaviour:
-//   novice       — proactive nudges enabled; broad, guiding hints
-//   intermediate — proactive nudges enabled; narrower hints, less hand-holding
-//   expert       — silent unless the trainee explicitly asks; direct answers only
+//   novice       — proactive nudges on inactivity, passive-browse stall, SEV1, red herring
+//   intermediate — nudges on longer inactivity, passive-browse stall (higher threshold), red herring
+//   expert       — silent unless the trainee explicitly asks, EXCEPT resolve-with-alarms-firing
 
 const randomUUID = () => globalThis.crypto.randomUUID();
 
@@ -30,24 +30,58 @@ const log = logger.child({ component: "coach-engine" });
 
 export type CoachLevel = "novice" | "intermediate" | "expert";
 
+/**
+ * Why the game loop is requesting a proactive coach tick right now.
+ * The engine uses this to decide whether to fire and to tailor the prompt.
+ *
+ * Reasons are pre-computed in the game loop from objective signals so the
+ * LLM receives precise context rather than having to infer it from raw state.
+ */
+export type CoachTriggerReason =
+  /** Trainee has been inactive (wall-clock) since their last meaningful action */
+  | { type: "inactivity"; wallSecondsSinceLastAction: number }
+  /** Trainee has been switching tabs without taking any meaningful action */
+  | {
+      type: "passive_browse_stall";
+      tabsSwitched: number;
+      wallSecondsStalled: number;
+    }
+  /** A SEV1 alarm just fired and the trainee hasn't acknowledged it yet */
+  | {
+      type: "sev1_unacknowledged";
+      alarmId: string;
+      service: string;
+      condition: string;
+    }
+  /** Trainee just took an action the scenario marks as a red herring */
+  | { type: "red_herring"; action: string; why: string }
+  /** Trainee called mark_resolved while alarms are still firing */
+  | { type: "resolve_with_alarms_firing"; firingAlarmCount: number };
+
 export interface CoachContext {
   sessionId: string;
   scenario: LoadedScenario;
   simTime: number;
   auditLog: AuditEntry[];
   simState: SimStateStoreSnapshot;
+  /** Why the game loop is requesting this proactive tick. */
+  triggerReason: CoachTriggerReason;
 }
 
 export interface CoachEngine {
-  // Called by the game loop on each coach tick. Returns a CoachMessage if
-  // the coach decides to say something proactively, or null if not.
+  /**
+   * Called by the game loop when a trigger condition is met.
+   * Returns a CoachMessage if the coach decides to say something, null if not.
+   */
   proactiveTick(context: CoachContext): Promise<CoachMessage | null>;
 
-  // Called when the trainee sends a message via the coach panel.
-  // Always returns a response (never null).
+  /**
+   * Called when the trainee sends a message via the coach panel.
+   * Always returns a response (never null). Throws on unrecoverable LLM failure.
+   */
   respondToTrainee(
     message: string,
-    context: CoachContext,
+    context: Omit<CoachContext, "triggerReason">,
   ): Promise<CoachMessage>;
 }
 
@@ -74,9 +108,10 @@ const SEND_COACH_MESSAGE_TOOL: LLMToolDefinition = {
 
 const COACH_TOOLS: LLMToolDefinition[] = [SEND_COACH_MESSAGE_TOOL];
 
-// ── Minimum proactive interval (sim-seconds) ──────────────────────────────────
+// ── Minimum wall-time interval between proactive messages (ms) ────────────────
+// Prevents back-to-back messages even if multiple triggers fire in quick succession.
 
-const MIN_PROACTIVE_INTERVAL_SECONDS = 180;
+const MIN_PROACTIVE_INTERVAL_MS = 60_000; // 1 real minute
 
 // ── Retry config ──────────────────────────────────────────────────────────────
 
@@ -87,10 +122,6 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Call the LLM with exponential-backoff retry on LLMError.
- * Throws on the final failure so callers can decide what to do.
- */
 async function callWithRetry(
   getLLMClient: () => LLMClient,
   request: Parameters<LLMClient["call"]>[0],
@@ -112,11 +143,6 @@ async function callWithRetry(
   throw lastErr;
 }
 
-/**
- * Extract the coaching message text from a response.
- * Prefers the send_coach_message tool call; falls back to response.text
- * for models that write prose instead of using the tool.
- */
 function extractMessageText(response: LLMResponse): string {
   const toolCall = response.toolCalls.find(
     (tc) => tc.tool === "send_coach_message",
@@ -124,8 +150,48 @@ function extractMessageText(response: LLMResponse): string {
   if (toolCall) {
     return ((toolCall.params["message"] as string | undefined) ?? "").trim();
   }
-  // Model wrote prose instead of calling the tool — accept it
   return (response.text ?? "").trim();
+}
+
+// ── Level gating ──────────────────────────────────────────────────────────────
+//
+// Determines whether a given trigger reason should fire for a given level.
+// The LLM is only called when this returns true.
+
+function shouldFireForLevel(
+  reason: CoachTriggerReason,
+  level: CoachLevel,
+): boolean {
+  switch (reason.type) {
+    case "resolve_with_alarms_firing":
+      // Always fire — even experts can benefit from this safety net
+      return true;
+
+    case "red_herring":
+      // Novice and intermediate only — experts work it out themselves
+      return level === "novice" || level === "intermediate";
+
+    case "sev1_unacknowledged":
+      // Novice and intermediate — experts know to check their alerts
+      return level === "novice" || level === "intermediate";
+
+    case "inactivity":
+      if (level === "expert") return false;
+      if (level === "novice") return reason.wallSecondsSinceLastAction >= 120; // 2 min
+      if (level === "intermediate")
+        return reason.wallSecondsSinceLastAction >= 240; // 4 min
+      return false;
+
+    case "passive_browse_stall":
+      if (level === "expert") return false;
+      if (level === "novice")
+        // 3+ tabs in 2+ minutes
+        return reason.tabsSwitched >= 3 && reason.wallSecondsStalled >= 120;
+      if (level === "intermediate")
+        // 5+ tabs in 5+ minutes
+        return reason.tabsSwitched >= 5 && reason.wallSecondsStalled >= 300;
+      return false;
+  }
 }
 
 // ── System prompt builders ────────────────────────────────────────────────────
@@ -153,7 +219,6 @@ function buildSystemPrompt(
         "## Coaching style — novice",
         "The trainee is new to on-call work. Be warm, encouraging, and proactive.",
         "Offer broad orientation hints: which tab or tool to look at, what pattern to notice.",
-        "If the trainee seems stuck or hasn't taken meaningful action recently, reach out proactively.",
         "You may suggest specific next steps (e.g. 'Have you checked the CI/CD tab?').",
       ].join("\n");
 
@@ -164,7 +229,6 @@ function buildSystemPrompt(
         "## Coaching style — intermediate",
         "The trainee has some on-call experience. Be concise and less hand-holding.",
         "Ask leading questions rather than giving direct suggestions.",
-        "Only nudge proactively when the trainee appears genuinely stuck — not just slow.",
         "Examples: 'What do the timestamps tell you?' rather than 'Look at the CI/CD tab'.",
       ].join("\n");
 
@@ -173,23 +237,22 @@ function buildSystemPrompt(
         sharedPreamble,
         "",
         "## Coaching style — expert",
-        "The trainee is an experienced SRE. Only respond when directly asked.",
-        "Never send proactive messages — the trainee does not need or want them.",
+        "The trainee is an experienced SRE. Only respond when directly asked, or when they make an objective mistake (e.g. marking resolved with alarms still firing).",
         "When asked, give precise, direct answers without excessive explanation.",
-        "Treat the trainee as a peer who is capable of working through the problem independently.",
+        "Treat the trainee as a peer.",
       ].join("\n");
   }
 }
 
-// ── Context block included in every call ──────────────────────────────────────
+// ── Context block ─────────────────────────────────────────────────────────────
 
-function buildContextBlock(context: CoachContext): string {
+function buildContextBlock(
+  context: CoachContext | Omit<CoachContext, "triggerReason">,
+): string {
   const lines: string[] = [];
 
   lines.push(`Current sim time: t=${context.simTime}`);
 
-  // Only show meaningful (non-passive) actions — passive ones like open_tab
-  // are noise that add no signal about what the trainee is actually doing.
   const meaningfulActions = context.auditLog.filter(
     (e) => !PASSIVE_ACTIONS.has(e.action),
   );
@@ -216,6 +279,48 @@ function buildContextBlock(context: CoachContext): string {
   return lines.join("\n");
 }
 
+// ── Trigger reason → human-readable context for the prompt ───────────────────
+
+function buildTriggerBlock(reason: CoachTriggerReason): string {
+  switch (reason.type) {
+    case "inactivity":
+      return [
+        "## Why you are being asked to coach right now",
+        `The trainee has not taken any meaningful action for ${Math.round(reason.wallSecondsSinceLastAction / 60)} real minutes.`,
+        "They may be stuck, unsure where to look, or waiting passively.",
+      ].join("\n");
+
+    case "passive_browse_stall":
+      return [
+        "## Why you are being asked to coach right now",
+        `The trainee has switched tabs ${reason.tabsSwitched} times over ${Math.round(reason.wallSecondsStalled / 60)} real minutes without taking any meaningful action.`,
+        "They appear to be browsing without a clear plan.",
+      ].join("\n");
+
+    case "sev1_unacknowledged":
+      return [
+        "## Why you are being asked to coach right now",
+        `A SEV1 alarm just fired on ${reason.service}: "${reason.condition}"`,
+        "The trainee has not acknowledged it. This may indicate they missed it or don't know what to do.",
+      ].join("\n");
+
+    case "red_herring":
+      return [
+        "## Why you are being asked to coach right now",
+        `The trainee just performed action "${reason.action}", which is a known red herring for this scenario.`,
+        `Context: ${reason.why}`,
+        "Gently redirect them without revealing the root cause.",
+      ].join("\n");
+
+    case "resolve_with_alarms_firing":
+      return [
+        "## Why you are being asked to coach right now",
+        `The trainee just marked the incident as resolved, but ${reason.firingAlarmCount} alarm(s) are still firing.`,
+        "This is an objective mistake — they should verify the alarms have cleared before resolving.",
+      ].join("\n");
+  }
+}
+
 // ── Engine factory ────────────────────────────────────────────────────────────
 
 export function createCoachEngine(
@@ -223,21 +328,32 @@ export function createCoachEngine(
   scenario: LoadedScenario,
   level: CoachLevel,
 ): CoachEngine {
-  let _lastProactiveSimTime: number | null = null;
+  let _lastProactiveWallMs: number | null = null;
 
   return { proactiveTick, respondToTrainee };
 
   async function proactiveTick(
     context: CoachContext,
   ): Promise<CoachMessage | null> {
-    // Expert coaches never proactively reach out
-    if (level === "expert") return null;
+    const { triggerReason } = context;
 
-    // Enforce minimum interval between proactive messages
+    // Gate 1: level eligibility
+    if (!shouldFireForLevel(triggerReason, level)) return null;
+
+    // Gate 2: minimum wall-time cooldown between proactive messages
+    const nowMs = Date.now();
     if (
-      _lastProactiveSimTime !== null &&
-      context.simTime - _lastProactiveSimTime < MIN_PROACTIVE_INTERVAL_SECONDS
+      _lastProactiveWallMs !== null &&
+      nowMs - _lastProactiveWallMs < MIN_PROACTIVE_INTERVAL_MS
     ) {
+      log.debug(
+        {
+          reason: triggerReason.type,
+          cooldownRemainingMs:
+            MIN_PROACTIVE_INTERVAL_MS - (nowMs - _lastProactiveWallMs),
+        },
+        "Coach proactive tick suppressed by cooldown",
+      );
       return null;
     }
 
@@ -262,7 +378,7 @@ export function createCoachEngine(
     const text = extractMessageText(response);
     if (!text) return null;
 
-    _lastProactiveSimTime = context.simTime;
+    _lastProactiveWallMs = Date.now();
 
     const msg: CoachMessage = {
       id: randomUUID(),
@@ -271,7 +387,7 @@ export function createCoachEngine(
       proactive: true,
     };
     log.info(
-      { simTime: context.simTime, level },
+      { simTime: context.simTime, level, reason: triggerReason.type },
       "Coach sent proactive message",
     );
     return msg;
@@ -279,11 +395,10 @@ export function createCoachEngine(
 
   async function respondToTrainee(
     message: string,
-    context: CoachContext,
+    context: Omit<CoachContext, "triggerReason">,
   ): Promise<CoachMessage> {
     const messages = buildOnDemandPrompt(message, context);
 
-    // Retry until we get a response — never return a fallback string.
     const response = await callWithRetry(getLLMClient, {
       role: "coach",
       messages,
@@ -293,8 +408,6 @@ export function createCoachEngine(
 
     const text = extractMessageText(response);
 
-    // If the model returned nothing at all after retries, throw so the caller
-    // knows something went wrong (the UI should surface it without a fake message).
     if (!text) {
       throw new LLMError(
         "Coach returned empty response after retries",
@@ -313,14 +426,17 @@ export function createCoachEngine(
   function buildProactivePrompt(context: CoachContext): LLMMessage[] {
     const system = buildSystemPrompt(level, scenario);
     const contextBlock = buildContextBlock(context);
+    const triggerBlock = buildTriggerBlock(context.triggerReason);
 
     const user = [
       contextBlock,
       "",
+      triggerBlock,
+      "",
       "## Your task",
-      "Decide whether to send a proactive coaching message right now.",
-      "If the trainee is on track or has been making progress, stay silent — do not call any tool.",
-      "If they appear stuck, overlooking something important, or could benefit from a nudge, call send_coach_message.",
+      "Send a coaching message using send_coach_message.",
+      "Focus on the specific situation described above.",
+      "Do not repeat information the trainee already knows.",
     ].join("\n");
 
     return [
@@ -331,7 +447,7 @@ export function createCoachEngine(
 
   function buildOnDemandPrompt(
     traineeMessage: string,
-    context: CoachContext,
+    context: Omit<CoachContext, "triggerReason">,
   ): LLMMessage[] {
     const system = buildSystemPrompt(level, scenario);
     const contextBlock = buildContextBlock(context);

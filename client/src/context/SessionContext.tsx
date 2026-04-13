@@ -510,14 +510,7 @@ function createSession(
     clockAnchorMs,
     onDirtyTick: (ctx) => stakeholderEngine.tick(ctx),
     onMetricReact: (ctx) => metricReactionEngine.react(ctx),
-    onCoachTick: (ctx) =>
-      coachEngine.proactiveTick({
-        sessionId: ctx.sessionId,
-        scenario: ctx.scenario,
-        simTime: ctx.simTime,
-        auditLog: ctx.auditLog,
-        simState: ctx.simState,
-      }),
+    onCoachTick: (ctx) => coachEngine.proactiveTick(ctx),
   });
 
   return { gameLoop, llmClient: getLLMClient(), coachEngine };
