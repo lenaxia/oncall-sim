@@ -37,7 +37,7 @@ topology:
         instance_count: 1
         max_connections: 5 # misconfigured — should be 20; set to 5 by typo in v2.4.1
         utilization: 0.40
-        connection_utilization: 1.0 # immediately saturated — all 5 connections in use
+        connection_utilization: 0.40 # healthy baseline: 40% utilization (2/5 connections); incident drives to 100%
         inputs: [ecs]
     incidents:
       - id: db_pool_exhaustion
