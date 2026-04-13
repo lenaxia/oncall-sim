@@ -356,6 +356,66 @@ describe("MetricStore — applyActiveOverlay", () => {
     ).not.toThrow();
   });
 
+  it("blip_then_decay going UP (worsening latency): blip is above startValue", () => {
+    // C=10 (low latency), T=80 (high latency). Blip should go above C before settling at T.
+    const store = createMetricStore(
+      { svc: { error_rate: makeHistorical(10) } },
+      { svc: { error_rate: makeRp({ overlay: "none", baselineValue: 10 }) } },
+    );
+    store.applyActiveOverlay(
+      "svc",
+      "error_rate",
+      makeOverlay({
+        startSimTime: 0,
+        startValue: 10,
+        targetValue: 80,
+        pattern: "blip_then_decay",
+        speedSeconds: 300,
+        sustained: true,
+      }),
+    );
+    // During blip window (first 10% of speedSeconds = 30s): value should be above C=10
+    const blipPoint = nextPoint(store, "svc", "error_rate", 60); // 60s <= 30s? No, blip is first 30s
+    // t=60 is past the blip (30s), decaying toward T=80 from blipPeak≈13
+    expect(blipPoint.v).toBeGreaterThan(10); // still above C, moving toward T
+  });
+
+  it("blip_then_decay going DOWN (worsening cache_hit_rate): blip is below startValue", () => {
+    // C=60 (recovering hit rate), T=5 (bad hit rate). Blip should go BELOW C before settling at T.
+    const store = createMetricStore(
+      { svc: { cache_hit_rate: makeHistorical(60) } },
+      {
+        svc: {
+          cache_hit_rate: makeRp({
+            archetype: "cache_hit_rate",
+            overlay: "none",
+            baselineValue: 60,
+            noiseType: "none",
+            noiseLevelMultiplier: 0,
+          }),
+        },
+      },
+    );
+    store.applyActiveOverlay(
+      "svc",
+      "cache_hit_rate",
+      makeOverlay({
+        startSimTime: 0,
+        startValue: 60,
+        targetValue: 5,
+        pattern: "blip_then_decay",
+        speedSeconds: 300,
+        sustained: true,
+      }),
+    );
+    // At t=60: within blip window (0..30s blip, then decay). At t=60 we're past the blip.
+    // blipPeak = min(60*0.7, 60-1) = min(42, 59) = 42. At t=60 (elapsed=60, past blip at 30s):
+    // decaying from 42 toward 5. Value should be below 60 (C).
+    const p60 = nextPoint(store, "svc", "cache_hit_rate", 60);
+    expect(p60.v).toBeLessThan(60);
+    expect(p60.v).toBeGreaterThanOrEqual(0);
+  });
+
   it("re-anchors startValue and startSimTime to the most recent generated point when overlay arrives late", () => {
     // Simulate: LLM call was made at t=60, but response arrives at t=180.
     // Overlay was built with startValue from t=60, but must animate from t=180.
@@ -437,6 +497,136 @@ describe("MetricStore — applyActiveOverlay", () => {
     const p180 = nextPoint(store, "svc", "error_rate", 180);
     // Target is recomputed from anchored value (~5) toward peak (10) — should be moving up
     expect(p180.v).toBeGreaterThan(5);
+  });
+});
+
+// ── getResolvedParams ─────────────────────────────────────────────────────────
+
+describe("MetricStore — getResolvedParams", () => {
+  it("returns correct params for known metric", () => {
+    const store = createMetricStore(
+      { svc: { error_rate: makeHistorical() } },
+      { svc: { error_rate: makeRp({ baselineValue: 2.5 }) } },
+    );
+    expect(store.getResolvedParams("svc", "error_rate")?.baselineValue).toBe(
+      2.5,
+    );
+  });
+
+  it("worsening near peak going UP (p99_latency): extends effective peak upward when headroom < 20%", () => {
+    // current≈99, peak=100, resolvedValue=50 → worsening goes UP.
+    // headroom/scale = 1/100 = 0.01 < 0.2 → effectivePeak = 99 * 1.3 = 128.7
+    // target = 99 + (128.7-99) * 0.8 ≈ 122.8 — clearly visible.
+    const store = createMetricStore(
+      {
+        svc: {
+          p99_latency_ms: [
+            { t: -60, v: 99 },
+            { t: 0, v: 99 },
+          ],
+        },
+      },
+      {
+        svc: {
+          p99_latency_ms: makeRp({
+            metricId: "p99_latency_ms",
+            archetype: "p99_latency_ms",
+            baselineValue: 99,
+            resolvedValue: 50,
+            peakValue: 100,
+            overlay: "none",
+            noiseType: "none",
+            noiseLevelMultiplier: 0,
+          }),
+        },
+      },
+    );
+
+    nextPoint(store, "svc", "p99_latency_ms", 60);
+    const latestV = store.getCurrentValue("svc", "p99_latency_ms", 60)!;
+    expect(latestV).toBeCloseTo(99, 0);
+
+    store.applyActiveOverlay(
+      "svc",
+      "p99_latency_ms",
+      makeOverlay({
+        startSimTime: 0,
+        startValue: 1,
+        targetValue: 1,
+        pattern: "cliff",
+        speedSeconds: 60,
+        sustained: true,
+        _intent: {
+          outcome: "worsening",
+          magnitude: 0.8,
+          resolvedValue: 50,
+          peakValue: 100,
+        },
+      }),
+    );
+
+    const p120 = nextPoint(store, "svc", "p99_latency_ms", 120);
+    // effectivePeak = 99 * 1.3 = 128.7 → target ≈ 122.8 → well above 110
+    expect(p120.v).toBeGreaterThan(110);
+  });
+
+  it("worsening near peak going DOWN (cache_hit_rate): extends effective peak downward when headroom < 20%", () => {
+    // current≈2, peak=2 (sudden_drop, resolvedValue=82) → worsening goes DOWN.
+    // headroom/scale ≈ 0 < 0.2 → effectivePeak = 2 * 0.7 = 1.4
+    // target = 2 + (1.4 - 2) * 0.8 = 2 - 0.48 = 1.52 — moves further down, not up.
+    const store = createMetricStore(
+      {
+        svc: {
+          cache_hit_rate: [
+            { t: -60, v: 2 },
+            { t: 0, v: 2 },
+          ],
+        },
+      },
+      {
+        svc: {
+          cache_hit_rate: makeRp({
+            metricId: "cache_hit_rate",
+            archetype: "cache_hit_rate",
+            baselineValue: 2,
+            resolvedValue: 82,
+            peakValue: 2,
+            overlay: "none",
+            noiseType: "none",
+            noiseLevelMultiplier: 0,
+          }),
+        },
+      },
+    );
+
+    nextPoint(store, "svc", "cache_hit_rate", 60);
+    const latestV = store.getCurrentValue("svc", "cache_hit_rate", 60)!;
+    expect(latestV).toBeCloseTo(2, 0);
+
+    store.applyActiveOverlay(
+      "svc",
+      "cache_hit_rate",
+      makeOverlay({
+        startSimTime: 0,
+        startValue: 82,
+        targetValue: 82,
+        pattern: "cliff",
+        speedSeconds: 60,
+        sustained: true,
+        _intent: {
+          outcome: "worsening",
+          magnitude: 0.8,
+          resolvedValue: 82,
+          peakValue: 2,
+        },
+      }),
+    );
+
+    const p120 = nextPoint(store, "svc", "cache_hit_rate", 120);
+    // effectivePeak = 2 * 0.7 = 1.4 → target = 2 + (1.4-2)*0.8 = 1.52
+    // Must be BELOW current (2), not above
+    expect(p120.v).toBeLessThan(2);
+    expect(p120.v).toBeGreaterThanOrEqual(0); // never negative
   });
 });
 

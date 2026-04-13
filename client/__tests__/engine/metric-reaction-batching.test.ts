@@ -384,3 +384,98 @@ describe("MetricReactionEngine — prompt shows full action window", () => {
     expect(rollbackIdx).toBeGreaterThanOrEqual(0);
   });
 });
+
+// ── Cursor rollback on LLM failure ────────────────────────────────────────────
+
+describe("MetricReactionEngine — cursor rollback on LLM failure", () => {
+  it("actions are NOT dropped when LLM call throws — they appear in the next call's prompt", async () => {
+    const { scenario, store } = makeStore();
+    const capturedMessages: Array<Array<{ role: string; content: string }>> =
+      [];
+    let callCount = 0;
+
+    const llm = {
+      call: vi
+        .fn()
+        .mockImplementation(
+          (req: { messages: Array<{ role: string; content: string }> }) => {
+            callCount++;
+            capturedMessages.push(req.messages);
+            if (callCount === 1) {
+              // First call fails
+              return Promise.reject(new Error("LLM timeout"));
+            }
+            // Second call succeeds
+            return Promise.resolve({ toolCalls: [] });
+          },
+        ),
+    };
+
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
+
+    const auditLog = [
+      { action: "trigger_rollback" as const, params: {}, simTime: 50 },
+    ];
+
+    // First call — will fail; cursor should roll back
+    await engine.react(makeContext(scenario, auditLog));
+    expect(callCount).toBe(1);
+
+    // Second call with the same audit log — failed action must reappear
+    await engine.react(makeContext(scenario, auditLog));
+    expect(callCount).toBe(2);
+
+    const secondCallUser =
+      capturedMessages[1].find((m) => m.role === "user")?.content ?? "";
+    // The rolled-back action must appear in the second call
+    expect(secondCallUser).toContain("trigger_rollback");
+  });
+
+  it("LLMError specifically triggers rollback (not just any error)", async () => {
+    const { LLMError } = await import("../../src/llm/llm-client");
+    const { scenario, store } = makeStore();
+    const capturedMessages: Array<Array<{ role: string; content: string }>> =
+      [];
+    let callCount = 0;
+
+    const llm = {
+      call: vi
+        .fn()
+        .mockImplementation(
+          (req: { messages: Array<{ role: string; content: string }> }) => {
+            callCount++;
+            capturedMessages.push(req.messages);
+            if (callCount === 1) {
+              return Promise.reject(
+                new LLMError("provider_error", "provider_error"),
+              );
+            }
+            return Promise.resolve({ toolCalls: [] });
+          },
+        ),
+    };
+
+    const engine = createMetricReactionEngine(
+      () => llm,
+      scenario,
+      store,
+      () => 60,
+    );
+
+    const auditLog = [
+      { action: "scale_cluster" as const, params: {}, simTime: 55 },
+    ];
+
+    await engine.react(makeContext(scenario, auditLog));
+    await engine.react(makeContext(scenario, auditLog));
+
+    const secondCallUser =
+      capturedMessages[1].find((m) => m.role === "user")?.content ?? "";
+    expect(secondCallUser).toContain("scale_cluster");
+  });
+});

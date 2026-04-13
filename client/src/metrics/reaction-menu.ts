@@ -96,14 +96,25 @@ export function buildReactionTemplate(
     const currentValue =
       metricStore.getCurrentValue(service, metricId, simTime) ??
       rp.baselineValue;
-    const maxPeak = Math.max(...activeApps.map((a) => a.peakValue));
+
+    // "Peak" means the most-degraded value across active overlays.
+    // For upward metrics (latency, error_rate) the worst is the highest peakValue.
+    // For downward metrics (cache_hit_rate) the worst is the lowest peakValue.
+    // We detect direction by comparing each overlay's peakValue to the baseline:
+    // if any peakValue < baselineValue, this is a downward metric.
+    const isDownwardMetric = activeApps.some(
+      (a) => a.peakValue < rp.baselineValue,
+    );
+    const worstPeak = isDownwardMetric
+      ? Math.min(...activeApps.map((a) => a.peakValue))
+      : Math.max(...activeApps.map((a) => a.peakValue));
 
     activeMetrics.push({
       service,
       metricId,
       currentValue,
       resolvedValue: rp.resolvedValue,
-      peakValue: maxPeak,
+      peakValue: worstPeak,
     });
   }
 

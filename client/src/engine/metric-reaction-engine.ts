@@ -91,16 +91,6 @@ export function createMetricReactionEngine(
   return {
     async react(context: StakeholderContext): Promise<void> {
       const tools = getMetricReactionTools(scenario);
-      console.log(
-        `[metric-react] react() entry at ${Date.now()}ms — triggeredByAction=`,
-        context.triggeredByAction,
-        "tools=",
-        tools.length,
-        "auditLog.length=",
-        context.auditLog.length,
-        "_isInFlight=",
-        _isInFlight,
-      );
       if (tools.length === 0) {
         log.info(
           "metric-reaction: skipped — no tools (select_metric_reaction not enabled for scenario)",
@@ -108,7 +98,6 @@ export function createMetricReactionEngine(
         return;
       }
       if (!context.triggeredByAction) {
-        console.log("[metric-react] skipped — triggeredByAction=false");
         return;
       }
 
@@ -116,37 +105,26 @@ export function createMetricReactionEngine(
       const hasActiveAction = newActions.some(
         (a) => !PASSIVE_ACTIONS.has(a.action),
       );
-      console.log(
-        "[metric-react] newActions=",
-        newActions.map((a) => a.action),
-        "hasActiveAction=",
-        hasActiveAction,
-        "_isInFlight=",
-        _isInFlight,
-        "_lastProcessedAuditLength=",
-        _lastProcessedAuditLength,
+      log.debug(
+        {
+          newActions: newActions.map((a) => a.action),
+          hasActiveAction,
+          _isInFlight,
+        },
+        "metric-reaction: react() entry",
       );
 
       if (_isInFlight) {
-        console.log(
-          `[metric-react] _isInFlight=true at ${Date.now()}ms — saving as pendingContext`,
-        );
         _pendingContext = context;
         return;
       }
 
       try {
-        console.log(
-          `[metric-react] setting _isInFlight=true at ${Date.now()}ms`,
-        );
         _isInFlight = true;
         await _react(context, tools);
       } catch (err) {
         log.error({ err }, "Unexpected error in metric reaction");
       } finally {
-        console.log(
-          `[metric-react] setting _isInFlight=false at ${Date.now()}ms, pendingContext=${_pendingContext !== null}`,
-        );
         _isInFlight = false;
         if (_pendingContext !== null) {
           const pending = _pendingContext;
@@ -185,10 +163,6 @@ export function createMetricReactionEngine(
     // Skip LLM call when no incident metrics are active.
     // Do NOT advance the cursor in this case — keep the actions for the next call.
     if (template.activeMetrics.length === 0) {
-      console.log(
-        "[metric-react] _react() skipped — activeMetrics is empty, simTime=",
-        getSimTime(),
-      );
       log.debug(
         { actions: newActions.map((a) => a.action) },
         "metric-reaction: no active incident metrics — skipping LLM call",
@@ -196,11 +170,12 @@ export function createMetricReactionEngine(
       return;
     }
 
-    console.log(
-      "[metric-react] _react() FIRING LLM call — activeMetrics=",
-      template.activeMetrics.map((m) => m.metricId),
-      "actions=",
-      newActions.map((a) => a.action),
+    log.info(
+      {
+        activeMetrics: template.activeMetrics.map((m) => m.metricId),
+        actions: newActions.map((a) => a.action),
+      },
+      "metric-reaction: firing LLM call",
     );
 
     // Advance cursor now that we know we're making the call.
@@ -209,14 +184,6 @@ export function createMetricReactionEngine(
     _lastProcessedAuditLength = snapshotLength;
 
     const messages = _buildPrompt(context, template, newActions);
-
-    log.info(
-      {
-        actions: newActions.map((a) => a.action),
-        activeMetrics: template.activeMetrics.map((m) => m.metricId),
-      },
-      "metric-reaction: firing LLM call",
-    );
 
     let response;
     try {
@@ -374,7 +341,15 @@ export function createMetricReactionEngine(
         : {}),
       _intent: {
         outcome: outcome as Exclude<ReactionOutcome, "no_effect">,
-        magnitude: magnitude ?? (outcome === "worsening" ? 1.0 : 0.5),
+        // Use the same defaults as computeTargetValue so re-anchoring in
+        // applyActiveOverlay recomputes an identical target from the fresh anchor.
+        magnitude:
+          magnitude ??
+          (outcome === "full_recovery"
+            ? 1.0
+            : outcome === "partial_recovery"
+              ? 0.5
+              : 1.0),
         resolvedValue: m.resolvedValue,
         peakValue: m.peakValue,
       },
@@ -396,6 +371,17 @@ export function createMetricReactionEngine(
     );
   }
 
+  /**
+   * Returns true when current is already within 20% of the available headroom
+   * to peak — meaning worsening against the scripted peak would produce a
+   * change too small to be visible in the chart.
+   */
+  function peakIsClose(current: number, peak: number): boolean {
+    const headroom = Math.abs(peak - current);
+    const scale = Math.max(Math.abs(current), Math.abs(peak), 0.001);
+    return headroom / scale < 0.2;
+  }
+
   function computeTargetValue(
     outcome: Exclude<ReactionOutcome, "no_effect">,
     m: ReactionTemplate["activeMetrics"][number],
@@ -413,9 +399,24 @@ export function createMetricReactionEngine(
         return m.currentValue + (m.resolvedValue - m.currentValue) * mag;
       }
       case "worsening": {
-        // magnitude scales how far toward peak: default 1.0 (full peak)
+        // magnitude scales how far toward an effective peak.
+        // Worsening direction: away from resolvedValue toward (and past) peakValue.
+        // peakValue > resolvedValue → worsening goes up (e.g. latency, error_rate).
+        // peakValue < resolvedValue → worsening goes down (e.g. cache_hit_rate, availability).
         const mag = magnitude ?? 1.0;
-        return m.currentValue + (m.peakValue - m.currentValue) * mag;
+        // If current is already within 20% of the headroom to scripted peak,
+        // extend the effective peak 30% further in the worsening direction so
+        // the animation is always visibly noticeable.
+        const worseningGoesUp = m.peakValue >= m.resolvedValue;
+        let effectivePeak: number;
+        if (peakIsClose(m.currentValue, m.peakValue)) {
+          effectivePeak = worseningGoesUp
+            ? m.currentValue * 1.3
+            : m.currentValue * 0.7;
+        } else {
+          effectivePeak = m.peakValue;
+        }
+        return m.currentValue + (effectivePeak - m.currentValue) * mag;
       }
     }
   }
@@ -704,13 +705,20 @@ export function createMetricReactionEngine(
     const metricReactionLines = template.activeMetrics.map((m) => {
       const hint = template.hints[0]; // hints are action-derived, same for all metrics
       const canonicalId = `${m.service}/${m.metricId}`;
+      // Worsening direction depends on whether peak is above or below baseline.
+      // peakValue > resolvedValue → worsening goes up (latency, error_rate, etc.)
+      // peakValue < resolvedValue → worsening goes down (cache_hit_rate, availability, etc.)
+      const worseningGoesUp = m.peakValue >= m.resolvedValue;
+      const worseningHint = worseningGoesUp
+        ? `>${m.peakValue.toFixed(2)}`
+        : `<${m.peakValue.toFixed(2)}`;
       return (
         `  ${canonicalId} (current=${m.currentValue.toFixed(2)}, ` +
         `baseline=${m.resolvedValue.toFixed(2)}, ` +
         `peak=${m.peakValue.toFixed(2)})\n` +
         `    full_recovery → ${m.resolvedValue.toFixed(2)} | ` +
         `partial_recovery → ${((m.currentValue + m.resolvedValue) / 2).toFixed(2)} | ` +
-        `worsening → >${m.peakValue.toFixed(2)} | no_effect → unchanged\n` +
+        `worsening → ${worseningHint} | no_effect → unchanged\n` +
         `    Suggested if fixing: pattern=${hint.suggestedPattern} speed=${hint.suggestedSpeed}`
       );
     });

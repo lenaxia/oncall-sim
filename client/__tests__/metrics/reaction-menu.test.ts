@@ -221,7 +221,89 @@ describe("buildReactionTemplate — hints", () => {
   });
 });
 
-// ── tool definition ───────────────────────────────────────────────────────────
+// ── Direction-aware peak ──────────────────────────────────────────────────────
+
+describe("buildReactionTemplate — direction-aware peakValue", () => {
+  function makeRpDownward(metricId: string): ResolvedMetricParams {
+    // Simulates a cache_hit_rate-style metric: baseline=82, peakValue=2 (drops during incident)
+    return {
+      metricId,
+      service: "fixture-service",
+      archetype: metricId,
+      label: metricId,
+      unit: "",
+      fromSecond: -300,
+      toSecond: 900,
+      resolutionSeconds: 60,
+      baselineValue: 82,
+      resolvedValue: 82,
+      rhythmProfile: "none",
+      inheritsRhythm: false,
+      noiseType: "none",
+      noiseLevelMultiplier: 0,
+      overlayApplications: [
+        {
+          overlay: "sudden_drop" as const,
+          onsetSecond: 0,
+          peakValue: 2, // degraded = low value
+          dropFactor: 0.024,
+          ceiling: 82,
+          rampDurationSeconds: 0,
+          saturationDurationSeconds: 60,
+        },
+      ],
+      overlay: "none",
+      onsetSecond: 0,
+      peakValue: 2,
+      dropFactor: 0.024,
+      ceiling: 82,
+      saturationDurationSeconds: 60,
+      rampDurationSeconds: 0,
+      seriesOverride: null,
+      seed: 1,
+    };
+  }
+
+  it("upward metric: peakValue in template equals Math.max of overlay peakValues", () => {
+    const scenario = makeScenario();
+    const store = createMetricStore(
+      { "fixture-service": { error_rate: [] } },
+      { "fixture-service": { error_rate: makeRpWithIncident("error_rate") } },
+    );
+    const template = buildReactionTemplate(
+      [makeEntry("trigger_rollback")],
+      scenario,
+      store,
+      60,
+    );
+    const m = template.activeMetrics.find((x) => x.metricId === "error_rate")!;
+    // peakValue should be 10 (from makeRpWithIncident — upward metric)
+    expect(m.peakValue).toBe(10);
+  });
+
+  it("downward metric (cache_hit_rate): peakValue in template equals Math.min of overlay peakValues", () => {
+    const scenario = makeScenario();
+    const store = createMetricStore(
+      { "fixture-service": { cache_hit_rate: [] } },
+      {
+        "fixture-service": { cache_hit_rate: makeRpDownward("cache_hit_rate") },
+      },
+    );
+    const template = buildReactionTemplate(
+      [makeEntry("trigger_rollback")],
+      scenario,
+      store,
+      60,
+    );
+    const m = template.activeMetrics.find(
+      (x) => x.metricId === "cache_hit_rate",
+    )!;
+    // peakValue should be 2 (the worst/lowest value during incident)
+    expect(m.peakValue).toBe(2);
+    // And resolvedValue should be baseline (82)
+    expect(m.resolvedValue).toBe(82);
+  });
+});
 
 describe("getMetricReactionTools — select_metric_reaction schema", () => {
   it("returns tool when enabled in scenario", async () => {

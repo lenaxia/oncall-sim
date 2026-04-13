@@ -361,7 +361,13 @@ export function createMetricStore(
         return e >= 5 ? T : C;
 
       case "blip_then_decay": {
-        const blipPeak = Math.max(C * 1.3, C + 1);
+        // Blip briefly in the direction of worsening before decaying toward T.
+        // C→T going up (latency spike): blip above C before settling at T.
+        // C→T going down (cache_hit_rate drop): blip below C before settling at T.
+        const goingUp = T >= C;
+        const blipPeak = goingUp
+          ? Math.max(C * 1.3, C + 1)
+          : Math.min(C * 0.7, C - 1);
         const blipDuration = speedSeconds * 0.1;
         if (e <= blipDuration) return blipPeak;
         const lambdaBlip = Math.log(20) / (speedSeconds * 0.9);
@@ -369,9 +375,14 @@ export function createMetricStore(
       }
 
       case "queue_burndown": {
-        if (e <= speedSeconds) return C;
+        // Hold at C for the full speedSeconds window (queue is still draining),
+        // then decay toward T once the queue clears.
+        // NOTE: elapsed is NOT clamped here — we need raw elapsed to detect
+        // when the hold window has passed.
+        if (elapsed <= speedSeconds) return C;
+        const postElapsed = elapsed - speedSeconds;
         const lambdaCliff = Math.log(2) / 15;
-        return T + (C - T) * Math.exp(-lambdaCliff * (e - speedSeconds));
+        return T + (C - T) * Math.exp(-lambdaCliff * postElapsed);
       }
 
       case "oscillating": {
@@ -530,16 +541,33 @@ export function createMetricStore(
               anchoredStartValue +
               (resolvedValue - anchoredStartValue) * magnitude;
             break;
-          case "worsening":
-            // If already at or beyond peak, push 20% further above current
-            if (anchoredStartValue >= peakValue) {
-              targetValue = anchoredStartValue * 1.2;
+          case "worsening": {
+            // Worsening direction: away from resolvedValue toward peakValue.
+            // peakValue > resolvedValue → worsening goes up (e.g. latency).
+            // peakValue < resolvedValue → worsening goes down (e.g. cache_hit_rate).
+            // If current is within 20% of headroom to scripted peak, extend the
+            // effective peak 30% further in the worsening direction so the
+            // animation is always visibly noticeable.
+            const headroom = Math.abs(peakValue - anchoredStartValue);
+            const scale = Math.max(
+              Math.abs(anchoredStartValue),
+              Math.abs(peakValue),
+              0.001,
+            );
+            const worseningGoesUp = peakValue >= resolvedValue;
+            let effectivePeak: number;
+            if (headroom / scale < 0.2) {
+              effectivePeak = worseningGoesUp
+                ? anchoredStartValue * 1.3
+                : anchoredStartValue * 0.7;
             } else {
-              targetValue =
-                anchoredStartValue +
-                (peakValue - anchoredStartValue) * magnitude;
+              effectivePeak = peakValue;
             }
+            targetValue =
+              anchoredStartValue +
+              (effectivePeak - anchoredStartValue) * magnitude;
             break;
+          }
         }
       }
 
