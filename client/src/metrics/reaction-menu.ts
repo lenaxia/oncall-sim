@@ -29,6 +29,8 @@ export interface ReactionMetricContext {
   currentValue: number;
   resolvedValue: number;
   peakValue: number;
+  /** Critical alarm threshold for this metric, if configured. */
+  criticalThreshold: number | null;
 }
 
 /** Non-binding hints for each outcome, derived from the action window and metric state. */
@@ -115,6 +117,7 @@ export function buildReactionTemplate(
       currentValue,
       resolvedValue: rp.resolvedValue,
       peakValue: worstPeak,
+      criticalThreshold: rp.criticalThreshold ?? null,
     });
   }
 

@@ -490,12 +490,6 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   // Called directly whenever a trainee action is dispatched.
   function triggerMetricReact(): void {
     const ctx = { ...buildStakeholderContext(), triggeredByAction: true };
-    console.log(
-      `[metric-react] triggerMetricReact() called at ${Date.now()}ms, auditLog.length=`,
-      ctx.auditLog.length,
-      "lastAction=",
-      ctx.auditLog[ctx.auditLog.length - 1]?.action,
-    );
     onMetricReact(ctx).catch((err) => {
       log.error({ err }, "onMetricReact error");
     });

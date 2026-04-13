@@ -116,11 +116,13 @@ export const COMPONENT_METRICS: {
     {
       // cert_expiry: countdown from baseline (days remaining) to 0 at expiry.
       // Incident uses sudden_drop with magnitude near 0 to model the cert expiring.
+      // Any other incident type (saturation, spike_and_sustain, etc.) does not
+      // affect cert expiry — return "none" to skip overlay application.
       archetype: "cert_expiry",
       deriveBaseline: () => 90, // 90 days remaining at scenario start
       incidentPeakValue: (b, m) => b * m,
       lagSeconds: 0,
-      overlayForIncident: () => "sudden_drop",
+      overlayForIncident: (o) => (o === "sudden_drop" ? "sudden_drop" : "none"),
       ceiling: () => null,
       resolvedValue: () => 90,
     },
@@ -421,7 +423,7 @@ export const COMPONENT_METRICS: {
       deriveBaseline: () => 90,
       incidentPeakValue: (b, m) => b * m,
       lagSeconds: 0,
-      overlayForIncident: () => "sudden_drop",
+      overlayForIncident: (o) => (o === "sudden_drop" ? "sudden_drop" : "none"),
       ceiling: () => null,
       resolvedValue: () => 90,
     },

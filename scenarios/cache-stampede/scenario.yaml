@@ -53,12 +53,14 @@ topology:
         onset_overlay: sudden_drop
         onset_second: 90
         magnitude: 0.02
+        propagation_direction: both # cache miss floods recs_db downstream AND slows ecs upstream
       - id: db_saturation
         affected_component: recs_db
         description: "RDS Aurora connection pool saturated by stampeding cache-miss reads — 250 RPS × 0.82 cache miss rate × 3 DB queries per recommendation = ~615 extra queries/second."
         onset_overlay: saturation
         onset_second: 90
         magnitude: 1.0
+        propagation_direction: upstream # db saturation is felt by callers (ecs service)
   upstream:
     - name: storefront
       description: "Storefront calls recommendation-service for personalised product lists."

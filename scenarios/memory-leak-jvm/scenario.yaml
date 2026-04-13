@@ -48,6 +48,7 @@ topology:
         onset_second: 0
         magnitude: 4.0
         ramp_duration_seconds: 600
+        propagation_direction: both # memory leak on ecs: alb upstream sees errors, rds downstream sees load
       - id: oom_latency_spike
         affected_component: ecs
         description: "p99 latency degrades in steps as GC pauses lengthen under heap pressure."
@@ -55,6 +56,7 @@ topology:
         onset_second: 0
         magnitude: 6.0
         ramp_duration_seconds: 600
+        propagation_direction: both # latency degradation visible upstream (alb) and downstream (rds)
   upstream:
     - name: storefront-bff
       description: "Backend-for-frontend that calls catalog-service for product data."

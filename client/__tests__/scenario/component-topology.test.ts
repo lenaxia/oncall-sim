@@ -9,6 +9,8 @@ import { describe, it, expect } from "vitest";
 import {
   findEntrypoint,
   propagationPath,
+  propagationPathUpstream,
+  propagationPathForDirection,
   propagationLag,
 } from "../../src/scenario/component-topology";
 import type { ServiceComponent } from "../../src/scenario/types";
@@ -157,10 +159,13 @@ describe("propagationLag", () => {
     expect(propagationLag("alb", "alb", components)).toBe(0);
   });
 
-  it("returns 0 when targetId is not downstream of startId (upstream component)", () => {
+  it("returns non-zero lag when targetId is upstream of startId (new upstream path support)", () => {
+    // With the updated propagationLag, upstream paths are also searched.
+    // alb is upstream of ecs (ecs.inputs=[alb]).
+    // lag from ecs to alb: path is [ecs, alb], alb contributes max(lb lagSeconds).
+    // load_balancer max lagSeconds = 30 (error_rate, fault_rate)
     const components = [lb("alb"), ecs("ecs", ["alb"])];
-    // alb is upstream of ecs, not downstream
-    expect(propagationLag("ecs", "alb", components)).toBe(0);
+    expect(propagationLag("ecs", "alb", components)).toBe(30);
   });
 
   it("returns 0 when targetId does not exist", () => {
@@ -216,5 +221,108 @@ describe("propagationLag", () => {
     expect(multiHop).toBeGreaterThan(singleHop);
     expect(singleHop).toBe(30);
     expect(multiHop).toBe(95);
+  });
+});
+
+// ── propagationPathUpstream ───────────────────────────────────────────────────
+
+describe("propagationPathUpstream", () => {
+  it("returns only startId when nothing calls it (entrypoint)", () => {
+    const components = [lb("alb"), ecs("ecs", ["alb"]), ddb("ddb", ["ecs"])];
+    expect(propagationPathUpstream("alb", components)).toEqual(["alb"]);
+  });
+
+  it("returns startId + full upstream chain for single-hop (BFS follows all inputs[])", () => {
+    const components = [lb("alb"), ecs("ecs", ["alb"]), ddb("ddb", ["ecs"])];
+    // ddb.inputs=[ecs], ecs.inputs=[alb], alb.inputs=[] → full chain
+    expect(propagationPathUpstream("ddb", components)).toEqual([
+      "ddb",
+      "ecs",
+      "alb",
+    ]);
+  });
+
+  it("returns only startId + immediate caller when chain is shallow", () => {
+    // Two-component chain: alb → ecs. From ecs, upstream = [ecs, alb].
+    const components = [lb("alb"), ecs("ecs", ["alb"])];
+    expect(propagationPathUpstream("ecs", components)).toEqual(["ecs", "alb"]);
+  });
+
+  it("returns full upstream chain from deepest component", () => {
+    const components = [lb("alb"), ecs("ecs", ["alb"]), ddb("ddb", ["ecs"])];
+    // upstream from ddb: ddb.inputs=[ecs] → ecs.inputs=[alb] → alb.inputs=[]
+    expect(propagationPathUpstream("ddb", components)).toEqual([
+      "ddb",
+      "ecs",
+      "alb",
+    ]);
+  });
+
+  it("returns [] for unknown id", () => {
+    const components = [lb("alb"), ecs("ecs", ["alb"])];
+    expect(propagationPathUpstream("missing", components)).toEqual([]);
+  });
+
+  it("upstream from middle component includes only closer-to-user components", () => {
+    const components = [lb("alb"), ecs("ecs", ["alb"]), ddb("ddb", ["ecs"])];
+    // upstream from ecs: ecs → alb (not ddb — ddb is downstream)
+    expect(propagationPathUpstream("ecs", components)).toEqual(["ecs", "alb"]);
+  });
+});
+
+// ── propagationPathForDirection ───────────────────────────────────────────────
+
+describe("propagationPathForDirection", () => {
+  const components = [lb("alb"), ecs("ecs", ["alb"]), ddb("ddb", ["ecs"])];
+
+  it("downstream: same as propagationPath", () => {
+    expect(
+      propagationPathForDirection("alb", components, "downstream"),
+    ).toEqual(propagationPath("alb", components));
+  });
+
+  it("upstream: same as propagationPathUpstream", () => {
+    expect(propagationPathForDirection("ddb", components, "upstream")).toEqual(
+      propagationPathUpstream("ddb", components),
+    );
+  });
+
+  it("both: union of upstream and downstream, startId appears once", () => {
+    // upstream from ecs: [ecs, alb]; downstream from ecs: [ecs, ddb]
+    const result = propagationPathForDirection("ecs", components, "both");
+    expect(result).toContain("ecs");
+    expect(result).toContain("alb");
+    expect(result).toContain("ddb");
+    // startId appears exactly once
+    expect(result.filter((id) => id === "ecs").length).toBe(1);
+  });
+
+  it("downstream from deepest component: just the component itself", () => {
+    expect(
+      propagationPathForDirection("ddb", components, "downstream"),
+    ).toEqual(["ddb"]);
+  });
+
+  it("upstream from entrypoint: just the component itself", () => {
+    expect(propagationPathForDirection("alb", components, "upstream")).toEqual([
+      "alb",
+    ]);
+  });
+});
+
+// ── propagationLag with upstream path ────────────────────────────────────────
+
+describe("propagationLag — upstream path", () => {
+  it("finds lag when target is upstream of start", () => {
+    // alb → ecs → ddb: upstream from ddb to ecs should find the path
+    const components = [lb("alb"), ecs("ecs", ["alb"]), ddb("ddb", ["ecs"])];
+    // lag from ddb to ecs: ecs has maxLag=30 → totalLag should be 30
+    const lag = propagationLag("ddb", "ecs", components);
+    expect(lag).toBe(30);
+  });
+
+  it("returns 0 for same component", () => {
+    const components = [lb("alb"), ecs("ecs", ["alb"])];
+    expect(propagationLag("ecs", "ecs", components)).toBe(0);
   });
 });

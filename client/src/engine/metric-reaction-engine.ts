@@ -251,6 +251,12 @@ export function createMetricReactionEngine(
           template.hints[0].suggestedPattern;
         const speedTier =
           (entry["speed"] as ReactiveSpeedTier | undefined) ?? "5m";
+        if (!(speedTier in REACTIVE_SPEED_SECONDS)) {
+          log.warn(
+            { speedTier, metricId },
+            "select_metric_reaction: unknown speed tier — defaulting to 5m",
+          );
+        }
         const magnitudeRaw = entry["magnitude"];
         const magnitude =
           typeof magnitudeRaw === "number"
@@ -287,13 +293,21 @@ export function createMetricReactionEngine(
         });
       }
 
-      // Record this reaction in history so future calls see the causal chain
-      if (decisions.length > 0) {
+      // Record this reaction in history so future calls see the causal chain.
+      // Only record metrics that actually changed (no_effect entries are noise).
+      // Cap history at 10 entries to prevent unbounded context window growth.
+      const meaningfulDecisions = decisions.filter(
+        (d) => d.outcome !== "no_effect",
+      );
+      if (meaningfulDecisions.length > 0) {
         _reactionHistory.push({
           simTime: getSimTime(),
           actions: newActions.map((a) => a.action),
-          decisions,
+          decisions: meaningfulDecisions,
         });
+        if (_reactionHistory.length > 10) {
+          _reactionHistory.splice(0, _reactionHistory.length - 10);
+        }
       }
 
       break;
@@ -706,16 +720,31 @@ export function createMetricReactionEngine(
       const hint = template.hints[0]; // hints are action-derived, same for all metrics
       const canonicalId = `${m.service}/${m.metricId}`;
       // Worsening direction depends on whether peak is above or below baseline.
-      // peakValue > resolvedValue → worsening goes up (latency, error_rate, etc.)
-      // peakValue < resolvedValue → worsening goes down (cache_hit_rate, availability, etc.)
       const worseningGoesUp = m.peakValue >= m.resolvedValue;
       const worseningHint = worseningGoesUp
         ? `>${m.peakValue.toFixed(2)}`
         : `<${m.peakValue.toFixed(2)}`;
+
+      // Include the alarm threshold so the LLM knows whether worsening should
+      // push past it. If the metric is already above/below the threshold, note
+      // that a worsening reaction should reflect that severity.
+      let thresholdNote = "";
+      if (m.criticalThreshold != null) {
+        const alreadyBreach = worseningGoesUp
+          ? m.currentValue >= m.criticalThreshold
+          : m.currentValue <= m.criticalThreshold;
+        if (alreadyBreach) {
+          thresholdNote = ` [ALREADY PAST CRIT=${m.criticalThreshold.toFixed(0)} — worsening should push further]`;
+        } else {
+          const dir = worseningGoesUp ? "above" : "below";
+          thresholdNote = ` [crit=${m.criticalThreshold.toFixed(0)} — worsening should push ${dir} this threshold if action is severe enough]`;
+        }
+      }
+
       return (
         `  ${canonicalId} (current=${m.currentValue.toFixed(2)}, ` +
         `baseline=${m.resolvedValue.toFixed(2)}, ` +
-        `peak=${m.peakValue.toFixed(2)})\n` +
+        `peak=${m.peakValue.toFixed(2)})${thresholdNote}\n` +
         `    full_recovery → ${m.resolvedValue.toFixed(2)} | ` +
         `partial_recovery → ${((m.currentValue + m.resolvedValue) / 2).toFixed(2)} | ` +
         `worsening → ${worseningHint} | no_effect → unchanged\n` +
@@ -724,12 +753,14 @@ export function createMetricReactionEngine(
     });
     const reactionsSection =
       `## Per-Metric Reactions\n` +
-      `Declare a reaction for each metric that changes. ` +
-      `Omit metrics that are unaffected (implicit no_effect).\n` +
+      `You MUST declare a reaction for EVERY metric that is affected by this action. ` +
+      `The engine only applies changes to metrics you explicitly list — omitted metrics stay unchanged. ` +
+      `Only omit a metric if it is genuinely unaffected (implicit no_effect).\n` +
       `Hints are non-binding.\n\n` +
       metricReactionLines.join("\n\n") +
       `\n\nOutcomes: full_recovery | partial_recovery | worsening | no_effect\n` +
-      `Patterns: smooth_decay | cliff | stepped | blip_then_decay | queue_burndown | oscillating | sawtooth_rebound`;
+      `Patterns: smooth_decay | cliff | stepped | blip_then_decay | queue_burndown | oscillating | sawtooth_rebound\n` +
+      `Speed: 1m | 5m | 15m | 30m | 60m`;
 
     const userContent = [
       `## Sim Time\nt=${context.simTime}`,

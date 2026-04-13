@@ -48,12 +48,14 @@ topology:
         onset_second: 0
         magnitude: 25.0
         ramp_duration_seconds: 0
+        propagation_direction: downstream # cert failure on apigw floods all downstream services with errors
       - id: cert_countdown
         affected_component: apigw
         description: "cert_expiry metric reaches 0 at onset — certificate has expired."
         onset_overlay: sudden_drop
         onset_second: 0
         magnitude: 0.0
+        propagation_direction: downstream # cert_expiry metric is on apigw; only apigw affected
   upstream: []
   downstream:
     - name: partner-integrations

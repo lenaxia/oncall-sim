@@ -218,19 +218,47 @@ describe("deriveOpsDashboard — incident propagation along chain", () => {
     }
   });
 
-  it("upstream component (alb) gets error_rate incident response (propagated)", async () => {
+  it("upstream component (alb) gets error_rate overlay when propagation_direction is upstream (default)", async () => {
     const yamlStr = makeScenarioYaml(topology);
     const result = await loadScenarioFromText(yamlStr, noopResolve);
     if (!isScenarioLoadError(result)) {
-      // The incident affects ddb — it should NOT propagate back upstream to alb
-      // (alb is upstream of ddb, not downstream)
+      // Default propagation_direction is "upstream": blast radius from ddb is [ddb, ecs, alb].
+      // alb registers error_rate first (entrypoint-closest). With alb in the blast radius,
+      // it gets an overlay pushed for its error_rate spec.
       const alb_error = result.opsDashboard.focalService.metrics.find(
         (m) => m.archetype === "error_rate",
       );
-      // error_rate may or may not have overlays — alb error_rate depends on whether
-      // the incident propagates forward to alb. Since alb is the entrypoint and
-      // ddb is downstream, the incident does NOT propagate to alb.
-      // The overlays for alb error_rate should be empty.
+      expect(alb_error).toBeDefined();
+      expect(alb_error!.incidentResponses!.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("upstream component (alb) does NOT get overlays when propagation_direction is downstream", async () => {
+    const downstreamTopology = {
+      ...topology,
+      focal_service: {
+        ...topology.focal_service,
+        incidents: [
+          {
+            id: "ddb_saturation",
+            affected_component: "ddb",
+            description: "DynamoDB write capacity exhausted.",
+            onset_overlay: "saturation",
+            onset_second: 0,
+            magnitude: 1.0,
+            propagation_direction: "downstream",
+          },
+        ],
+      },
+    };
+    const yamlStr = makeScenarioYaml(downstreamTopology);
+    const result = await loadScenarioFromText(yamlStr, noopResolve);
+    if (!isScenarioLoadError(result)) {
+      // downstream from ddb = [ddb] (nothing downstream of ddb).
+      // alb is NOT in the blast radius — it should have no incident overlays.
+      const alb_error = result.opsDashboard.focalService.metrics.find(
+        (m) => m.archetype === "error_rate",
+      );
       if (alb_error?.incidentResponses) {
         expect(alb_error.incidentResponses).toHaveLength(0);
       }

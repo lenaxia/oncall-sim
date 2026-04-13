@@ -28,10 +28,14 @@ export function findEntrypoint(
 }
 
 /**
- * Returns component ids in topological order starting from startId,
- * following the downstream direction (which components list startId in their inputs[]).
- * Uses BFS to handle diamond topologies without duplicates.
- * Returns [] when startId is not found in components.
+ * Returns component ids in BFS order starting from startId,
+ * following the DOWNSTREAM direction in traffic flow:
+ * i.e. which components list startId in their inputs[].
+ *
+ * "Downstream" = further from the user, deeper into the stack.
+ * e.g. alb → ecs → postgres: downstream from alb is [alb, ecs, postgres].
+ *
+ * Use for incidents that flood backends (DDoS on ALB, traffic spike).
  */
 export function propagationPath(
   startId: string,
@@ -41,6 +45,7 @@ export function propagationPath(
   if (!exists) return [];
 
   // Build adjacency list: id → list of downstream ids
+  // c has inputId in its inputs[] → c is downstream of inputId
   const downstream: Map<string, string[]> = new Map();
   for (const c of components) {
     if (!downstream.has(c.id)) downstream.set(c.id, []);
@@ -72,13 +77,89 @@ export function propagationPath(
 }
 
 /**
- * Returns the accumulated propagation lag (seconds) from startId to targetId
- * along the propagation path.
+ * Returns component ids in BFS order starting from startId,
+ * following the UPSTREAM direction in traffic flow —
+ * i.e. walking each component's own inputs[] toward the entrypoint.
  *
- * Each component on the path contributes max(lagSeconds) across all its metric specs.
- * Components with no specs (s3, scheduler) contribute 0.
- * Returns 0 when startId === targetId, when targetId is not downstream of startId,
- * or when either id does not exist in components.
+ * "Upstream" = closer to the user.
+ * Topology: alb (inputs:[]) → ecs (inputs:[alb]) → postgres (inputs:[ecs])
+ * upstream from postgres = [postgres, ecs, alb]
+ *
+ * Use for incidents that degrade callers: DB pool exhaustion,
+ * cache miss, downstream API timeout.
+ */
+export function propagationPathUpstream(
+  startId: string,
+  components: ServiceComponent[],
+): string[] {
+  const exists = components.some((c) => c.id === startId);
+  if (!exists) return [];
+
+  // Index components by id for O(1) lookup
+  const byId = new Map(components.map((c) => [c.id, c]));
+
+  // BFS: at each step, follow the current component's own inputs[]
+  // (those are the components it receives traffic from — upstream)
+  const result: string[] = [];
+  const visited = new Set<string>();
+  const queue: string[] = [startId];
+  visited.add(startId);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    result.push(current);
+    const comp = byId.get(current);
+    if (!comp) continue;
+    for (const inputId of comp.inputs) {
+      if (!visited.has(inputId)) {
+        visited.add(inputId);
+        queue.push(inputId);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Returns all component ids reachable from startId in the given direction(s).
+ * Always includes startId itself.
+ *   upstream   — callers of startId (toward the user)
+ *   downstream — dependencies of startId (away from the user)
+ *   both       — union of upstream and downstream
+ */
+export function propagationPathForDirection(
+  startId: string,
+  components: ServiceComponent[],
+  direction: "upstream" | "downstream" | "both",
+): string[] {
+  if (direction === "downstream") {
+    return propagationPath(startId, components);
+  }
+  if (direction === "upstream") {
+    return propagationPathUpstream(startId, components);
+  }
+  // both: union, startId first
+  const up = propagationPathUpstream(startId, components);
+  const down = propagationPath(startId, components);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of [...up, ...down]) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+/**
+ * Returns the accumulated propagation lag (seconds) from startId to targetId.
+ * Searches both upstream and downstream paths to find the route.
+ *
+ * Each component on the path (excluding startId) contributes
+ * max(lagSeconds) across all its metric specs.
+ * Returns 0 when startId === targetId or targetId is not reachable.
  */
 export function propagationLag(
   startId: string,
@@ -87,17 +168,14 @@ export function propagationLag(
 ): number {
   if (startId === targetId) return 0;
 
-  const path = propagationPath(startId, components);
-  const targetIdx = path.indexOf(targetId);
+  // Try downstream first, then upstream
+  const downPath = propagationPath(startId, components);
+  const upPath = propagationPathUpstream(startId, components);
+  const path = downPath.includes(targetId) ? downPath : upPath;
 
-  // targetId not downstream of startId
+  const targetIdx = path.indexOf(targetId);
   if (targetIdx === -1) return 0;
 
-  // Accumulate lag from the component AFTER startId through targetId (inclusive).
-  // The startId (index 0) is the incident origin — its lag is its own metric's
-  // internal delay, not propagation cost. Downstream components contribute their
-  // max(lagSeconds) across all specs: this is how long after receiving the
-  // upstream signal the component's own metrics start showing the effect.
   let totalLag = 0;
   const componentById = new Map(components.map((c) => [c.id, c]));
 
@@ -105,10 +183,8 @@ export function propagationLag(
     const id = path[i];
     const component = componentById.get(id);
     if (!component) continue;
-
     const specs = COMPONENT_METRICS[component.type];
-    if (specs.length === 0) continue; // s3, scheduler → 0
-
+    if (specs.length === 0) continue;
     const maxLag = Math.max(...specs.map((s) => s.lagSeconds));
     totalLag += maxLag;
   }

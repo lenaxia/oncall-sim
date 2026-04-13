@@ -131,6 +131,8 @@ export type ServiceComponent =
   | S3Component
   | SchedulerComponent;
 
+export type PropagationDirection = "upstream" | "downstream" | "both";
+
 export interface IncidentConfig {
   id: string;
   affectedComponent: string;
@@ -140,6 +142,8 @@ export interface IncidentConfig {
   magnitude: number;
   rampDurationSeconds?: number;
   endSecond?: number;
+  /** Direction the blast radius propagates. Defaults to "upstream". */
+  propagationDirection: PropagationDirection;
 }
 
 export interface ServiceNode {

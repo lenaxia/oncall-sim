@@ -52,6 +52,14 @@ export function deriveCorrelatedMetrics(
       onsetSecond: undefined,
       incidentResponse: undefined,
       seriesOverride: undefined,
+      // Only upstream_impact services inherit incident overlay applications.
+      // exonerated and independent services are unaffected by the focal incident —
+      // clearing incidentResponses prevents them from appearing in activeMetrics
+      // and consuming reaction LLM attention.
+      incidentResponses:
+        correlationConfig.correlation === "upstream_impact"
+          ? focalMetricConfig.incidentResponses
+          : [],
     };
 
     const params = resolveMetricParams(

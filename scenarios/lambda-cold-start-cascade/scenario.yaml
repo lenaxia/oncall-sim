@@ -48,6 +48,7 @@ topology:
         onset_overlay: saturation
         onset_second: 60
         magnitude: 1.0
+        propagation_direction: upstream # throttled lambda is felt by api_gateway callers
       - id: queue_backlog
         affected_component: event_stream
         description: "Kinesis iterator age climbing — Lambda throttling causes consumers to fall behind. Events accumulate in the stream."
@@ -55,6 +56,7 @@ topology:
         onset_second: 60
         magnitude: 8.0
         ramp_duration_seconds: 60
+        propagation_direction: downstream # backlog floods downstream sqs/dlq
       - id: dlq_accumulation
         affected_component: dlq
         description: "SQS DLQ filling as events exhaust retry attempts from Kinesis."
@@ -62,6 +64,7 @@ topology:
         onset_second: 180
         magnitude: 6.0
         ramp_duration_seconds: 120
+        propagation_direction: downstream # dlq is the terminal component
   upstream:
     - name: customer-app
       description: "Customer-facing web/mobile app that submits orders."

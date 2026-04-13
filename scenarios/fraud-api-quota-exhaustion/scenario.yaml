@@ -48,6 +48,7 @@ topology:
         onset_second: 0
         magnitude: 20.0
         ramp_duration_seconds: 0
+        propagation_direction: both # ECS is the affected service — alb upstream sees fault_rate spike, rds downstream sees load
   upstream:
     - name: storefront
       description: "Customer-facing web/mobile checkout flow."

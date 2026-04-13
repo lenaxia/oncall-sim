@@ -346,6 +346,20 @@ export const IncidentConfigSchema = z
     magnitude: z.number().min(0),
     ramp_duration_seconds: z.number().min(0).optional(),
     end_second: z.number().optional(),
+    /**
+     * Direction the incident blast radius propagates through the component graph.
+     *   upstream   — callers of the affected component feel the impact
+     *                (e.g. DB pool exhaustion: ECS service calling postgres degrades)
+     *   downstream — dependencies of the affected component are flooded
+     *                (e.g. DDoS on ALB: backend ECS/DB gets flooded)
+     *   both       — propagates in both directions
+     *                (e.g. cache stampede: DB downstream gets flooded AND service upstream slows)
+     * Defaults to "upstream" — the most common case for backend-origin incidents.
+     */
+    propagation_direction: z
+      .enum(["upstream", "downstream", "both"])
+      .optional()
+      .default("upstream"),
   })
   .superRefine((val, ctx) => {
     if (val.onset_overlay === "saturation" && val.magnitude > 1.0) {

@@ -10,29 +10,10 @@ import { LOG_PROFILES, getDensityMultiplier, makeRng } from "./log-profiles";
 import { logger } from "../logger";
 import type {
   LoadedScenario,
-  ScenarioSummary,
-  Difficulty,
-  PersonaConfig,
-  AlarmConfig,
-  RemediationActionConfig,
-  FeatureFlagConfig,
-  HostGroupConfig,
-  ScriptedEmail,
-  ChatConfig,
-  ScriptedTicket,
-  ScriptedLogEntry,
-  WikiConfig,
-  CICDConfig,
-  OpsDashboardConfig,
-  FocalServiceConfig,
-  CorrelatedServiceConfig,
-  MetricConfig,
-  EvaluationConfig,
-  ScriptedChatMessage,
-  ScriptedDeployment,
   ServiceNode,
   ServiceComponent,
   IncidentConfig,
+  PropagationDirection,
   TrafficProfile,
   ComponentType,
 } from "./types";
@@ -41,6 +22,7 @@ import { COMPONENT_METRICS } from "../metrics/component-metrics";
 import {
   findEntrypoint,
   propagationPath,
+  propagationPathForDirection,
   propagationLag,
 } from "./component-topology";
 
@@ -478,9 +460,13 @@ function deriveFocalServiceConfig(node: ServiceNode): FocalServiceConfig {
 
       // Build overlay applications for each incident that propagates to this component
       for (const incident of incidents) {
-        // Skip if this component is not reachable from the affected component
-        const path2 = propagationPath(incident.affectedComponent, components);
-        if (!path2.includes(compId)) continue;
+        // Determine which components are in the blast radius based on direction
+        const blastRadius = propagationPathForDirection(
+          incident.affectedComponent,
+          components,
+          incident.propagationDirection,
+        );
+        if (!blastRadius.includes(compId)) continue;
 
         const lag = propagationLag(
           incident.affectedComponent,
@@ -703,6 +689,8 @@ function transformIncident(i: RawIncident): IncidentConfig {
     magnitude: i.magnitude,
     rampDurationSeconds: i.ramp_duration_seconds,
     endSecond: i.end_second,
+    propagationDirection: (i.propagation_direction ??
+      "upstream") as PropagationDirection,
   };
 }
 

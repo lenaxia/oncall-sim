@@ -35,6 +35,7 @@ topology:
         onset_overlay: spike_and_sustain
         onset_second: 0
         magnitude: 20.0
+        propagation_direction: downstream # ecs is the affected service itself
   upstream: []
   downstream: []
 

@@ -112,3 +112,76 @@ describe("payment-db-pool-exhaustion — schema validation", () => {
     }
   });
 });
+
+// ── propagation_direction: upstream ──────────────────────────────────────────
+//
+// The payment scenario has a single incident on `postgres` (rds) with
+// propagation_direction: upstream.  The blast radius is [postgres, ecs, alb].
+// Previously only postgres got overlays; now ecs metrics should too.
+
+describe("payment-db-pool-exhaustion — upstream incident propagation", () => {
+  async function loadPayment() {
+    const result = await loadScenarioFromText(paymentYaml, noopResolve);
+    if (isScenarioLoadError(result)) throw new Error("scenario load failed");
+    return result;
+  }
+
+  it("db_pool_exhaustion incident has propagation_direction: upstream", async () => {
+    const result = await loadPayment();
+    const incident = result.topology.focalService.incidents[0];
+    expect(incident.propagationDirection).toBe("upstream");
+  });
+
+  it("p95_latency_ms (ecs_cluster metric) now has incident overlay from upstream propagation", async () => {
+    // Before: blast radius was only [postgres] — ecs metrics had no overlay.
+    // After: blast radius is [postgres, ecs, alb] — ecs's p95 gets an overlay.
+    const result = await loadPayment();
+    const p95 = result.opsDashboard.focalService.metrics.find(
+      (m) => m.archetype === "p95_latency_ms",
+    );
+    expect(p95).toBeDefined();
+    expect(p95!.incidentResponses).toBeDefined();
+    expect(p95!.incidentResponses!.length).toBeGreaterThan(0);
+    expect(p95!.incidentResponses![0].overlay).toBe("spike_and_sustain");
+  });
+
+  it("error_rate (ecs_cluster metric) has incident overlay from upstream propagation", async () => {
+    const result = await loadPayment();
+    const errorRate = result.opsDashboard.focalService.metrics.find(
+      (m) => m.archetype === "error_rate",
+    );
+    expect(errorRate).toBeDefined();
+    expect(errorRate!.incidentResponses!.length).toBeGreaterThan(0);
+  });
+
+  it("connection_pool_used (rds metric, incident origin) still has overlay", async () => {
+    const result = await loadPayment();
+    const cp = result.opsDashboard.focalService.metrics.find(
+      (m) => m.archetype === "connection_pool_used",
+    );
+    expect(cp).toBeDefined();
+    expect(cp!.incidentResponses!.length).toBeGreaterThan(0);
+    expect(cp!.incidentResponses![0].overlay).toBe("saturation");
+  });
+
+  it("p99_latency_ms has overlays from both rds and ecs_cluster specs", async () => {
+    // Both postgres (rds) and ecs are in the blast radius, both define p99_latency_ms.
+    // Result: p99 gets multiple overlay entries (one per component spec).
+    const result = await loadPayment();
+    const p99 = result.opsDashboard.focalService.metrics.find(
+      (m) => m.archetype === "p99_latency_ms",
+    );
+    expect(p99).toBeDefined();
+    expect(p99!.incidentResponses!.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("ecs p95 overlay onsetSecond reflects propagation lag from postgres", async () => {
+    // The incident onset_second=0. ecs_cluster metrics have lagSeconds up to 30.
+    // The overlay onset for ecs metrics should be > 0 (lag from postgres to ecs).
+    const result = await loadPayment();
+    const p95 = result.opsDashboard.focalService.metrics.find(
+      (m) => m.archetype === "p95_latency_ms",
+    );
+    expect(p95!.incidentResponses![0].onsetSecond).toBeGreaterThan(0);
+  });
+});
