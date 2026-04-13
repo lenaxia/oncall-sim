@@ -4,8 +4,12 @@ import path from "path";
 import { execSync } from "child_process";
 
 function getVersion(): string {
+  // In CI/Docker the version is injected via the APP_VERSION build arg.
+  if (process.env.APP_VERSION && process.env.APP_VERSION !== "dev") {
+    return process.env.APP_VERSION;
+  }
+  // Local dev: derive from git describe.
   try {
-    // e.g. "v1.0.26" or "v1.0.26-3-gabcdef" if commits exist after the tag
     return execSync("git describe --tags --always --dirty", {
       cwd: path.resolve(__dirname, ".."),
       encoding: "utf-8",

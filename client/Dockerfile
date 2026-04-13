@@ -22,6 +22,7 @@ ARG VITE_LLM_MODE=proxy
 ARG VITE_LLM_BASE_URL=/llm
 ARG VITE_LLM_API_KEY=
 ARG VITE_LLM_MODEL=
+ARG APP_VERSION=dev
 
 # Safety check: refuse to bake a non-empty API key into the bundle.
 # API keys must never be embedded in a browser-served JS bundle.
