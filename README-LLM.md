@@ -2,7 +2,7 @@
 
 **Version:** 1.4
 **Last Updated:** 2026-04-13
-**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.35), pipeline deployment progression complete, Phase 9 (debrief narrative) stub only
+**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.36), pipeline deployment progression complete, Phase 9 (debrief narrative) stub only
 
 ---
 
