@@ -1,4 +1,5 @@
-import { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
+import ReactDOM from "react-dom";
 import { useSession } from "../../context/SessionContext";
 import { useScenario } from "../../context/ScenarioContext";
 import { useSimClock } from "../../hooks/useSimClock";
@@ -54,7 +55,7 @@ function oldestVersionNotInProd(pipeline: Pipeline): number {
 const STAGE_STATUS_COLOURS: Record<StageStatus, string> = {
   succeeded: "bg-sim-green text-sim-bg",
   in_progress: "bg-sim-accent text-white animate-pulse",
-  blocked: "bg-sim-red text-white",
+  blocked: "bg-sim-green text-sim-bg", // stage itself is healthy; blocker is on the connector
   failed: "bg-sim-red text-white",
   not_started: "bg-sim-surface-2 text-sim-text-faint",
 };
@@ -62,7 +63,7 @@ const STAGE_STATUS_COLOURS: Record<StageStatus, string> = {
 const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
   succeeded: "✓",
   in_progress: "…",
-  blocked: "⚠",
+  blocked: "✓", // still a good deployment; promotion gate shown on connector
   failed: "✗",
   not_started: "○",
 };
@@ -93,15 +94,160 @@ const OVERALL_STATUS_STYLES = {
   },
 };
 
+// ── StageConnector ────────────────────────────────────────────────────────────
+
+function StageConnector({
+  nextStage,
+  inactive,
+  onBlock,
+  onApprove,
+}: {
+  nextStage: PipelineStage;
+  inactive: boolean;
+  onBlock: () => void;
+  onApprove: () => void;
+}) {
+  const hasManualBlocker = nextStage.blockers.some(
+    (b) => b.type === "manual_approval",
+  );
+  const hasHardBlocker = nextStage.blockers.some(
+    (b) => b.type === "alarm" || b.type === "time_window",
+  );
+
+  if (hasHardBlocker) {
+    return (
+      <ConnectorWithTooltip
+        tooltip={
+          <>
+            Promotion into <strong>{nextStage.name}</strong> is blocked by an
+            alarm or time window. Use <em>Override Blocker</em> in the stage
+            detail panel to force-promote.
+          </>
+        }
+      >
+        <span className="text-sim-red text-base leading-none select-none px-1">
+          ⊘
+        </span>
+      </ConnectorWithTooltip>
+    );
+  }
+
+  if (hasManualBlocker) {
+    return (
+      <ConnectorWithTooltip
+        tooltip={
+          <>
+            Promotion into <strong>{nextStage.name}</strong> is manually gated.
+            Click to remove the gate and allow the next deployment to proceed.
+          </>
+        }
+      >
+        <button
+          data-testid={`connector-approve-${nextStage.id}`}
+          disabled={inactive}
+          onClick={onApprove}
+          className="text-sim-yellow text-base leading-none px-1 hover:text-sim-text transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          ⊘
+        </button>
+      </ConnectorWithTooltip>
+    );
+  }
+
+  return (
+    <ConnectorWithTooltip
+      tooltip={
+        <>
+          Promotion into <strong>{nextStage.name}</strong> is open. Click to add
+          a manual gate and halt future deployments here until approved.
+        </>
+      }
+    >
+      <button
+        data-testid={`connector-block-${nextStage.id}`}
+        disabled={inactive}
+        onClick={onBlock}
+        className="w-4 h-4 rounded-full bg-sim-green hover:bg-sim-yellow transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      />
+    </ConnectorWithTooltip>
+  );
+}
+
+function ConnectorWithTooltip({
+  children,
+  tooltip,
+}: {
+  children: React.ReactNode;
+  tooltip: React.ReactNode;
+}) {
+  const [visible, setVisible] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const anchorRef = useRef<HTMLDivElement>(null);
+
+  function show() {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    setPos({
+      top: rect.bottom + 6,
+      left: rect.left + rect.width / 2,
+    });
+    setVisible(true);
+  }
+
+  function hide() {
+    setVisible(false);
+  }
+
+  return (
+    <div className="flex items-center">
+      <div className="w-4 h-px bg-sim-text-faint" />
+      <div
+        ref={anchorRef}
+        className="flex items-center"
+        onMouseEnter={show}
+        onMouseLeave={hide}
+      >
+        {children}
+      </div>
+      <div className="w-4 h-px bg-sim-text-faint" />
+      {visible &&
+        ReactDOM.createPortal(
+          <div
+            style={{ top: pos.top, left: pos.left }}
+            className={[
+              "fixed z-[9999] -translate-x-1/2",
+              "w-48 px-2.5 py-2 rounded pointer-events-none",
+              "bg-sim-surface border border-sim-border shadow-lg",
+              "text-xs text-sim-text-muted leading-snug text-center",
+            ].join(" ")}
+          >
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-sim-border" />
+            {tooltip}
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function CICDTab() {
   const { state, dispatchAction } = useSession();
+  const { scenario } = useScenario();
   const { simTime } = useSimClock();
 
   const pipelines = state.pipelines;
+
+  // Default to the focal service pipeline so the trainee sees it immediately.
+  const focalPipelineId =
+    pipelines.find((p) => p.service === scenario?.topology.focalService.name)
+      ?.id ??
+    pipelines[0]?.id ??
+    null;
+
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(
-    null,
+    focalPipelineId,
   );
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
 
@@ -247,16 +393,27 @@ export function CICDTab() {
             {/* Stage flow */}
             <div
               data-testid="stage-flow"
-              className="flex items-stretch gap-0 overflow-x-auto"
+              className="flex items-center justify-center overflow-x-auto overflow-y-visible py-2"
             >
               {selectedPipeline.stages.map((stage, idx) => (
                 <div key={stage.id} className="flex items-stretch">
                   {idx > 0 && (
-                    <div className="flex items-center">
-                      <div
-                        className={`w-6 h-px ${stage.status === "not_started" ? "bg-sim-border" : "bg-sim-text-faint"}`}
-                      />
-                    </div>
+                    <StageConnector
+                      nextStage={stage}
+                      inactive={inactive}
+                      onBlock={() =>
+                        dispatchAction("block_promotion", {
+                          pipelineId: selectedPipeline.id,
+                          stageId: stage.id,
+                        })
+                      }
+                      onApprove={() =>
+                        dispatchAction("approve_gate", {
+                          pipelineId: selectedPipeline.id,
+                          stageId: stage.id,
+                        })
+                      }
+                    />
                   )}
                   <button
                     data-testid={`stage-pill-${stage.id}`}
@@ -314,12 +471,6 @@ export function CICDTab() {
                 }
                 onApproveGate={() =>
                   dispatchAction("approve_gate", {
-                    pipelineId: selectedPipeline.id,
-                    stageId: selectedStage.id,
-                  })
-                }
-                onBlockPromotion={() =>
-                  dispatchAction("block_promotion", {
                     pipelineId: selectedPipeline.id,
                     stageId: selectedStage.id,
                   })
@@ -425,7 +576,6 @@ function StageDetail({
   onRollback,
   onOverride,
   onApproveGate,
-  onBlockPromotion,
 }: {
   pipeline: Pipeline;
   stage: PipelineStage;
@@ -434,7 +584,6 @@ function StageDetail({
   onRollback: () => void;
   onOverride: () => void;
   onApproveGate: () => void;
-  onBlockPromotion: () => void;
 }) {
   const hasBlockers = stage.blockers.length > 0;
   const hasAlarmBlocker = stage.blockers.some(
@@ -498,16 +647,6 @@ function StageDetail({
               disabled={inactive}
             >
               Approve Gate
-            </Button>
-          )}
-          {!hasBlockers && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onBlockPromotion}
-              disabled={inactive}
-            >
-              Block Promotion
             </Button>
           )}
         </div>

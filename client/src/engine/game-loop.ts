@@ -21,11 +21,15 @@ import {
   type MetricSummary,
 } from "../metrics/metric-summary";
 import type { CoachContext, CoachTriggerReason } from "./coach-engine";
-import { PASSIVE_ACTIONS } from "./metric-reaction-engine";
+import {
+  PASSIVE_ACTIONS,
+  DEFERRED_METRIC_REACT_ACTIONS,
+} from "./metric-reaction-engine";
 import { logger } from "../logger";
 
 const log = logger.child({ component: "game-loop" });
 import type { SimStateStore, SimStateStoreSnapshot } from "./sim-state-store";
+import type { PendingDeployment } from "./sim-state-store";
 import type { Evaluator, EvaluationState } from "./evaluator";
 
 // ── StakeholderContext (Phase 5 consumes this) ────────────────────────────────
@@ -77,6 +81,8 @@ export interface GameLoop {
   /** Returns the simulation event log for use in the debrief. */
   getEventLog(): SimEventLogEntry[];
   onEvent(handler: (event: SimEvent) => void): () => void;
+  /** FOR TESTING ONLY — directly invoke one tick at the given sim time. */
+  _testTick(simTimeSec: number): void;
 }
 
 export interface GameLoopDependencies {
@@ -495,6 +501,181 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     });
   }
 
+  // ── Stage duration defaults ───────────────────────────────────────────────
+  // How many sim-seconds each stage type takes to complete.
+  const STAGE_DURATION_SECS: Record<"build" | "deploy", number> = {
+    build: 120, // 2 sim-minutes
+    deploy: 180, // 3 sim-minutes
+  };
+
+  /**
+   * Advance all pending deployments based on current sim-time.
+   * Returns true if at least one prod stage completed this tick — used to
+   * trigger the (delayed) metric reaction.
+   */
+  function tickPendingDeployments(simTime: number): boolean {
+    const pending = store.getPendingDeployments();
+    let prodStageCompleted = false;
+
+    for (const pd of pending) {
+      const pipeline = store.getPipeline(pd.pipelineId);
+      if (!pipeline) {
+        store.completePendingDeployment(pd.pipelineId);
+        continue;
+      }
+
+      const elapsed = simTime - pd.initiatedAtSim;
+      let currentIndex = pd.currentStageIndex;
+
+      // Process stages that are now due
+      while (currentIndex < pd.stageSchedule.length) {
+        const entry = pd.stageSchedule[currentIndex];
+        // Always re-fetch the stage fresh from the store — the pipeline snapshot
+        // taken above may be stale if block_promotion or approve_gate mutated it
+        // earlier this tick or in a prior action dispatch.
+        const liveStage = store
+          .getPipeline(pd.pipelineId)
+          ?.stages.find((s) => s.id === entry.stageId);
+        if (!liveStage) {
+          currentIndex++;
+          continue;
+        }
+
+        // Check if this stage should start (i.e. become in_progress)
+        if (elapsed < entry.startAtSim) {
+          // Not yet time for this stage to start
+          break;
+        }
+
+        const stageElapsed = elapsed - entry.startAtSim;
+
+        if (stageElapsed < entry.durationSecs) {
+          // Stage duration not yet elapsed — ensure it shows in_progress.
+          if (liveStage.status !== "in_progress") {
+            const runningTests = liveStage.tests.map((t) => ({
+              ...t,
+              status: "running" as import("@shared/types/events").TestStatus,
+            }));
+            const blockers = pd.isEmergency ? [] : liveStage.blockers;
+            const updatedStage: import("@shared/types/events").PipelineStage = {
+              ...liveStage,
+              status: "in_progress",
+              currentVersion: pd.version,
+              previousVersion: pd.previousVersion ?? liveStage.currentVersion,
+              commitMessage: pd.commitMessage,
+              author: pd.author,
+              deployedAtSec: pd.initiatedAtSim,
+              blockers,
+              tests: runningTests,
+            };
+            store.updateStage(pd.pipelineId, liveStage.id, updatedStage);
+            emit({
+              type: "pipeline_stage_updated",
+              pipelineId: pd.pipelineId,
+              stage: updatedStage,
+            });
+          }
+          // Still in progress — don't advance to next stage yet
+          break;
+        }
+
+        // Stage duration has elapsed — about to promote into the next stage.
+        // Read the next stage's live state RIGHT NOW and check blockers.
+        // Emergency deploys skip intermediate stages but still respect manual gates.
+        const nextEntry = pd.stageSchedule[currentIndex + 1];
+        if (nextEntry) {
+          const nextLiveStage = store
+            .getPipeline(pd.pipelineId)
+            ?.stages.find((s) => s.id === nextEntry.stageId);
+          if (
+            nextLiveStage?.blockers.some(
+              (b) =>
+                b.type === "alarm" ||
+                b.type === "time_window" ||
+                b.type === "manual_approval",
+            )
+          ) {
+            // Promotion blocked — hold here without marking current as succeeded.
+            break;
+          }
+        }
+
+        // Stage duration has elapsed — mark succeeded
+        const isProdStage =
+          liveStage.type === "deploy" &&
+          currentIndex === pd.stageSchedule.length - 1;
+
+        const passedTests = liveStage.tests.map((t) => ({
+          ...t,
+          status: "passed" as import("@shared/types/events").TestStatus,
+        }));
+
+        const promotionNote = pd.isEmergency
+          ? `Emergency deploy: ${pd.version}`
+          : `Rollback to ${pd.version}`;
+
+        const promotionEvent: import("@shared/types/events").PromotionEvent = {
+          version: pd.version,
+          simTime: pd.initiatedAtSim + entry.startAtSim + entry.durationSecs,
+          status: "succeeded",
+          note: promotionNote,
+        };
+
+        const succeededStage: import("@shared/types/events").PipelineStage = {
+          ...liveStage,
+          status: "succeeded",
+          currentVersion: pd.version,
+          previousVersion: pd.previousVersion ?? liveStage.currentVersion,
+          commitMessage: pd.commitMessage,
+          author: pd.author,
+          deployedAtSec: pd.initiatedAtSim + entry.startAtSim,
+          blockers: [],
+          tests: passedTests,
+          promotionEvents: [promotionEvent, ...liveStage.promotionEvents].slice(
+            0,
+            5,
+          ),
+        };
+        store.updateStage(pd.pipelineId, liveStage.id, succeededStage);
+        emit({
+          type: "pipeline_stage_updated",
+          pipelineId: pd.pipelineId,
+          stage: succeededStage,
+        });
+
+        if (isProdStage) {
+          // Prod stage completed — update deployment record and flag for metric react
+          const deployment: import("@shared/types/events").Deployment = {
+            version: pd.version,
+            deployedAtSec:
+              pd.initiatedAtSim + entry.startAtSim + entry.durationSecs,
+            status: "active",
+            commitMessage: pd.commitMessage,
+            author: pd.author,
+          };
+          store.addDeployment(pipeline.service, deployment);
+          emit({
+            type: "deployment_update",
+            service: pipeline.service,
+            deployment,
+          });
+          prodStageCompleted = true;
+        }
+
+        currentIndex++;
+      }
+
+      // Update progress or complete the deployment
+      if (currentIndex >= pd.stageSchedule.length) {
+        store.completePendingDeployment(pd.pipelineId);
+      } else if (currentIndex !== pd.currentStageIndex) {
+        store.updatePendingDeploymentProgress(pd.pipelineId, currentIndex);
+      }
+    }
+
+    return prodStageCompleted;
+  }
+
   function tick(): void {
     const now = Date.now();
     const realElapsedMs = _lastRealMs > 0 ? now - _lastRealMs : 0;
@@ -688,6 +869,15 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       }
     }
 
+    // Step 3c: advance pending deployments (rollback / emergency deploy progression)
+    const prodLanded = tickPendingDeployments(simTime);
+    if (prodLanded) {
+      // Prod stage just completed — fire the delayed metric reaction now with
+      // fresh context (includes any other actions taken while deploy was in-flight).
+      triggerMetricReact();
+      _dirty = true;
+    }
+
     // Step 4: broadcast sim_time
     emit(clock.toSimTimeEvent());
 
@@ -800,35 +990,71 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           const stageId = params["stageId"] as string | undefined;
           if (pipelineId && stageId) {
             const pipeline = store.getPipeline(pipelineId);
-            const stage = pipeline?.stages.find((s) => s.id === stageId);
-            if (stage && stage.previousVersion) {
-              const promotionEvent: import("@shared/types/events").PromotionEvent =
-                {
-                  version: stage.previousVersion,
-                  simTime: clock.getSimTime(),
-                  status: "succeeded",
-                  note: `Rollback to ${stage.previousVersion}`,
+            const stageIdx = pipeline?.stages.findIndex(
+              (s) => s.id === stageId,
+            );
+            if (
+              pipeline &&
+              stageIdx !== undefined &&
+              stageIdx >= 0 &&
+              pipeline.stages[stageIdx].previousVersion
+            ) {
+              const stage = pipeline.stages[stageIdx];
+              const version = stage.previousVersion!;
+              const now = clock.getSimTime();
+
+              // Build the stage schedule starting from the triggered stage
+              // through to the end of the pipeline, with per-stage durations.
+              let cumulativeSim = 0;
+              const stageSchedule = pipeline.stages.slice(stageIdx).map((s) => {
+                const durationSecs =
+                  STAGE_DURATION_SECS[s.type] ?? STAGE_DURATION_SECS.deploy;
+                const entry = {
+                  stageId: s.id,
+                  startAtSim: cumulativeSim,
+                  durationSecs,
                 };
-              const rolledBackStage: import("@shared/types/events").PipelineStage =
+                cumulativeSim += durationSecs;
+                return entry;
+              });
+
+              // Immediately show the first stage as in_progress
+              const firstStage = pipeline.stages[stageIdx];
+              const runningTests = firstStage.tests.map((t) => ({
+                ...t,
+                status: "running" as import("@shared/types/events").TestStatus,
+              }));
+              const inProgressStage: import("@shared/types/events").PipelineStage =
                 {
-                  ...stage,
-                  previousVersion: stage.currentVersion,
-                  currentVersion: stage.previousVersion,
+                  ...firstStage,
                   status: "in_progress",
-                  deployedAtSec: clock.getSimTime(),
-                  commitMessage: `Rollback to ${stage.previousVersion}`,
+                  currentVersion: version,
+                  previousVersion: firstStage.currentVersion,
+                  commitMessage: `Rollback to ${version}`,
+                  author: "trainee",
+                  deployedAtSec: now,
                   blockers: [],
-                  promotionEvents: [
-                    promotionEvent,
-                    ...stage.promotionEvents,
-                  ].slice(0, 5),
+                  tests: runningTests,
                 };
-              store.updateStage(pipelineId, stageId, rolledBackStage);
+              store.updateStage(pipelineId, firstStage.id, inProgressStage);
               emit({
                 type: "pipeline_stage_updated",
                 pipelineId,
-                stage: rolledBackStage,
+                stage: inProgressStage,
               });
+
+              store.enqueuePendingDeployment({
+                pipelineId,
+                stageSchedule,
+                initiatedAtSim: now,
+                version,
+                previousVersion: firstStage.currentVersion,
+                commitMessage: `Rollback to ${version}`,
+                author: "trainee",
+                isEmergency: false,
+              });
+              // Metric reaction is delayed until prod stage completes — do NOT
+              // call triggerMetricReact() here.
             }
           }
           break;
@@ -882,13 +1108,19 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
               stage &&
               stage.blockers.some((b) => b.type === "manual_approval")
             ) {
+              const remainingBlockers = stage.blockers.filter(
+                (b) => b.type !== "manual_approval",
+              );
+              // Restore a sensible status now that the manual gate is removed.
+              // If there are still other blockers, keep current status;
+              // otherwise revert to succeeded (the stage already has a good deployment).
+              const restoredStatus =
+                remainingBlockers.length > 0 ? stage.status : "succeeded";
               const approvedStage: import("@shared/types/events").PipelineStage =
                 {
                   ...stage,
-                  status: "in_progress",
-                  blockers: stage.blockers.filter(
-                    (b) => b.type !== "manual_approval",
-                  ),
+                  status: restoredStatus,
+                  blockers: remainingBlockers,
                 };
               store.updateStage(pipelineId, stageId, approvedStage);
               emit({
@@ -909,10 +1141,12 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
             const pipeline = store.getPipeline(pipelineId);
             const stage = pipeline?.stages.find((s) => s.id === stageId);
             if (stage) {
+              // Only add the blocker — leave the stage's existing status intact.
+              // The stage may be green/succeeded with a good deployment; blocking
+              // only gates future promotion into it, not what's already there.
               const blockedStage: import("@shared/types/events").PipelineStage =
                 {
                   ...stage,
-                  status: "blocked",
                   blockers: [
                     ...stage.blockers,
                     { type: "manual_approval", message: reason },
@@ -945,23 +1179,122 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
               );
           if (ra) {
             const version = ra.targetVersion ?? "hotfix";
-            const deployment: import("@shared/types/events").Deployment = {
-              version,
-              deployedAtSec: clock.getSimTime(),
-              status: "active",
-              commitMessage: ra.label ?? `Emergency deploy: ${version}`,
-              author: "trainee",
-            };
-            store.addDeployment(ra.service, deployment);
-            emit({
-              type: "deployment_update",
-              service: ra.service,
-              deployment,
-            });
+            const commitMessage = ra.label ?? `Emergency deploy: ${version}`;
+            const now = clock.getSimTime();
+
+            const pipeline = store
+              .getAllPipelines()
+              .find((p) => p.service === ra.service);
+
+            if (pipeline) {
+              // Emergency deploy: build stage first, then jump straight to the
+              // target stage (ra.targetStage), skipping intermediate stages.
+              // Defaults to the last pipeline stage if targetStage is not set.
+              const buildStage = pipeline.stages[0];
+              const targetStageId = ra.targetStage;
+              const targetStage = targetStageId
+                ? pipeline.stages.find((s) => s.id === targetStageId)
+                : pipeline.stages[pipeline.stages.length - 1];
+
+              // Build schedule: [build, targetStage] — two entries only,
+              // unless build IS the target stage (single-stage pipeline).
+              let cumulativeSim = 0;
+              const stageSchedule: import("./sim-state-store").StageScheduleEntry[] =
+                [];
+
+              if (buildStage) {
+                const buildDuration =
+                  STAGE_DURATION_SECS[buildStage.type] ??
+                  STAGE_DURATION_SECS.build;
+                stageSchedule.push({
+                  stageId: buildStage.id,
+                  startAtSim: cumulativeSim,
+                  durationSecs: buildDuration,
+                });
+                cumulativeSim += buildDuration;
+              }
+
+              // Add target stage and all stages after it (skipping intermediates
+              // before the target). This means pre-prod → prod flows naturally
+              // after an emergency deploy to pre-prod, unless a blocker is placed.
+              if (targetStage && targetStage.id !== buildStage?.id) {
+                const targetIdx = pipeline.stages.findIndex(
+                  (s) => s.id === targetStage.id,
+                );
+                const stagesToSchedule = pipeline.stages.slice(
+                  targetIdx >= 0 ? targetIdx : pipeline.stages.length - 1,
+                );
+                for (const s of stagesToSchedule) {
+                  const duration =
+                    STAGE_DURATION_SECS[s.type] ?? STAGE_DURATION_SECS.deploy;
+                  stageSchedule.push({
+                    stageId: s.id,
+                    startAtSim: cumulativeSim,
+                    durationSecs: duration,
+                  });
+                  cumulativeSim += duration;
+                }
+              }
+
+              // Immediately show build stage as in_progress
+              if (buildStage) {
+                const runningTests = buildStage.tests.map((t) => ({
+                  ...t,
+                  status:
+                    "running" as import("@shared/types/events").TestStatus,
+                }));
+                const inProgressStage: import("@shared/types/events").PipelineStage =
+                  {
+                    ...buildStage,
+                    status: "in_progress",
+                    currentVersion: version,
+                    previousVersion: buildStage.currentVersion,
+                    commitMessage,
+                    author: "trainee",
+                    deployedAtSec: now,
+                    blockers: [],
+                    tests: runningTests,
+                  };
+                store.updateStage(pipeline.id, buildStage.id, inProgressStage);
+                emit({
+                  type: "pipeline_stage_updated",
+                  pipelineId: pipeline.id,
+                  stage: inProgressStage,
+                });
+              }
+
+              store.enqueuePendingDeployment({
+                pipelineId: pipeline.id,
+                stageSchedule,
+                initiatedAtSim: now,
+                version,
+                previousVersion: buildStage?.currentVersion ?? null,
+                commitMessage,
+                author: "trainee",
+                isEmergency: true,
+              });
+              // Metric reaction deferred until prod/target stage lands.
+            } else {
+              // No pipeline — fall back to instant deployment record
+              const deployment: import("@shared/types/events").Deployment = {
+                version,
+                deployedAtSec: now,
+                status: "active",
+                commitMessage,
+                author: "trainee",
+              };
+              store.addDeployment(ra.service, deployment);
+              emit({
+                type: "deployment_update",
+                service: ra.service,
+                deployment,
+              });
+            }
+
             if (ra.sideEffect) {
               const entry: import("@shared/types/events").LogEntry = {
                 id: randomUUID(),
-                simTime: clock.getSimTime(),
+                simTime: now,
                 level: "INFO",
                 service: ra.service,
                 message: ra.sideEffect,
@@ -1276,7 +1609,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       if (!PASSIVE_ACTIONS.has(action)) {
         _triggeredByMeaningfulAction = true;
         onMeaningfulAction();
-        triggerMetricReact();
+        // Deployment actions defer metric reaction until prod stage lands —
+        // metrics should not react before the fix is actually live in prod.
+        if (!DEFERRED_METRIC_REACT_ACTIONS.has(action)) {
+          triggerMetricReact();
+        }
       } else if (action === "open_tab") {
         // Count tab switches for passive-browse-stall detection.
         _passiveBrowseTabCount++;
@@ -1400,6 +1737,20 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         const idx = _eventHandlers.indexOf(handler);
         if (idx !== -1) _eventHandlers.splice(idx, 1);
       };
+    },
+
+    _testTick(simTimeSec: number) {
+      // Set clock to target sim time directly, then run tickPendingDeployments
+      // in isolation — avoids the realElapsedMs double-advance problem.
+      const testClock = clock as { setSimTime?: (t: number) => void };
+      if (testClock.setSimTime) {
+        testClock.setSimTime(simTimeSec);
+        const prodLanded = tickPendingDeployments(simTimeSec);
+        if (prodLanded) {
+          triggerMetricReact();
+          _dirty = true;
+        }
+      }
     },
   };
 }

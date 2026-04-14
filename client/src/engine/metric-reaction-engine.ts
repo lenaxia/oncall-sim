@@ -63,6 +63,15 @@ export const PASSIVE_ACTIONS = new Set<string>([
   "view_deployment_history",
   "view_pipeline",
   "monitor_recovery",
+  "block_promotion",
+  "approve_gate",
+]);
+
+// Actions whose metric reaction is deferred until the deployment hits prod.
+// Firing immediately would make metrics react before the fix is live in prod.
+export const DEFERRED_METRIC_REACT_ACTIONS = new Set<string>([
+  "trigger_rollback",
+  "emergency_deploy",
 ]);
 
 export function createMetricReactionEngine(

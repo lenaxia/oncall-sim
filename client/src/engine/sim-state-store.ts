@@ -13,6 +13,39 @@ import type {
   ActiveThrottle,
 } from "@shared/types/events";
 
+// ── Pending deployment queue ──────────────────────────────────────────────────
+//
+// Tracks a rollback or emergency deploy that is working its way through the
+// pipeline stages one at a time with realistic sim-time delays between each
+// stage transition (in_progress → succeeded).
+//
+// The game-loop tick advances each pending deployment based on elapsed sim-time.
+
+export interface StageScheduleEntry {
+  stageId: string;
+  /** Sim-seconds from the moment the deployment was initiated at which this stage starts. */
+  startAtSim: number;
+  /** How many sim-seconds this stage takes to complete once it starts. */
+  durationSecs: number;
+}
+
+export interface PendingDeployment {
+  pipelineId: string;
+  /** Ordered stage schedule — one entry per pipeline stage. */
+  stageSchedule: StageScheduleEntry[];
+  /** Index of the stage currently being processed (0-based). */
+  currentStageIndex: number;
+  /** Sim-seconds when the deployment was initiated (clock.getSimTime() at dispatch). */
+  initiatedAtSim: number;
+  version: string;
+  previousVersion: string | null;
+  commitMessage: string;
+  author: string;
+  /** True for emergency_deploy — skips intermediate pipeline stages, but still
+   *  respects manual promotion blockers on the target stage. */
+  isEmergency: boolean;
+}
+
 export interface SimStateStoreSnapshot {
   emails: EmailMessage[];
   chatChannels: Record<string, ChatMessage[]>;
@@ -86,6 +119,22 @@ export interface SimStateStore {
   ): ActiveThrottle | null;
   getAllThrottles(): ActiveThrottle[];
 
+  // ── Pending deployments ───────────────────────────────────────────────────
+  /**
+   * Enqueue a new deployment that will be advanced stage-by-stage each tick.
+   * The `currentStageIndex` is set to 0 by the store; `initiatedAtSim` must be
+   * provided by the caller (clock.getSimTime() at dispatch time).
+   */
+  enqueuePendingDeployment(
+    deployment: Omit<PendingDeployment, "currentStageIndex">,
+  ): void;
+  /** Advance the current stage index for the named pipeline's pending deployment. */
+  updatePendingDeploymentProgress(pipelineId: string, newIndex: number): void;
+  /** Remove the pending deployment once all stages have completed. */
+  completePendingDeployment(pipelineId: string): void;
+  /** Returns all pending deployments (read-only copy). */
+  getPendingDeployments(): PendingDeployment[];
+
   // ── Snapshot ──────────────────────────────────────────────────────────────
   snapshot(): SimStateStoreSnapshot;
 }
@@ -102,6 +151,8 @@ export function createSimStateStore(): SimStateStore {
   const _pages: PageAlert[] = [];
   // Key: `${targetId}:${customerId ?? ""}` — unique slot per target+customer
   const _throttles: Map<string, ActiveThrottle> = new Map();
+  // Pending deployments — one per pipeline (at most one active rollback/deploy per pipeline)
+  const _pendingDeployments: Map<string, PendingDeployment> = new Map();
 
   function deepClone<T>(val: T): T {
     return JSON.parse(JSON.stringify(val)) as T;
@@ -240,6 +291,29 @@ export function createSimStateStore(): SimStateStore {
     },
     getAllThrottles() {
       return deepClone([..._throttles.values()]);
+    },
+
+    // ── Pending deployments ────────────────────────────────────────────────
+    enqueuePendingDeployment(deployment) {
+      _pendingDeployments.set(deployment.pipelineId, {
+        ...deployment,
+        currentStageIndex: 0,
+      });
+    },
+    updatePendingDeploymentProgress(pipelineId, newIndex) {
+      const existing = _pendingDeployments.get(pipelineId);
+      if (existing) {
+        _pendingDeployments.set(pipelineId, {
+          ...existing,
+          currentStageIndex: newIndex,
+        });
+      }
+    },
+    completePendingDeployment(pipelineId) {
+      _pendingDeployments.delete(pipelineId);
+    },
+    getPendingDeployments() {
+      return deepClone([..._pendingDeployments.values()]);
     },
 
     // ── Snapshot ───────────────────────────────────────────────────────────

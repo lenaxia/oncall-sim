@@ -244,6 +244,8 @@ export interface RemediationActionConfig {
   isCorrectFix: boolean;
   sideEffect?: string;
   targetVersion?: string;
+  /** Stage id to deploy to for emergency_deploy. Defaults to the last stage (prod). */
+  targetStage?: string;
   flagId?: string;
   flagEnabled?: boolean;
   label?: string;

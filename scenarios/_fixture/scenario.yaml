@@ -212,6 +212,13 @@ remediation_actions:
     is_correct_fix: true
     target_version: v1.0.0
 
+  - id: emergency_deploy_fixture
+    type: emergency_deploy
+    service: fixture-service
+    is_correct_fix: true
+    target_version: v1.0.0
+    target_stage: prod
+
 evaluation:
   root_cause: "A bad deployment (v1.0.1) introduced a bug causing elevated error rates in fixture-service."
   relevant_actions:

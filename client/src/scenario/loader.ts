@@ -998,6 +998,7 @@ async function transform(
       isCorrectFix: r.is_correct_fix,
       sideEffect: r.side_effect,
       targetVersion: r.target_version,
+      targetStage: r.target_stage,
       flagId: r.flag_id,
       flagEnabled: r.flag_enabled,
       label: r.label,

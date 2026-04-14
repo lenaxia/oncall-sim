@@ -53,6 +53,7 @@ const RemediationActionSchema = z.object({
   is_correct_fix: z.boolean(),
   side_effect: z.string().optional(),
   target_version: z.string().optional(),
+  target_stage: z.string().optional(),
   flag_id: z.string().optional(),
   flag_enabled: z.boolean().optional(),
   label: z.string().optional(),

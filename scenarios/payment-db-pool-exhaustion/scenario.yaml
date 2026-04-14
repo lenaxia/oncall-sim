@@ -651,6 +651,7 @@ remediation_actions:
     service: payment-service
     is_correct_fix: true
     target_version: v2.4.2
+    target_stage: prod
     label: "Deploy v2.4.2 (config fix)"
     side_effect: "Deploys corrected config (MAX_DB_CONNECTIONS=50). Pool recovers within 30s."
 

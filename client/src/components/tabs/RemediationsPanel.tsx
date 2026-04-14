@@ -104,9 +104,16 @@ function Section({
   );
 }
 
-// ── Emergency deploy section ──────────────────────────────────────────────────
+// ── Deploy section ────────────────────────────────────────────────────────────
+// Lets the trainee choose between a normal pipeline deploy and an emergency
+// deploy (build → target stage only, skipping intermediates).
+//
+// For emergency deploys the trainee picks the target stage. If they pick
+// pre-prod, we pre-check "Block promotion to prod" as a best-practice hint.
 
-function EmergencyDeploySection({
+type DeployMode = "normal" | "emergency";
+
+function DeploySection({
   actions,
   inactive,
   onConfirm,
@@ -115,40 +122,134 @@ function EmergencyDeploySection({
   inactive: boolean;
   onConfirm: (s: ConfirmState) => void;
 }) {
-  const { dispatchAction } = useSession();
+  const { dispatchAction, state } = useSession();
+  const [mode, setMode] = useState<DeployMode>("normal");
+  const [targetStages, setTargetStages] = useState<Record<string, string>>({});
 
   return (
-    <Section title="Emergency Deploy">
-      {actions.map((ra) => (
-        <div key={ra.id} className="flex items-center justify-between gap-4">
-          <div className="flex flex-col gap-0.5 min-w-0">
-            <span className="text-xs font-medium text-sim-text">
-              {ra.label ?? ra.targetVersion ?? "Deploy"}
-            </span>
-            <span className="text-xs font-mono text-sim-text-muted">
-              {ra.targetVersion}
-            </span>
-          </div>
-          <Button
-            variant="danger"
-            size="sm"
-            disabled={inactive}
-            onClick={() =>
-              onConfirm({
-                title: `Emergency Deploy: ${ra.targetVersion ?? ra.label}`,
-                body: `Deploy ${ra.targetVersion} to ${ra.service} immediately, bypassing normal pipeline gates.`,
-                action: () =>
-                  dispatchAction("emergency_deploy", {
-                    remediationActionId: ra.id,
-                    service: ra.service,
-                  }),
-              })
-            }
+    <Section title="Deploy">
+      {/* Mode toggle */}
+      <div className="flex gap-1 p-0.5 bg-sim-surface rounded w-fit">
+        {(["normal", "emergency"] as DeployMode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={[
+              "px-3 py-1 rounded text-xs font-medium transition-colors",
+              mode === m
+                ? "bg-sim-surface-2 text-sim-text"
+                : "text-sim-text-faint hover:text-sim-text",
+            ].join(" ")}
           >
-            Deploy now
-          </Button>
-        </div>
-      ))}
+            {m === "normal" ? "Normal" : "Emergency"}
+          </button>
+        ))}
+      </div>
+
+      {mode === "normal" && (
+        <p className="text-xs text-sim-text-muted">
+          Deploys through all pipeline stages in order, respecting promotion
+          gates.
+        </p>
+      )}
+
+      {mode === "emergency" && (
+        <p className="text-xs text-sim-yellow">
+          Build then deploys directly to the selected stage, skipping
+          intermediates. Continues through remaining stages unless a promotion
+          gate is in place.
+        </p>
+      )}
+
+      {actions.map((ra) => {
+        const pipeline = state.pipelines.find((p) => p.service === ra.service);
+        const deployStages =
+          pipeline?.stages.filter((s) => s.type === "deploy") ?? [];
+        const prodStage = deployStages[deployStages.length - 1];
+
+        const selectedTarget = targetStages[ra.id] ?? prodStage?.id ?? "";
+
+        function handleDeploy() {
+          if (mode === "normal") {
+            onConfirm({
+              title: `Deploy ${ra.targetVersion ?? ra.label}`,
+              body: `Deploy ${ra.targetVersion} to ${ra.service} through all pipeline stages.`,
+              action: () =>
+                dispatchAction("trigger_rollback", {
+                  pipelineId: pipeline?.id ?? "",
+                  stageId: pipeline?.stages[0]?.id ?? "",
+                  targetVersion: ra.targetVersion,
+                }),
+            });
+          } else {
+            const targetStageId = selectedTarget || prodStage?.id || "";
+            const targetStageName =
+              pipeline?.stages.find((s) => s.id === targetStageId)?.name ??
+              targetStageId;
+            onConfirm({
+              title: `Emergency Deploy: ${ra.targetVersion ?? ra.label} → ${targetStageName}`,
+              body: `Build then deploy ${ra.targetVersion} directly to ${targetStageName}, skipping intermediate stages.`,
+              action: () =>
+                dispatchAction("emergency_deploy", {
+                  remediationActionId: ra.id,
+                  service: ra.service,
+                  targetStage: targetStageId,
+                }),
+            });
+          }
+        }
+
+        return (
+          <div key={ra.id} className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <span className="text-xs font-medium text-sim-text">
+                  {ra.label ?? ra.targetVersion ?? "Deploy"}
+                </span>
+                <span className="text-xs font-mono text-sim-text-muted">
+                  {ra.targetVersion}
+                </span>
+              </div>
+              <Button
+                variant={mode === "emergency" ? "danger" : "secondary"}
+                size="sm"
+                disabled={
+                  inactive ||
+                  (mode === "emergency" && deployStages.length === 0)
+                }
+                onClick={handleDeploy}
+              >
+                {mode === "emergency" ? "Emergency deploy" : "Deploy"}
+              </Button>
+            </div>
+
+            {/* Emergency stage selector — only shown when there are multiple deploy stages */}
+            {mode === "emergency" && deployStages.length > 1 && (
+              <div className="flex flex-col gap-1.5 pl-1">
+                <div className="text-xs text-sim-text-faint">Target stage:</div>
+                <div className="flex gap-1">
+                  {deployStages.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() =>
+                        setTargetStages((prev) => ({ ...prev, [ra.id]: s.id }))
+                      }
+                      className={[
+                        "px-2 py-1 rounded text-xs font-medium border transition-colors",
+                        selectedTarget === s.id
+                          ? "border-sim-accent bg-sim-accent/10 text-sim-accent"
+                          : "border-sim-border text-sim-text-faint hover:text-sim-text hover:border-sim-text-faint",
+                      ].join(" ")}
+                    >
+                      {s.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </Section>
   );
 }
@@ -1093,7 +1194,7 @@ export function RemediationsPanel({ inactive }: { inactive: boolean }) {
     <>
       <div className="flex flex-col gap-4">
         {emergencyDeploys.length > 0 && (
-          <EmergencyDeploySection
+          <DeploySection
             actions={emergencyDeploys}
             inactive={inactive}
             onConfirm={setConfirm}

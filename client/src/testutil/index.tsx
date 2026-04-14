@@ -255,6 +255,9 @@ export function buildMockGameLoop(
     handleCoachMessage() {
       /* no-op */
     },
+    _testTick() {
+      /* no-op in mock */
+    },
     getSimStateSnapshot(): SimStateStoreSnapshot {
       return {
         emails: [],

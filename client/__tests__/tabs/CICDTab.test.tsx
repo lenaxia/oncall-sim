@@ -286,10 +286,9 @@ describe("CICDTab", () => {
         });
       });
       await user.click(screen.getByText("payment-service"));
-      await user.click(screen.getByTestId("stage-pill-prod"));
-      await user.click(
-        screen.getByRole("button", { name: /block promotion/i }),
-      );
+      // Block promotion is now on the connector between stages, not the stage detail.
+      // Click the green dot connector before the prod stage.
+      await user.click(screen.getByTestId("connector-block-prod"));
       await waitFor(() => {
         expect(handleAction).toHaveBeenCalledWith(
           "block_promotion",
