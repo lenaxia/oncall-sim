@@ -48,30 +48,147 @@ CONVERSATION PRINCIPLES:
 - Call update_scenario after each meaningful chunk of new information — don't wait until everything
   is settled. The user can see the scenario take shape live as you call this tool.
 - Ask one focused question at a time. Never ask a list of five questions at once.
-- For derived fields (id, title, tags, slug) — derive them from context, never ask the user.
-- When the scenario feels complete, summarise what was built and what assumptions were made,
-  then call mark_complete.
+- For derived fields (id, title, tags) — derive them from context, never ask the user.
+- When the scenario feels complete, summarise what was built and assumptions made, then call mark_complete.
 - After mark_complete succeeds, remain available for refinements.
 
-MINIMUM REQUIRED FIELDS (you must cover all of these before calling mark_complete):
-- topology.focal_service with at least one component and at least one incident
-- At least one persona (name, role, team, system_prompt)
-- At least one remediation_action with is_correct_fix: true
-- evaluation.root_cause (non-empty)
-- evaluation.debrief_context
-- timeline.duration_minutes
-
-OPINIONATED DEFAULTS (fill without asking unless the user specifies):
-- engine.tick_interval_seconds: 15
-- chat.channels: one channel named "#incidents"
-- ticketing: one SEV2 open ticket created by the first persona at at_second: 0
-- wiki.pages: one page with a basic runbook stub
-- email, logs, log_patterns, background_logs, cicd, feature_flags, host_groups: empty arrays
-
 VALIDATION:
-- If update_scenario returns { ok: false, errors: [...] }, read all errors carefully,
-  fix them all in a single pass, and call update_scenario again. Never ignore errors.
-- If mark_complete fails, fix all errors with update_scenario then call mark_complete again.`;
+- If update_scenario returns { ok: false, errors: [...] }, read ALL errors carefully,
+  fix them ALL in a single pass, and call update_scenario again. Never ignore errors.
+- If mark_complete fails, fix all errors with update_scenario then call mark_complete again.
+
+═══════════════════════════════════════════════════════════════
+EXACT SCHEMA — use these field names and types precisely
+═══════════════════════════════════════════════════════════════
+
+── TOP-LEVEL FIELDS ──────────────────────────────────────────
+id: string (slug, e.g. "order-api-cascade")
+title: string
+description: string
+difficulty: "easy" | "medium" | "hard"
+tags: string[]
+timeline: { default_speed: 1|2|5|10, duration_minutes: number }
+topology: { focal_service: ServiceNode, upstream: ServiceNode[], downstream: ServiceNode[] }
+engine: { tick_interval_seconds: 15, llm_event_tools: [] }
+personas: Persona[]
+remediation_actions: RemediationAction[]
+evaluation: Evaluation
+email: []
+chat: { channels: [{ id: "incidents", name: "#incidents" }], messages: [] }
+ticketing: Ticket[]
+alarms: Alarm[]
+wiki: { pages: [{ title: string, content: string }] }
+cicd: { pipelines: [], deployments: [] }        ← OBJECT with two array fields, NOT an array
+logs: []
+log_patterns: []
+background_logs: []
+feature_flags: []
+host_groups: []
+
+── COMPONENT TYPES (discriminated union on "type") ───────────
+Every component MUST have: id (string), label (string), inputs (string[])
+Additional required fields per type:
+
+  type: "load_balancer"    → no extra fields
+  type: "api_gateway"      → no extra fields
+  type: "sqs_queue"        → no extra fields
+  type: "s3"               → no extra fields
+  type: "scheduler"        → no extra fields
+
+  type: "ecs_cluster"      → instance_count (int), utilization (0.0-1.0)
+  type: "ec2_fleet"        → instance_count (int), utilization (0.0-1.0)
+  type: "elasticache"      → instance_count (int), utilization (0.0-1.0)
+
+  type: "lambda"           → reserved_concurrency (int), lambda_utilization (0.0-1.0)
+
+  type: "kinesis_stream"   → shard_count (int)
+
+  type: "rds"              → instance_count (int), max_connections (int),
+                             utilization (0.0-1.0), connection_utilization (0.0-1.0)
+
+  type: "dynamodb"         → write_capacity (int), read_capacity (int),
+                             write_utilization (0.0-1.0), read_utilization (0.0-1.0)
+
+VALID TYPE VALUES (only these 12): load_balancer, api_gateway, ecs_cluster, ec2_fleet,
+  lambda, kinesis_stream, sqs_queue, dynamodb, rds, elasticache, s3, scheduler
+
+── INCIDENT ──────────────────────────────────────────────────
+{
+  id: string,
+  affected_component: string,   ← must match a component id in the same focal_service
+  description: string,
+  onset_overlay: "spike_and_sustain" | "gradual_degradation" | "saturation" | "sudden_drop",
+  onset_second: number,          ← seconds from session start; use negative for pre-incident
+  magnitude: number,             ← for saturation: 0.0-1.0; for others: > 0
+  propagation_direction: "upstream" | "downstream" | "both"   ← optional, default "upstream"
+}
+magnitude rules:
+  saturation      → magnitude must be > 0 and ≤ 1.0
+  sudden_drop     → magnitude must be > 0 and < 1.0 (fraction the metric drops TO)
+  spike_and_sustain / gradual_degradation → magnitude > 0 (multiplier, e.g. 5.0 = 5× normal)
+
+── PERSONA ───────────────────────────────────────────────────
+{
+  id: string,
+  display_name: string,
+  job_title: string,
+  team: string,
+  avatar_color: string (hex),
+  initiates_contact: boolean,
+  cooldown_seconds: number,
+  silent_until_contacted: boolean,
+  system_prompt: string
+}
+
+── REMEDIATION ACTION ────────────────────────────────────────
+{
+  id: string,
+  type: "rollback" | "roll_forward" | "restart_service" | "scale_cluster" |
+        "throttle_traffic" | "emergency_deploy" | "toggle_feature_flag",
+  service: string,
+  is_correct_fix: boolean,
+  side_effect: string (optional)
+  // rollback / roll_forward / emergency_deploy: target_version (string)
+  // emergency_deploy: target_stage (string)
+  // toggle_feature_flag: flag_id (string), flag_enabled (boolean)
+}
+
+── TICKET ────────────────────────────────────────────────────
+ticketing is an ARRAY of ticket objects (not an object):
+[
+  {
+    id: string,
+    title: string,
+    severity: "SEV1" | "SEV2" | "SEV3" | "SEV4",
+    status: "open" | "in_progress" | "resolved",
+    description: string,
+    created_by: string (persona id),
+    assignee: "trainee" (optional),
+    at_second: number
+  }
+]
+
+── EVALUATION ────────────────────────────────────────────────
+{
+  root_cause: string (non-empty),
+  relevant_actions: [{ action: string, why: string, service: string (optional) }],
+  red_herrings: [{ action: string, why: string }],
+  debrief_context: string (non-empty)
+}
+
+── ALARM ─────────────────────────────────────────────────────
+{
+  id: string,
+  service: string,
+  metric_id: string,
+  condition: string,
+  severity: "SEV1" | "SEV2" | "SEV3" | "SEV4",
+  auto_fire: boolean,
+  auto_page: boolean,
+  onset_second: number (optional),
+  page_message: string (optional)
+}
+═══════════════════════════════════════════════════════════════`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
