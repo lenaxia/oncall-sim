@@ -23,11 +23,19 @@ export function ScenarioBuilderChat({
 }: ScenarioBuilderChatProps) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll to bottom on new messages or thinking state change
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ behavior: "smooth" });
   }, [messages, thinking]);
+
+  // Return focus to input whenever LLM finishes responding
+  useEffect(() => {
+    if (!thinking) {
+      inputRef.current?.focus();
+    }
+  }, [thinking]);
 
   function handleSend() {
     const text = input.trim();
@@ -76,6 +84,7 @@ export function ScenarioBuilderChat({
       {/* Input area */}
       <div className="flex-shrink-0 border-t border-sim-border px-4 py-3 flex gap-2">
         <input
+          ref={inputRef}
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
