@@ -136,6 +136,8 @@ export interface PromotionEvent {
   note: string; // e.g. "AutoPromote: approved" | "Blocked: alarm firing" | "Rollback to v2.4.0"
 }
 
+export type StagePhase = "deploying" | "testing" | "baking";
+
 export interface PipelineStage {
   id: string;
   name: string;
@@ -143,7 +145,18 @@ export interface PipelineStage {
   currentVersion: string;
   previousVersion: string | null;
   status: StageStatus;
+  /** Sim-time of the last completed deployment to this stage.
+   *  Negative means it was deployed before the scenario started.
+   *  Set to completion time when a deployment succeeds. */
   deployedAtSec: number;
+  /** Sim-time when the current in-progress deployment started on this stage.
+   *  Set only while status === "in_progress", cleared on succeeded/failed.
+   *  UI uses this + stageDurationSecs + live interpolated simTime for smooth
+   *  approval workflow progress bars at 60fps. */
+  stageStartedAtSim?: number;
+  /** Total sim-seconds for the current in-progress deployment run.
+   *  Set only while status === "in_progress", cleared on succeeded/failed. */
+  stageDurationSecs?: number;
   commitMessage: string;
   author: string;
   /** Active blockers — can be more than one (alarm + time_window simultaneously) */

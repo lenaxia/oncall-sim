@@ -183,7 +183,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
   let _inFlight = false;
   let _intervalId: ReturnType<typeof setInterval> | null = null;
   let _lastRealMs = 0;
-  let _coachTickCount = 0;
+  let _lastCoachWallMs = 0; // wall-ms of last coach tick; 0 = never fired
+  const COACH_MIN_INTERVAL_MS = 30_000; // at most once every 30 real seconds
+
   const _coachMessages: CoachMessage[] = [];
   const _personaCooldowns: Record<string, number> = {};
   const _eventLog: SimEventLogEntry[] = [];
@@ -437,7 +439,6 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     if (_inFlight) return;
     _inFlight = true;
     _dirty = false;
-    _coachTickCount++;
 
     // Capture whether this tick was triggered by a meaningful action before resetting.
     const triggeredByMeaningful = _triggeredByMeaningfulAction;
@@ -447,7 +448,6 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     _directlyAddressed.clear();
     _triggeredByAction = false; // reset after capture
     _triggeredByMeaningfulAction = false; // reset after capture
-
     // Stakeholder tick owns _inFlight — serialised because it mutates shared store state.
     // onMetricReact is NOT included here — it runs independently (see triggerMetricReact).
     onDirtyTick(ctx)
@@ -466,11 +466,15 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         if (_dirty) triggerDirtyTick();
       });
 
-    // Coach tick (every N dirty ticks) — but only when the tick was triggered
-    // by a meaningful action or by the time-based clock (not passive navigation).
-    if (_coachTickCount % COACH_TICK_INTERVAL === 0 && triggeredByMeaningful) {
+    // Coach tick — at most once every 30 real seconds, only on meaningful dirty ticks.
+    const wallNow = Date.now();
+    if (
+      triggeredByMeaningful &&
+      wallNow - _lastCoachWallMs >= COACH_MIN_INTERVAL_MS
+    ) {
       const reason = computeCoachTrigger();
       if (reason !== null) {
+        _lastCoachWallMs = wallNow;
         const coachCtx = buildCoachContext(reason);
         onCoachTick(coachCtx)
           .then((msg) => {
@@ -508,6 +512,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
     deploy: 180, // 3 sim-minutes
   };
 
+  /**
+   * On every simTime broadcast, check all in_progress stages and emit
+   * pipeline_stage_updated if their phase has changed since the last emit.
+   * This fires phase transitions promptly without waiting for a full tick.
+   */
   /**
    * Advance all pending deployments based on current sim-time.
    * Returns true if at least one prod stage completed this tick — used to
@@ -547,6 +556,32 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           break;
         }
 
+        // Before starting this stage, check if it is still blocked (e.g. the
+        // deployment was halted waiting to enter this stage and the blocker has
+        // not yet been removed).
+        if (
+          liveStage.status !== "in_progress" &&
+          liveStage.blockers.some(
+            (b) =>
+              b.type === "alarm" ||
+              b.type === "time_window" ||
+              b.type === "manual_approval",
+          )
+        ) {
+          break;
+        }
+        if (
+          liveStage.status !== "in_progress" &&
+          liveStage.blockers.some(
+            (b) =>
+              b.type === "alarm" ||
+              b.type === "time_window" ||
+              b.type === "manual_approval",
+          )
+        ) {
+          break;
+        }
+
         const stageElapsed = elapsed - entry.startAtSim;
 
         if (stageElapsed < entry.durationSecs) {
@@ -557,6 +592,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
               status: "running" as import("@shared/types/events").TestStatus,
             }));
             const blockers = pd.isEmergency ? [] : liveStage.blockers;
+            const stageStartedAtSim = pd.initiatedAtSim + entry.startAtSim;
             const updatedStage: import("@shared/types/events").PipelineStage = {
               ...liveStage,
               status: "in_progress",
@@ -564,7 +600,8 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
               previousVersion: pd.previousVersion ?? liveStage.currentVersion,
               commitMessage: pd.commitMessage,
               author: pd.author,
-              deployedAtSec: pd.initiatedAtSim,
+              stageStartedAtSim,
+              stageDurationSecs: entry.durationSecs,
               blockers,
               tests: runningTests,
             };
@@ -595,7 +632,41 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
                 b.type === "manual_approval",
             )
           ) {
-            // Promotion blocked — hold here without marking current as succeeded.
+            // Promotion into next stage is blocked. Mark the current stage
+            // succeeded so the UI shows it as done, then advance currentIndex
+            // past it so rebasePendingDeployment will target the next stage.
+            if (liveStage.status === "in_progress") {
+              const passedTests = liveStage.tests.map((t) => ({
+                ...t,
+                status: "passed" as import("@shared/types/events").TestStatus,
+              }));
+              const blockedStage: import("@shared/types/events").PipelineStage =
+                {
+                  ...liveStage,
+                  status: "succeeded",
+                  currentVersion: pd.version,
+                  previousVersion:
+                    pd.previousVersion ?? liveStage.currentVersion,
+                  commitMessage: pd.commitMessage,
+                  author: pd.author,
+                  deployedAtSec:
+                    pd.initiatedAtSim + entry.startAtSim + entry.durationSecs,
+                  stageStartedAtSim: undefined,
+                  stageDurationSecs: undefined,
+                  tests: passedTests,
+                };
+              store.updateStage(pd.pipelineId, liveStage.id, blockedStage);
+              emit({
+                type: "pipeline_stage_updated",
+                pipelineId: pd.pipelineId,
+                stage: blockedStage,
+              });
+              currentIndex++;
+              store.updatePendingDeploymentProgress(
+                pd.pipelineId,
+                currentIndex,
+              );
+            }
             break;
           }
         }
@@ -628,7 +699,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           previousVersion: pd.previousVersion ?? liveStage.currentVersion,
           commitMessage: pd.commitMessage,
           author: pd.author,
-          deployedAtSec: pd.initiatedAtSim + entry.startAtSim,
+          deployedAtSec:
+            pd.initiatedAtSim + entry.startAtSim + entry.durationSecs,
+          // Clear active-deployment tracking fields
+          stageStartedAtSim: undefined,
+          stageDurationSecs: undefined,
           blockers: [],
           tests: passedTests,
           promotionEvents: [promotionEvent, ...liveStage.promotionEvents].slice(
@@ -668,6 +743,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       // Update progress or complete the deployment
       if (currentIndex >= pd.stageSchedule.length) {
         store.completePendingDeployment(pd.pipelineId);
+        // Rebase the new head (if any) so it starts fresh from now rather than
+        // inheriting the elapsed time from when it was originally enqueued.
+        store.rebasePendingDeployment(pd.pipelineId, simTime);
       } else if (currentIndex !== pd.currentStageIndex) {
         store.updatePendingDeploymentProgress(pd.pipelineId, currentIndex);
       }
@@ -924,7 +1002,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       tick();
       // Tick interval = 60s sim / speed = one in-game minute per tick.
       // At 1x: 60s real. At 2x: 30s real. At 5x: 12s real. At 10x: 6s real.
-      const intervalMs = Math.round(60000 / clock.getSpeed());
+      const intervalMs = 1000; // tick every real second regardless of sim speed
       _intervalId = setInterval(tick, intervalMs);
     },
 
@@ -946,7 +1024,7 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
       // Recreate interval so the cadence adjusts immediately
       if (_intervalId) {
         clearInterval(_intervalId);
-        const intervalMs = Math.round(60000 / speed);
+        const intervalMs = 1000; // tick every real second regardless of sim speed
         _intervalId = setInterval(tick, intervalMs);
       }
     },
@@ -988,19 +1066,27 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
         case "trigger_rollback": {
           const pipelineId = params["pipelineId"] as string | undefined;
           const stageId = params["stageId"] as string | undefined;
+          const targetVersion = params["targetVersion"] as string | undefined;
           if (pipelineId && stageId) {
             const pipeline = store.getPipeline(pipelineId);
             const stageIdx = pipeline?.stages.findIndex(
               (s) => s.id === stageId,
             );
+            // Use explicit targetVersion if provided (normal deploy from remediations),
+            // otherwise fall back to previousVersion (rollback from CICD tab).
+            const resolvedVersion =
+              targetVersion ??
+              (stageIdx !== undefined && stageIdx >= 0
+                ? pipeline?.stages[stageIdx].previousVersion
+                : undefined);
             if (
               pipeline &&
               stageIdx !== undefined &&
               stageIdx >= 0 &&
-              pipeline.stages[stageIdx].previousVersion
+              resolvedVersion
             ) {
               const stage = pipeline.stages[stageIdx];
-              const version = stage.previousVersion!;
+              const version = resolvedVersion;
               const now = clock.getSimTime();
 
               // Build the stage schedule starting from the triggered stage
@@ -1018,38 +1104,15 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
                 return entry;
               });
 
-              // Immediately show the first stage as in_progress
-              const firstStage = pipeline.stages[stageIdx];
-              const runningTests = firstStage.tests.map((t) => ({
-                ...t,
-                status: "running" as import("@shared/types/events").TestStatus,
-              }));
-              const inProgressStage: import("@shared/types/events").PipelineStage =
-                {
-                  ...firstStage,
-                  status: "in_progress",
-                  currentVersion: version,
-                  previousVersion: firstStage.currentVersion,
-                  commitMessage: `Rollback to ${version}`,
-                  author: "trainee",
-                  deployedAtSec: now,
-                  blockers: [],
-                  tests: runningTests,
-                };
-              store.updateStage(pipelineId, firstStage.id, inProgressStage);
-              emit({
-                type: "pipeline_stage_updated",
-                pipelineId,
-                stage: inProgressStage,
-              });
-
               store.enqueuePendingDeployment({
                 pipelineId,
                 stageSchedule,
                 initiatedAtSim: now,
                 version,
-                previousVersion: firstStage.currentVersion,
-                commitMessage: `Rollback to ${version}`,
+                previousVersion: stage.currentVersion,
+                commitMessage: targetVersion
+                  ? `Deploy ${version}`
+                  : `Rollback to ${version}`,
                 author: "trainee",
                 isEmergency: false,
               });
@@ -1094,6 +1157,11 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
                 pipelineId,
                 stage: overriddenStage,
               });
+              // If there's a pending deployment halted at this stage, rebase
+              // its timing so the stage starts fresh from now rather than
+              // instantly completing because the original elapsed time has passed.
+              const now = clock.getSimTime();
+              store.rebasePendingDeployment(pipelineId, now);
             }
           }
           break;
@@ -1128,6 +1196,9 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
                 pipelineId,
                 stage: approvedStage,
               });
+              // Rebase any pending deployment so this stage starts fresh from now.
+              const now = clock.getSimTime();
+              store.rebasePendingDeployment(pipelineId, now);
             }
           }
           break;
@@ -1234,33 +1305,6 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
                   });
                   cumulativeSim += duration;
                 }
-              }
-
-              // Immediately show build stage as in_progress
-              if (buildStage) {
-                const runningTests = buildStage.tests.map((t) => ({
-                  ...t,
-                  status:
-                    "running" as import("@shared/types/events").TestStatus,
-                }));
-                const inProgressStage: import("@shared/types/events").PipelineStage =
-                  {
-                    ...buildStage,
-                    status: "in_progress",
-                    currentVersion: version,
-                    previousVersion: buildStage.currentVersion,
-                    commitMessage,
-                    author: "trainee",
-                    deployedAtSec: now,
-                    blockers: [],
-                    tests: runningTests,
-                  };
-                store.updateStage(pipeline.id, buildStage.id, inProgressStage);
-                emit({
-                  type: "pipeline_stage_updated",
-                  pipelineId: pipeline.id,
-                  stage: inProgressStage,
-                });
               }
 
               store.enqueuePendingDeployment({

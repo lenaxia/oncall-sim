@@ -44,7 +44,7 @@ export function SimShell({ onResolve }: SimShellProps) {
   const { state, dispatchAction, resolveSession, resolving } = useSession()
   const { scenario } = useScenario()
 
-  const defaultTab = (scenario?.engine.defaultTab ?? 'email') as TabId
+  const defaultTab = (scenario?.engine.defaultTab ?? 'wiki') as TabId
   const [activeTab, setActiveTab] = useState<TabId>(defaultTab)
   const [confirmResolve, setConfirmResolve] = useState(false)
 

@@ -41,7 +41,7 @@ topology:
 
 engine:
   tick_interval_seconds: 10
-  default_tab: email
+  default_tab: wiki
   llm_event_tools:
     - tool: fire_alarm
       max_calls: 1

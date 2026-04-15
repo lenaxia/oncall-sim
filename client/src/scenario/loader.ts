@@ -1058,7 +1058,7 @@ async function transform(
     topology,
     engine: {
       tickIntervalSeconds: raw.engine.tick_interval_seconds,
-      defaultTab: raw.engine.default_tab ?? "email",
+      defaultTab: raw.engine.default_tab ?? "wiki",
       llmEventTools: (raw.engine.llm_event_tools ?? []).map((t) => ({
         tool: t.tool,
         enabled: t.enabled,

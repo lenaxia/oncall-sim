@@ -130,6 +130,13 @@ export interface SimStateStore {
   ): void;
   /** Advance the current stage index for the named pipeline's pending deployment. */
   updatePendingDeploymentProgress(pipelineId: string, newIndex: number): void;
+  /**
+   * Rebase the pending deployment's timing so the current stage starts fresh
+   * from `nowSim`. Called when a blocker is removed and the deployment resumes —
+   * prevents stages from instantly completing because their original startAtSim
+   * has already elapsed.
+   */
+  rebasePendingDeployment(pipelineId: string, nowSim: number): void;
   /** Remove the pending deployment once all stages have completed. */
   completePendingDeployment(pipelineId: string): void;
   /** Returns all pending deployments (read-only copy). */
@@ -151,8 +158,10 @@ export function createSimStateStore(): SimStateStore {
   const _pages: PageAlert[] = [];
   // Key: `${targetId}:${customerId ?? ""}` — unique slot per target+customer
   const _throttles: Map<string, ActiveThrottle> = new Map();
-  // Pending deployments — one per pipeline (at most one active rollback/deploy per pipeline)
-  const _pendingDeployments: Map<string, PendingDeployment> = new Map();
+  // Pending deployments — a FIFO queue per pipeline. The head ([0]) is the
+  // active deployment being driven by tickPendingDeployments. New deployments
+  // are appended to the tail and start automatically when the head completes.
+  const _pendingDeployments: Map<string, PendingDeployment[]> = new Map();
 
   function deepClone<T>(val: T): T {
     return JSON.parse(JSON.stringify(val)) as T;
@@ -295,25 +304,45 @@ export function createSimStateStore(): SimStateStore {
 
     // ── Pending deployments ────────────────────────────────────────────────
     enqueuePendingDeployment(deployment) {
-      _pendingDeployments.set(deployment.pipelineId, {
-        ...deployment,
-        currentStageIndex: 0,
-      });
-    },
-    updatePendingDeploymentProgress(pipelineId, newIndex) {
-      const existing = _pendingDeployments.get(pipelineId);
-      if (existing) {
-        _pendingDeployments.set(pipelineId, {
-          ...existing,
-          currentStageIndex: newIndex,
-        });
+      const entry: PendingDeployment = { ...deployment, currentStageIndex: 0 };
+      const queue = _pendingDeployments.get(deployment.pipelineId);
+      if (queue) {
+        queue.push(entry); // append to tail — head is still active
+      } else {
+        _pendingDeployments.set(deployment.pipelineId, [entry]);
       }
     },
+    updatePendingDeploymentProgress(pipelineId, newIndex) {
+      const head = _pendingDeployments.get(pipelineId)?.[0];
+      if (head) head.currentStageIndex = newIndex;
+    },
+    rebasePendingDeployment(pipelineId, nowSim) {
+      const head = _pendingDeployments.get(pipelineId)?.[0];
+      if (!head) return;
+      const entry = head.stageSchedule[head.currentStageIndex];
+      if (!entry) return;
+      // Rebase: set initiatedAtSim so that the current stage's startAtSim
+      // becomes exactly nowSim — i.e. the stage starts fresh from right now.
+      // initiatedAtSim + entry.startAtSim = nowSim
+      // → initiatedAtSim = nowSim - entry.startAtSim
+      head.initiatedAtSim = nowSim - entry.startAtSim;
+    },
     completePendingDeployment(pipelineId) {
-      _pendingDeployments.delete(pipelineId);
+      const queue = _pendingDeployments.get(pipelineId);
+      if (!queue) return;
+      queue.shift(); // remove completed head
+      if (queue.length === 0) {
+        _pendingDeployments.delete(pipelineId);
+      }
+      // Next head (if any) will be rebased by the game loop after this call.
     },
     getPendingDeployments() {
-      return deepClone([..._pendingDeployments.values()]);
+      // Return only the head of each queue — these are the active deployments.
+      const heads: PendingDeployment[] = [];
+      for (const queue of _pendingDeployments.values()) {
+        if (queue.length > 0) heads.push(deepClone(queue[0]));
+      }
+      return heads;
     },
 
     // ── Snapshot ───────────────────────────────────────────────────────────

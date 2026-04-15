@@ -96,10 +96,18 @@ describe("Deployment progression — trigger_rollback", () => {
 
     const firstStage = pipeline.stages[0];
 
-    loop.handleAction("trigger_rollback", {
-      pipelineId: pipeline.id,
-      stageId: firstStage.id,
-    });
+    vi.useFakeTimers();
+    try {
+      loop.start();
+      loop.handleAction("trigger_rollback", {
+        pipelineId: pipeline.id,
+        stageId: firstStage.id,
+      });
+      vi.advanceTimersByTime(1_000);
+      loop.stop();
+    } finally {
+      vi.useRealTimers();
+    }
 
     const stageUpdates = events.filter(
       (e): e is Extract<SimEvent, { type: "pipeline_stage_updated" }> =>
@@ -120,10 +128,18 @@ describe("Deployment progression — trigger_rollback", () => {
     const firstStage = pipeline.stages[0];
     const previousVersion = firstStage.previousVersion ?? "v1.0.0";
 
-    loop.handleAction("trigger_rollback", {
-      pipelineId: pipeline.id,
-      stageId: firstStage.id,
-    });
+    vi.useFakeTimers();
+    try {
+      loop.start();
+      loop.handleAction("trigger_rollback", {
+        pipelineId: pipeline.id,
+        stageId: firstStage.id,
+      });
+      vi.advanceTimersByTime(1_000);
+      loop.stop();
+    } finally {
+      vi.useRealTimers();
+    }
 
     const stageUpdate = events
       .filter(
@@ -346,10 +362,18 @@ describe("Deployment progression — emergency_deploy", () => {
     const firstStage = pipeline.stages[0];
 
     // Use the fixture's emergency_deploy remediation action
-    loop.handleAction("emergency_deploy", {
-      remediationActionId: "emergency_deploy_fixture",
-      service: pipeline.service,
-    });
+    vi.useFakeTimers();
+    try {
+      loop.start();
+      loop.handleAction("emergency_deploy", {
+        remediationActionId: "emergency_deploy_fixture",
+        service: pipeline.service,
+      });
+      vi.advanceTimersByTime(1_000);
+      loop.stop();
+    } finally {
+      vi.useRealTimers();
+    }
 
     const stageUpdates = events.filter(
       (e): e is Extract<SimEvent, { type: "pipeline_stage_updated" }> =>

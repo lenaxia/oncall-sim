@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import ReactDOM from "react-dom";
 import { useSession } from "../../context/SessionContext";
 import { useScenario } from "../../context/ScenarioContext";
@@ -12,78 +12,76 @@ import type {
   Pipeline,
   PipelineStage,
   StageStatus,
-  TestStatus,
+  StageBlocker,
 } from "@shared/types/events";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const STAGE_CARD_W = 230; // px, fixed width for each stage card
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function formatRelativeSim(simTime: number, current: number): string {
-  const diff = current - simTime;
-  if (diff < 0) return "future";
-  const d = Math.floor(diff / 86400);
-  const h = Math.floor((diff % 86400) / 3600);
+function formatRelSim(simTime: number, now: number): string {
+  const diff = now - simTime;
+  if (diff < 0) return "in future";
+  const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ago`;
+  const s = Math.floor(diff % 60);
   if (h > 0) return `${h}h ${m}m ago`;
   if (m > 0) return `${m}m ago`;
-  return "just now";
+  return `${s}s ago`;
+}
+
+function formatDuration(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
 
 function pipelineOverallStatus(
-  pipeline: Pipeline,
+  p: Pipeline,
 ): "healthy" | "blocked" | "failed" | "in_progress" {
-  const statuses = pipeline.stages.map((s) => s.status);
+  const statuses = p.stages.map((s) => s.status);
   if (statuses.some((s) => s === "failed")) return "failed";
   if (statuses.some((s) => s === "blocked")) return "blocked";
   if (statuses.some((s) => s === "in_progress")) return "in_progress";
   return "healthy";
 }
 
-function prodStage(pipeline: Pipeline): PipelineStage | null {
-  return (
-    [...pipeline.stages].reverse().find((s) => s.type === "deploy") ?? null
-  );
+function prodStage(p: Pipeline): PipelineStage | null {
+  return [...p.stages].reverse().find((s) => s.type === "deploy") ?? null;
 }
 
-function oldestVersionNotInProd(pipeline: Pipeline): number {
-  const prod = prodStage(pipeline);
-  if (!prod) return 0;
-  return pipeline.stages.filter((s) => s.currentVersion !== prod.currentVersion)
-    .length;
-}
+// ── Status colours ────────────────────────────────────────────────────────────
 
-const STAGE_STATUS_COLOURS: Record<StageStatus, string> = {
-  succeeded: "bg-sim-green text-sim-bg",
-  in_progress: "bg-sim-accent text-white animate-pulse",
-  blocked: "bg-sim-green text-sim-bg", // stage itself is healthy; blocker is on the connector
-  failed: "bg-sim-red text-white",
-  not_started: "bg-sim-surface-2 text-sim-text-faint",
+const STATUS_DOT: Record<StageStatus, string> = {
+  succeeded: "bg-sim-green",
+  in_progress: "bg-sim-accent animate-pulse",
+  blocked: "bg-sim-green",
+  failed: "bg-sim-red",
+  not_started: "bg-sim-text-faint",
 };
 
-const STAGE_STATUS_LABEL: Record<StageStatus, string> = {
-  succeeded: "✓",
-  in_progress: "…",
-  blocked: "✓", // still a good deployment; promotion gate shown on connector
-  failed: "✗",
-  not_started: "○",
+const STATUS_LABEL: Record<StageStatus, string> = {
+  succeeded: "SUCCEEDED",
+  in_progress: "DEPLOYING",
+  blocked: "SUCCEEDED",
+  failed: "FAILED",
+  not_started: "NOT STARTED",
 };
 
-const BLOCKER_ICON: Record<string, string> = {
-  alarm: "🔔",
-  time_window: "⏰",
-  manual_approval: "👤",
-  test_failure: "✗",
+const STATUS_TEXT: Record<StageStatus, string> = {
+  succeeded: "text-sim-green",
+  in_progress: "text-sim-accent",
+  blocked: "text-sim-green",
+  failed: "text-sim-red",
+  not_started: "text-sim-text-muted",
 };
 
-const TEST_STATUS_STYLES: Record<TestStatus, { dot: string; text: string }> = {
-  passed: { dot: "bg-sim-green", text: "text-sim-green" },
-  failed: { dot: "bg-sim-red", text: "text-sim-red" },
-  running: { dot: "bg-sim-accent animate-pulse", text: "text-sim-accent" },
-  pending: { dot: "bg-sim-text-faint", text: "text-sim-text-faint" },
-  skipped: { dot: "bg-sim-border", text: "text-sim-text-faint" },
-};
-
-const OVERALL_STATUS_STYLES = {
+const OVERALL_STYLES = {
   healthy: { dot: "bg-sim-green", label: "HEALTHY", text: "text-sim-green" },
   blocked: { dot: "bg-sim-red", label: "BLOCKED", text: "text-sim-red" },
   failed: { dot: "bg-sim-red", label: "FAILED", text: "text-sim-red" },
@@ -94,143 +92,721 @@ const OVERALL_STATUS_STYLES = {
   },
 };
 
-// ── StageConnector ────────────────────────────────────────────────────────────
+// ── PortalPopup — reusable hover/tap popup anchored to an element ─────────────
 
-function StageConnector({
+function PortalPopup({
+  anchor,
+  children,
+  width = 240,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  anchor: DOMRect | null;
+  children: React.ReactNode;
+  width?: number;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
+}) {
+  if (!anchor) return null;
+  const top = anchor.bottom + 6;
+  const left = Math.max(8, anchor.left + anchor.width / 2 - width / 2);
+
+  return ReactDOM.createPortal(
+    <div
+      style={{ top, left, width }}
+      className="fixed z-[9999] bg-sim-surface border border-sim-border rounded shadow-xl text-xs"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-sim-border" />
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+function useHoverAnchor() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const show = useCallback(() => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+    setRect(ref.current?.getBoundingClientRect() ?? null);
+  }, []);
+
+  const hide = useCallback(() => {
+    hideTimer.current = setTimeout(() => setRect(null), 80);
+  }, []);
+
+  // Called when the cursor enters the portal popup itself — cancels hide
+  const keepOpen = useCallback(() => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
+
+  return { ref, rect, show, hide, keepOpen };
+}
+
+// ── DeploymentHistoryPopup ────────────────────────────────────────────────────
+
+function DeploymentHistoryPopup({
+  stage,
+  simTime,
+}: {
+  stage: PipelineStage;
+  simTime: number;
+}) {
+  const { ref, rect, show, hide, keepOpen } = useHoverAnchor();
+
+  if (stage.promotionEvents.length === 0) {
+    return (
+      <span className="text-sim-text-muted text-xs">
+        {formatRelSim(stage.deployedAtSec, simTime)}
+      </span>
+    );
+  }
+
+  return (
+    <>
+      <div
+        ref={ref}
+        className="text-xs text-sim-text-muted underline decoration-dotted cursor-pointer"
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onTouchStart={show}
+        onTouchEnd={hide}
+      >
+        {formatRelSim(stage.deployedAtSec, simTime)}
+      </div>
+      <PortalPopup
+        anchor={rect}
+        width={260}
+        onMouseEnter={keepOpen}
+        onMouseLeave={hide}
+      >
+        <div className="px-3 py-2 border-b border-sim-border font-semibold text-sim-text-muted uppercase tracking-wide text-xs">
+          Promotion History
+        </div>
+        <div className="p-2 flex flex-col gap-1.5">
+          {stage.promotionEvents.slice(0, 5).map((ev, i) => {
+            const color =
+              ev.status === "succeeded"
+                ? "text-sim-green"
+                : ev.status === "failed"
+                  ? "text-sim-red"
+                  : "text-sim-yellow";
+            return (
+              <div key={i} className="flex items-start gap-2">
+                <span className={`font-medium flex-shrink-0 ${color}`}>
+                  {ev.status === "succeeded"
+                    ? "✓"
+                    : ev.status === "failed"
+                      ? "✗"
+                      : "⚠"}
+                </span>
+                <div className="min-w-0">
+                  <span className="font-mono text-sim-text-muted">
+                    {ev.version}
+                  </span>
+                  <span className="text-sim-text-muted ml-1">
+                    · <WallTimestamp simTime={ev.simTime} />
+                  </span>
+                  {ev.note && (
+                    <div className="text-sim-text-muted truncate">
+                      {ev.note}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </PortalPopup>
+    </>
+  );
+}
+
+// ── ApprovalWorkflow ─────────────────────────────────────────────────────────
+
+function ProgressBar({
+  pct,
+  color = "bg-sim-accent",
+}: {
+  pct: number;
+  color?: string;
+}) {
+  return (
+    <div className="h-1.5 w-full bg-sim-surface-2 rounded-full overflow-hidden">
+      <div
+        className={`h-full rounded-full ${color}`}
+        style={{ width: `${Math.min(100, Math.max(0, pct * 100))}%` }}
+      />
+    </div>
+  );
+}
+
+// ── ApprovalWorkflow phase constants (single source of truth) ────────────────
+// Phase proportions are a UI concern — game-loop only sets stageStartedAtSim +
+// stageDurationSecs; the UI derives phases from stage.type and stage.tests using
+// live interpolated simTime at 60fps via requestAnimationFrame in useSimClock.
+
+// Fraction of total stage duration spent in the first phase (build/deploy).
+const PHASE_1_END = 0.1; // 0–10%
+// Fraction spent in phases 1+2 when a test phase exists.
+const PHASE_2_END = 0.5; // 10–50%
+
+export function ApprovalWorkflow({
+  stage,
+  simTime,
+}: {
+  stage: PipelineStage;
+  simTime: number;
+}) {
+  // Capture the interpolated simTime on the first RAF frame that sees this
+  // stage as in_progress. This is the correct clock anchor for elapsed time —
+  // using stage.stageStartedAtSim directly causes jumps because the game loop
+  // tick fires every 60 sim-seconds and useSimClock may already be well ahead
+  // of stageStartedAtSim by the time React renders.
+  // key={stage.status} on the parent resets this ref on every status change.
+  const startRef = useRef<number | null>(null);
+  if (stage.status === "in_progress" && startRef.current === null) {
+    startRef.current = simTime;
+  }
+
+  const isBuild = stage.type === "build";
+  const hasTests = stage.tests.length > 0;
+  const hasBake = !isBuild;
+  const phase1Label = isBuild ? "Building" : "Deploying";
+
+  const testCount = stage.tests.length;
+  const testsPassed = stage.tests.filter((t) => t.status === "passed").length;
+  const testsFailed = stage.tests.filter((t) => t.status === "failed").length;
+
+  if (
+    stage.status === "in_progress" &&
+    startRef.current !== null &&
+    stage.stageDurationSecs !== undefined
+  ) {
+    const duration = stage.stageDurationSecs;
+    const elapsed = Math.max(0, simTime - startRef.current);
+    const pctDone = Math.min(1, elapsed / duration);
+
+    // Phase boundary calculations depend on which phases exist.
+    // Layout: [phase1] [tests?] [bake?]
+    // With tests + bake:    0–10% / 10–50% / 50–100%
+    // With tests, no bake:  0–10% / 10–100%
+    // With bake, no tests:  0–10% / 10–100%
+    // Phase1 only:          0–100%
+    const phase1End = hasTests || hasBake ? PHASE_1_END : 1;
+    const phase2End = hasTests && hasBake ? PHASE_2_END : 1;
+
+    const phase1Duration = duration * phase1End;
+    const phase2Duration = hasTests ? duration * (phase2End - phase1End) : 0;
+    const phase3Duration = hasBake ? duration * (1 - phase2End) : 0;
+
+    // — Phase 1 active —
+    if (pctDone < phase1End) {
+      const pct = pctDone / phase1End;
+      const remaining = phase1Duration - elapsed;
+      return (
+        <div className="flex flex-col gap-2">
+          <PhaseRow
+            label={phase1Label}
+            active
+            pct={pct}
+            detail={`${formatDuration(remaining)} remaining`}
+          />
+          {hasTests && (
+            <PhaseRow label={`Tests (0/${testCount})`} active={false} pct={0} />
+          )}
+          {hasBake && <PhaseRow label="Bake time" active={false} pct={0} />}
+        </div>
+      );
+    }
+
+    // — Phase 2 (tests) active —
+    if (hasTests && pctDone < phase2End) {
+      const testElapsed = elapsed - phase1Duration;
+      const testPct = Math.min(1, testElapsed / phase2Duration);
+      const estimatedPassed = Math.min(
+        testCount,
+        Math.floor(testPct * testCount),
+      );
+      const remaining = duration * phase2End - elapsed;
+      return (
+        <div className="flex flex-col gap-2">
+          <PhaseRow label={phase1Label} active={false} pct={1} complete />
+          <PhaseRow
+            label={`Tests (${estimatedPassed}/${testCount})`}
+            active
+            pct={testPct}
+            detail={
+              testsFailed > 0
+                ? `${testsFailed} failing`
+                : `${formatDuration(remaining)} remaining`
+            }
+            color={testsFailed > 0 ? "bg-sim-red" : "bg-sim-accent"}
+          />
+          {hasBake && <PhaseRow label="Bake time" active={false} pct={0} />}
+        </div>
+      );
+    }
+
+    // — Phase 3 (bake) active —
+    if (hasBake) {
+      const bakeElapsed = elapsed - duration * phase2End;
+      const bakePct = Math.min(1, bakeElapsed / phase3Duration);
+      const remaining = Math.max(0, phase3Duration - bakeElapsed);
+      return (
+        <div className="flex flex-col gap-2">
+          <PhaseRow label={phase1Label} active={false} pct={1} complete />
+          {hasTests && (
+            <PhaseRow
+              label={`Tests (${testCount}/${testCount})`}
+              active={false}
+              pct={1}
+              complete
+            />
+          )}
+          <PhaseRow
+            label="Bake time"
+            active
+            pct={bakePct}
+            detail={`${formatDuration(remaining)} remaining`}
+          />
+        </div>
+      );
+    }
+  }
+
+  // not_started
+  if (stage.status === "not_started") {
+    return <div className="text-xs text-sim-text-muted">Not yet started</div>;
+  }
+
+  // succeeded / blocked / failed — labels only, no bars
+  const anyTestsFailed = testsFailed > 0;
+  return (
+    <div className="flex flex-col gap-2">
+      <PhaseRow label={phase1Label} active={false} pct={1} complete />
+      {hasTests && (
+        <PhaseRow
+          label={`Tests (${testsPassed}/${testCount})`}
+          active={false}
+          pct={1}
+          complete={!anyTestsFailed}
+          color={anyTestsFailed ? "bg-sim-red" : "bg-sim-green"}
+        />
+      )}
+      {hasBake && (
+        <PhaseRow label="Bake time" active={false} pct={1} complete />
+      )}
+    </div>
+  );
+}
+
+function PhaseRow({
+  label,
+  active,
+  pct,
+  complete = false,
+  detail,
+  color = "bg-sim-accent",
+}: {
+  label: string;
+  active: boolean;
+  pct: number;
+  complete?: boolean;
+  detail?: string;
+  color?: string;
+}) {
+  const barColor = complete ? "bg-sim-green" : color;
+  const textColor = active
+    ? "text-sim-text"
+    : complete
+      ? "text-sim-green"
+      : "text-sim-text-muted";
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className={`text-xs font-medium ${textColor}`}>
+          {complete ? "✓ " : active ? "▶ " : "○ "}
+          {label}
+        </span>
+        {detail && active && (
+          <span className="text-xs text-sim-text-muted shrink-0">{detail}</span>
+        )}
+      </div>
+      {active && <ProgressBar pct={pct} color={barColor} />}
+    </div>
+  );
+}
+
+function TestList({ tests }: { tests: PipelineStage["tests"] }) {
+  if (tests.length === 0)
+    return <div className="text-xs text-sim-text-muted">No tests</div>;
+  return (
+    <div className="flex flex-col gap-1">
+      {tests.map((t, i) => {
+        const color =
+          t.status === "passed"
+            ? "text-sim-green"
+            : t.status === "failed"
+              ? "text-sim-red"
+              : t.status === "running"
+                ? "text-sim-accent"
+                : "text-sim-text-muted";
+        const icon =
+          t.status === "passed"
+            ? "✓"
+            : t.status === "failed"
+              ? "✗"
+              : t.status === "running"
+                ? "…"
+                : "○";
+        return (
+          <div key={i} className={`text-xs flex items-center gap-1 ${color}`}>
+            <span className="w-3 flex-shrink-0">{icon}</span>
+            <span>{t.name}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── PromotionConnector ────────────────────────────────────────────────────────
+
+function PromotionConnector({
   nextStage,
   inactive,
   onBlock,
   onApprove,
+  onOverride,
 }: {
   nextStage: PipelineStage;
   inactive: boolean;
   onBlock: () => void;
   onApprove: () => void;
+  onOverride: () => void;
 }) {
+  const { ref, rect, show, hide, keepOpen } = useHoverAnchor();
+
   const hasManualBlocker = nextStage.blockers.some(
     (b) => b.type === "manual_approval",
   );
   const hasHardBlocker = nextStage.blockers.some(
     (b) => b.type === "alarm" || b.type === "time_window",
   );
-
-  if (hasHardBlocker) {
-    return (
-      <ConnectorWithTooltip
-        tooltip={
-          <>
-            Promotion into <strong>{nextStage.name}</strong> is blocked by an
-            alarm or time window. Use <em>Override Blocker</em> in the stage
-            detail panel to force-promote.
-          </>
-        }
-      >
-        <span className="text-sim-red text-base leading-none select-none px-1">
-          ⊘
-        </span>
-      </ConnectorWithTooltip>
-    );
-  }
-
-  if (hasManualBlocker) {
-    return (
-      <ConnectorWithTooltip
-        tooltip={
-          <>
-            Promotion into <strong>{nextStage.name}</strong> is manually gated.
-            Click to remove the gate and allow the next deployment to proceed.
-          </>
-        }
-      >
-        <button
-          data-testid={`connector-approve-${nextStage.id}`}
-          disabled={inactive}
-          onClick={onApprove}
-          className="text-sim-yellow text-base leading-none px-1 hover:text-sim-text transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          ⊘
-        </button>
-      </ConnectorWithTooltip>
-    );
-  }
+  const hasBlocker = hasManualBlocker || hasHardBlocker;
 
   return (
-    <ConnectorWithTooltip
-      tooltip={
-        <>
-          Promotion into <strong>{nextStage.name}</strong> is open. Click to add
-          a manual gate and halt future deployments here until approved.
-        </>
-      }
-    >
-      <button
-        data-testid={`connector-block-${nextStage.id}`}
-        disabled={inactive}
-        onClick={onBlock}
-        className="w-4 h-4 rounded-full bg-sim-green hover:bg-sim-yellow transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      />
-    </ConnectorWithTooltip>
-  );
-}
+    <div className="flex items-center flex-shrink-0">
+      {/* left stem */}
+      <div className="w-5 h-px bg-sim-text-faint" />
 
-function ConnectorWithTooltip({
-  children,
-  tooltip,
-}: {
-  children: React.ReactNode;
-  tooltip: React.ReactNode;
-}) {
-  const [visible, setVisible] = useState(false);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
-  const anchorRef = useRef<HTMLDivElement>(null);
-
-  function show() {
-    if (!anchorRef.current) return;
-    const rect = anchorRef.current.getBoundingClientRect();
-    setPos({
-      top: rect.bottom + 6,
-      left: rect.left + rect.width / 2,
-    });
-    setVisible(true);
-  }
-
-  function hide() {
-    setVisible(false);
-  }
-
-  return (
-    <div className="flex items-center">
-      <div className="w-4 h-px bg-sim-text-faint" />
+      {/* indicator */}
       <div
-        ref={anchorRef}
-        className="flex items-center"
+        ref={ref}
+        className="relative"
         onMouseEnter={show}
         onMouseLeave={hide}
+        onTouchStart={show}
+        onTouchEnd={hide}
       >
-        {children}
-      </div>
-      <div className="w-4 h-px bg-sim-text-faint" />
-      {visible &&
-        ReactDOM.createPortal(
-          <div
-            style={{ top: pos.top, left: pos.left }}
-            className={[
-              "fixed z-[9999] -translate-x-1/2",
-              "w-48 px-2.5 py-2 rounded pointer-events-none",
-              "bg-sim-surface border border-sim-border shadow-lg",
-              "text-xs text-sim-text-muted leading-snug text-center",
-            ].join(" ")}
+        {hasHardBlocker ? (
+          <span className="text-sim-red text-base leading-none px-0.5 cursor-default">
+            ⊘
+          </span>
+        ) : hasManualBlocker ? (
+          <span
+            data-testid={`connector-approve-${nextStage.id}`}
+            className="text-sim-yellow text-base leading-none px-0.5 cursor-pointer"
+            onClick={() => {
+              hide();
+              onApprove();
+            }}
           >
-            <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-sim-border" />
-            {tooltip}
-          </div>,
-          document.body,
+            ⊘
+          </span>
+        ) : (
+          <div
+            data-testid={`connector-block-${nextStage.id}`}
+            className="w-4 h-4 rounded-full bg-sim-green hover:bg-sim-yellow transition-colors cursor-pointer"
+            onClick={() => {
+              hide();
+              onBlock();
+            }}
+          />
         )}
+      </div>
+
+      {/* right stem + arrowhead */}
+      <div className="w-5 h-px bg-sim-text-faint" />
+      <div className="-ml-1 border-y-4 border-y-transparent border-l-4 border-l-sim-text-faint" />
+
+      {/* Popup */}
+      <PortalPopup
+        anchor={rect}
+        width={260}
+        onMouseEnter={keepOpen}
+        onMouseLeave={hide}
+      >
+        {hasHardBlocker ? (
+          <BlockerPopupContent
+            blockers={nextStage.blockers.filter(
+              (b) => b.type === "alarm" || b.type === "time_window",
+            )}
+            stageName={nextStage.name}
+            inactive={inactive}
+            onOverride={() => {
+              hide();
+              onOverride();
+            }}
+          />
+        ) : hasManualBlocker ? (
+          <ManualGatePopupContent
+            stageName={nextStage.name}
+            inactive={inactive}
+            onApprove={() => {
+              hide();
+              onApprove();
+            }}
+          />
+        ) : (
+          <OpenGatePopupContent
+            stageName={nextStage.name}
+            inactive={inactive}
+            onBlock={() => {
+              hide();
+              onBlock();
+            }}
+          />
+        )}
+      </PortalPopup>
     </div>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+function BlockerPopupContent({
+  blockers,
+  stageName,
+  inactive,
+  onOverride,
+}: {
+  blockers: StageBlocker[];
+  stageName: string;
+  inactive: boolean;
+  onOverride: () => void;
+}) {
+  return (
+    <>
+      <div className="px-3 py-2 border-b border-sim-border">
+        <div className="font-semibold text-sim-red">Promotion Blocked</div>
+        <div className="text-sim-text-muted mt-0.5">into {stageName}</div>
+      </div>
+      <div className="px-3 py-2 flex flex-col gap-2">
+        {blockers.map((b, i) => (
+          <div key={i}>
+            <div className="font-medium text-sim-text capitalize">
+              {b.type.replace("_", " ")}
+            </div>
+            {b.message && (
+              <div className="text-sim-text-muted mt-0.5">{b.message}</div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="px-3 pb-3">
+        <Button
+          variant="danger"
+          size="sm"
+          disabled={inactive}
+          onClick={onOverride}
+          className="w-full"
+        >
+          Override Blocker
+        </Button>
+        <div className="text-xs text-sim-text-muted mt-1.5">
+          ⚠ Override expires after 30 sim-minutes if alarm still firing.
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ManualGatePopupContent({
+  stageName,
+  inactive,
+  onApprove,
+}: {
+  stageName: string;
+  inactive: boolean;
+  onApprove: () => void;
+}) {
+  return (
+    <>
+      <div className="px-3 py-2 border-b border-sim-border">
+        <div className="font-semibold text-sim-yellow">
+          Manual Promotion Block
+        </div>
+        <div className="text-sim-text-muted mt-0.5">
+          Promotion into {stageName} is held.
+        </div>
+      </div>
+      <div className="px-3 py-3">
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={inactive}
+          onClick={onApprove}
+          className="w-full"
+        >
+          Remove Manual Promotion Block
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function OpenGatePopupContent({
+  stageName,
+  inactive,
+  onBlock,
+}: {
+  stageName: string;
+  inactive: boolean;
+  onBlock: () => void;
+}) {
+  return (
+    <>
+      <div className="px-3 py-2 border-b border-sim-border">
+        <div className="font-semibold text-sim-green">Promotion Open</div>
+        <div className="text-sim-text-muted mt-0.5">into {stageName}</div>
+      </div>
+      <div className="px-3 py-3">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={inactive}
+          onClick={onBlock}
+          className="w-full"
+        >
+          Add Manual Promotion Block
+        </Button>
+      </div>
+    </>
+  );
+}
+
+// ── StageCard ─────────────────────────────────────────────────────────────────
+
+function StageCard({
+  stage,
+  simTime,
+  inactive,
+  onRollback,
+  onOverride,
+}: {
+  stage: PipelineStage;
+  simTime: number;
+  inactive: boolean;
+  onRollback: () => void;
+  onOverride: () => void;
+}) {
+  const hasAlarmBlocker = stage.blockers.some(
+    (b) => b.type !== "manual_approval",
+  );
+  const isBuildStage = stage.type === "build";
+
+  return (
+    <div
+      data-testid={`stage-card-${stage.id}`}
+      className="flex flex-col bg-sim-surface border border-sim-border rounded overflow-hidden"
+      style={{ width: STAGE_CARD_W, minWidth: STAGE_CARD_W }}
+    >
+      {/* ── Header ── */}
+      <div className="px-3 pt-3 pb-2 flex flex-col gap-1 border-b border-sim-border">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-bold text-sim-text uppercase tracking-wide">
+            {stage.name}
+          </span>
+          <span
+            className={`flex items-center gap-1 text-xs font-medium ${STATUS_TEXT[stage.status]}`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[stage.status]}`}
+            />
+            {STATUS_LABEL[stage.status]}
+          </span>
+        </div>
+
+        <div className="font-mono text-sm text-sim-text-muted">
+          {stage.currentVersion}
+        </div>
+
+        <div className="flex items-center gap-1.5 text-xs text-sim-text-muted">
+          <DeploymentHistoryPopup stage={stage} simTime={simTime} />
+        </div>
+
+        {stage.commitMessage && (
+          <div
+            className="text-xs text-sim-text-muted truncate"
+            title={stage.commitMessage}
+          >
+            {stage.commitMessage}
+          </div>
+        )}
+      </div>
+
+      {/* ── Approval workflow ── */}
+      <div className="px-3 py-2.5 flex-1 border-b border-sim-border">
+        <div className="text-xs font-semibold text-sim-text-muted uppercase tracking-wider mb-2">
+          {isBuildStage ? "Build & Test" : "Approval Workflow"}
+        </div>
+        {/* key resets on status change so CSS transitions never animate backwards
+            when switching from static (completed, pct=1) to active (pct=0) */}
+        <div key={stage.status}>
+          <ApprovalWorkflow stage={stage} simTime={simTime} />
+        </div>
+      </div>
+
+      {/* ── Actions ── */}
+      <div className="px-3 py-2 flex flex-col gap-1.5">
+        {stage.previousVersion && (
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={inactive || stage.status === "in_progress"}
+            onClick={onRollback}
+            className="w-full text-xs"
+          >
+            Rollback → {stage.previousVersion}
+          </Button>
+        )}
+        {hasAlarmBlocker && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={inactive}
+            onClick={onOverride}
+            className="w-full text-xs"
+          >
+            Override Blocker
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main CICDTab ──────────────────────────────────────────────────────────────
 
 export function CICDTab() {
   const { state, dispatchAction } = useSession();
@@ -239,7 +815,6 @@ export function CICDTab() {
 
   const pipelines = state.pipelines;
 
-  // Default to the focal service pipeline so the trainee sees it immediately.
   const focalPipelineId =
     pipelines.find((p) => p.service === scenario?.topology.focalService.name)
       ?.id ??
@@ -249,7 +824,13 @@ export function CICDTab() {
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(
     focalPipelineId,
   );
-  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+
+  // Re-sync when pipelines first load (e.g. snapshot arrives after mount)
+  useEffect(() => {
+    if (selectedPipelineId === null && focalPipelineId !== null) {
+      setSelectedPipelineId(focalPipelineId);
+    }
+  }, [focalPipelineId, selectedPipelineId]);
 
   const [confirmRollback, setConfirmRollback] = useState<{
     pipelineId: string;
@@ -263,16 +844,11 @@ export function CICDTab() {
 
   const selectedPipeline =
     pipelines.find((p) => p.id === selectedPipelineId) ?? null;
-  const selectedStage =
-    selectedPipeline?.stages.find((s) => s.id === selectedStageId) ?? null;
+  const inactive = state.status !== "active";
 
-  function handleSelectPipeline(pipeline: Pipeline) {
-    setSelectedPipelineId(pipeline.id);
-    setSelectedStageId(null);
-    dispatchAction("view_pipeline", {
-      pipelineId: pipeline.id,
-      pipelineName: pipeline.name,
-    });
+  function handleSelectPipeline(p: Pipeline) {
+    setSelectedPipelineId(p.id);
+    dispatchAction("view_pipeline", { pipelineId: p.id, pipelineName: p.name });
   }
 
   function handleRollback() {
@@ -293,8 +869,6 @@ export function CICDTab() {
     setConfirmOverride(null);
   }
 
-  const inactive = state.status !== "active";
-
   if (pipelines.length === 0) {
     return (
       <EmptyState
@@ -308,34 +882,26 @@ export function CICDTab() {
     <div className="flex flex-col h-full overflow-hidden">
       {/* Pipeline list */}
       <div className="flex-shrink-0 border-b border-sim-border bg-sim-surface">
-        <div className="text-xs font-semibold text-sim-text-faint uppercase tracking-wide px-4 pt-3 pb-2">
+        <div className="text-xs font-semibold text-sim-text-muted uppercase tracking-wide px-4 pt-3 pb-2">
           Pipelines
         </div>
-        <table className="w-full text-xs">
+        <table className="w-full text-sm">
           <thead>
-            <tr className="text-sim-text-faint uppercase tracking-wide border-b border-sim-border">
+            <tr className="text-sim-text-muted uppercase tracking-wide border-b border-sim-border">
               <th className="px-4 py-1.5 text-left">Pipeline</th>
               <th className="px-4 py-1.5 text-left">Status</th>
-              <th
-                className="px-4 py-1.5 text-left"
-                data-testid="pipeline-last-prod"
-              >
-                Last Prod Deploy
-              </th>
-              <th
-                className="px-4 py-1.5 text-left"
-                data-testid="pipeline-oldest-not-prod"
-              >
-                Versions Pending Prod
-              </th>
+              <th className="px-4 py-1.5 text-left">Last Prod Deploy</th>
+              <th className="px-4 py-1.5 text-left">Versions Pending Prod</th>
             </tr>
           </thead>
           <tbody>
             {pipelines.map((p) => {
               const overall = pipelineOverallStatus(p);
-              const style = OVERALL_STATUS_STYLES[overall];
+              const style = OVERALL_STYLES[overall];
               const prod = prodStage(p);
-              const pending = oldestVersionNotInProd(p);
+              const pending = p.stages.filter(
+                (s) => s.currentVersion !== prod?.currentVersion,
+              ).length;
               const isActive = p.id === selectedPipelineId;
               return (
                 <tr
@@ -362,9 +928,7 @@ export function CICDTab() {
                     </span>
                   </td>
                   <td className="px-4 py-2 text-sim-text-muted">
-                    {prod
-                      ? formatRelativeSim(prod.deployedAtSec, simTime)
-                      : "—"}
+                    {prod ? formatRelSim(prod.deployedAtSec, simTime) : "—"}
                   </td>
                   <td className="px-4 py-2">
                     {pending > 0 ? (
@@ -372,7 +936,7 @@ export function CICDTab() {
                         {pending} stage{pending > 1 ? "s" : ""}
                       </span>
                     ) : (
-                      <span className="text-sim-text-faint">0</span>
+                      <span className="text-sim-text-muted">0</span>
                     )}
                   </td>
                 </tr>
@@ -382,101 +946,66 @@ export function CICDTab() {
         </table>
       </div>
 
-      {/* Stage detail + remediation controls — scrollable region */}
+      {/* Stage cards + remediation — scrollable */}
       <div className="flex-1 overflow-auto">
         {selectedPipeline ? (
           <div className="p-4 flex flex-col gap-4">
-            <div className="text-xs font-semibold text-sim-text-muted uppercase tracking-wide">
-              {selectedPipeline.name}
-            </div>
-
             {/* Stage flow */}
-            <div
-              data-testid="stage-flow"
-              className="flex items-center justify-center overflow-x-auto overflow-y-visible py-2"
-            >
-              {selectedPipeline.stages.map((stage, idx) => (
-                <div key={stage.id} className="flex items-stretch">
-                  {idx > 0 && (
-                    <StageConnector
-                      nextStage={stage}
+            <div data-testid="stage-flow" className="overflow-x-auto pb-2">
+              <div className="flex items-start w-fit">
+                {selectedPipeline.stages.map((stage, idx) => (
+                  <React.Fragment key={stage.id}>
+                    {idx > 0 && (
+                      <div
+                        className="flex items-center"
+                        style={{ marginTop: 48 }}
+                      >
+                        <PromotionConnector
+                          nextStage={stage}
+                          inactive={inactive}
+                          onBlock={() =>
+                            dispatchAction("block_promotion", {
+                              pipelineId: selectedPipeline.id,
+                              stageId: stage.id,
+                            })
+                          }
+                          onApprove={() =>
+                            dispatchAction("approve_gate", {
+                              pipelineId: selectedPipeline.id,
+                              stageId: stage.id,
+                            })
+                          }
+                          onOverride={() =>
+                            setConfirmOverride({
+                              pipelineId: selectedPipeline.id,
+                              stageId: stage.id,
+                            })
+                          }
+                        />
+                      </div>
+                    )}
+                    <StageCard
+                      stage={stage}
+                      simTime={simTime}
                       inactive={inactive}
-                      onBlock={() =>
-                        dispatchAction("block_promotion", {
+                      onRollback={() =>
+                        setConfirmRollback({
                           pipelineId: selectedPipeline.id,
                           stageId: stage.id,
+                          version: stage.previousVersion ?? "",
                         })
                       }
-                      onApprove={() =>
-                        dispatchAction("approve_gate", {
+                      onOverride={() =>
+                        setConfirmOverride({
                           pipelineId: selectedPipeline.id,
                           stageId: stage.id,
                         })
                       }
                     />
-                  )}
-                  <button
-                    data-testid={`stage-pill-${stage.id}`}
-                    onClick={() =>
-                      setSelectedStageId(
-                        stage.id === selectedStageId ? null : stage.id,
-                      )
-                    }
-                    className={[
-                      "flex flex-col items-center gap-0.5 px-3 py-2 rounded text-xs font-medium transition-colors duration-75 min-w-[80px]",
-                      STAGE_STATUS_COLOURS[stage.status],
-                      selectedStageId === stage.id
-                        ? "ring-2 ring-white ring-offset-1 ring-offset-sim-bg"
-                        : "",
-                    ].join(" ")}
-                  >
-                    <span className="text-base leading-none">
-                      {STAGE_STATUS_LABEL[stage.status]}
-                    </span>
-                    <span>{stage.name}</span>
-                    <span className="font-mono text-[10px] opacity-75">
-                      {stage.currentVersion}
-                    </span>
-                    {stage.blockers.length > 0 && (
-                      <span className="text-[10px]">
-                        {stage.blockers
-                          .map((b) => BLOCKER_ICON[b.type])
-                          .join("")}
-                      </span>
-                    )}
-                  </button>
-                </div>
-              ))}
+                  </React.Fragment>
+                ))}
+              </div>
             </div>
-
-            {/* Stage detail */}
-            {selectedStage && (
-              <StageDetail
-                pipeline={selectedPipeline}
-                stage={selectedStage}
-                simTime={simTime}
-                inactive={inactive}
-                onRollback={() =>
-                  setConfirmRollback({
-                    pipelineId: selectedPipeline.id,
-                    stageId: selectedStage.id,
-                    version: selectedStage.previousVersion ?? "",
-                  })
-                }
-                onOverride={() =>
-                  setConfirmOverride({
-                    pipelineId: selectedPipeline.id,
-                    stageId: selectedStage.id,
-                  })
-                }
-                onApproveGate={() =>
-                  dispatchAction("approve_gate", {
-                    pipelineId: selectedPipeline.id,
-                    stageId: selectedStage.id,
-                  })
-                }
-              />
-            )}
           </div>
         ) : (
           <div className="flex items-center justify-center h-32">
@@ -487,15 +1016,15 @@ export function CICDTab() {
           </div>
         )}
 
-        {/* Remediation controls — emergency deploy, bounce, scale, throttle, flags */}
+        {/* Remediation controls */}
         <div className="border-t border-sim-border">
           <details open className="group">
             <summary
               className="flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none
-                                hover:bg-sim-surface-2 text-xs font-semibold text-sim-text-faint
-                                uppercase tracking-wide list-none"
+                                 hover:bg-sim-surface-2 text-xs font-semibold text-sim-text-muted
+                                 uppercase tracking-wide list-none"
             >
-              <span className="group-open:rotate-90 transition-transform duration-100 text-sim-text-faint">
+              <span className="group-open:rotate-90 transition-transform duration-100 text-sim-text-muted">
                 ▶
               </span>
               Remediation Controls
@@ -528,12 +1057,12 @@ export function CICDTab() {
         }
       >
         <p className="text-xs text-sim-text-muted">
-          Roll back the <strong>{confirmRollback?.stageId}</strong> stage to{" "}
+          Roll back <strong>{confirmRollback?.stageId}</strong> to{" "}
           <strong>{confirmRollback?.version}</strong>?
         </p>
       </Modal>
 
-      {/* Override blocker confirmation */}
+      {/* Override confirmation */}
       <Modal
         open={confirmOverride !== null}
         onClose={() => setConfirmOverride(null)}
@@ -554,219 +1083,14 @@ export function CICDTab() {
         }
       >
         <p className="text-xs text-sim-text-muted mb-2">
-          Force-promote through the blocking condition on the{" "}
-          <strong>{confirmOverride?.stageId}</strong> stage.
+          Force-promote through the blocking condition on{" "}
+          <strong>{confirmOverride?.stageId}</strong>.
         </p>
         <p className="text-xs text-sim-yellow">
           ⚠ Alarm blockers will reinstate in 30 sim-minutes if the alarm is
           still firing.
         </p>
       </Modal>
-    </div>
-  );
-}
-
-// ── Stage detail panel ────────────────────────────────────────────────────────
-
-function StageDetail({
-  pipeline,
-  stage,
-  simTime,
-  inactive,
-  onRollback,
-  onOverride,
-  onApproveGate,
-}: {
-  pipeline: Pipeline;
-  stage: PipelineStage;
-  simTime: number;
-  inactive: boolean;
-  onRollback: () => void;
-  onOverride: () => void;
-  onApproveGate: () => void;
-}) {
-  const hasBlockers = stage.blockers.length > 0;
-  const hasAlarmBlocker = stage.blockers.some(
-    (b) => b.type !== "manual_approval",
-  );
-  const hasManualGate = stage.blockers.some(
-    (b) => b.type === "manual_approval",
-  );
-
-  return (
-    <div className="bg-sim-surface border border-sim-border rounded flex flex-col gap-0 overflow-hidden">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-sim-border flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-0.5 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-sim-text">
-              {stage.name}
-            </span>
-            <span
-              className={`text-xs px-1.5 py-0.5 rounded font-medium ${STAGE_STATUS_COLOURS[stage.status]}`}
-            >
-              {stage.status.replace("_", " ")}
-            </span>
-          </div>
-          <div className="text-xs font-mono text-sim-text-muted">
-            {stage.currentVersion}
-          </div>
-          <div className="text-xs text-sim-text-faint">
-            {stage.commitMessage} · {stage.author} ·{" "}
-            <WallTimestamp simTime={stage.deployedAtSec} />
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="flex flex-wrap gap-1.5 flex-shrink-0">
-          {stage.previousVersion && (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={onRollback}
-              disabled={inactive}
-            >
-              Rollback to {stage.previousVersion}
-            </Button>
-          )}
-          {hasBlockers && hasAlarmBlocker && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onOverride}
-              disabled={inactive}
-            >
-              Override Blocker
-            </Button>
-          )}
-          {hasManualGate && (
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={onApproveGate}
-              disabled={inactive}
-            >
-              Approve Gate
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {/* Active blockers */}
-      {hasBlockers && (
-        <div className="px-4 py-3 border-b border-sim-border bg-sim-red-dim/20 flex flex-col gap-2">
-          {stage.blockers.map((blocker, i) => (
-            <div key={i} className="flex items-start gap-2">
-              <span className="flex-shrink-0 text-base leading-none">
-                {BLOCKER_ICON[blocker.type] ?? "⚠"}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-semibold text-sim-red capitalize">
-                  {blocker.type.replace("_", " ")} blocking promotion
-                </div>
-                <div className="text-xs text-sim-text-muted">
-                  {blocker.message}
-                </div>
-                {blocker.suppressedUntil != null && (
-                  <div className="text-xs text-sim-yellow mt-0.5">
-                    Override active — alarm will re-block at simTime{" "}
-                    {blocker.suppressedUntil}s
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Tests + Promotion history (two-column) */}
-      <div className="grid grid-cols-2 divide-x divide-sim-border">
-        {/* Test results */}
-        <div className="px-4 py-3">
-          <div className="text-xs font-semibold text-sim-text-faint uppercase tracking-wide mb-2">
-            Tests
-          </div>
-          {stage.tests.length === 0 ? (
-            <div className="text-xs text-sim-text-faint">
-              No tests configured
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              {stage.tests.map((t, i) => {
-                const style = TEST_STATUS_STYLES[t.status];
-                return (
-                  <div key={i} className="flex items-center gap-2">
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${style.dot}`}
-                    />
-                    <span className={`text-xs ${style.text}`}>{t.name}</span>
-                    {t.note && (
-                      <span className="text-xs text-sim-text-faint ml-auto truncate max-w-[120px]">
-                        {t.note}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Promotion history */}
-        <div className="px-4 py-3">
-          <div className="text-xs font-semibold text-sim-text-faint uppercase tracking-wide mb-2">
-            Recent Promotions
-          </div>
-          {stage.promotionEvents.length === 0 ? (
-            <div className="text-xs text-sim-text-faint">No history</div>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              {stage.promotionEvents.slice(0, 5).map((ev, i) => {
-                const dot =
-                  ev.status === "succeeded"
-                    ? "text-sim-green"
-                    : ev.status === "failed"
-                      ? "text-sim-red"
-                      : "text-sim-yellow";
-                return (
-                  <div key={i} className="flex items-start gap-2">
-                    <span
-                      className={`text-xs flex-shrink-0 font-medium ${dot}`}
-                    >
-                      {ev.status === "succeeded"
-                        ? "✓"
-                        : ev.status === "failed"
-                          ? "✗"
-                          : "⚠"}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-mono text-sim-text-muted">
-                        {ev.version}
-                      </span>
-                      <span className="text-xs text-sim-text-faint ml-1">
-                        · <WallTimestamp simTime={ev.simTime} />
-                      </span>
-                      <div className="text-xs text-sim-text-faint truncate">
-                        {ev.note}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Previous version */}
-      {stage.previousVersion && (
-        <div className="px-4 py-2 border-t border-sim-border-muted bg-sim-surface-2 text-xs text-sim-text-faint">
-          Previous version:{" "}
-          <span className="font-mono text-sim-text-muted">
-            {stage.previousVersion}
-          </span>
-        </div>
-      )}
     </div>
   );
 }
