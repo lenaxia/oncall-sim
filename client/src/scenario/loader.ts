@@ -542,7 +542,7 @@ function deriveFocalServiceConfig(node: ServiceNode): FocalServiceConfig {
     const baseline = metricConfig.baselineValue ?? 0;
     const deduped = new Map<string, OverlayApplication>();
     for (const app of rawOverlays) {
-      const key = app.incidentId;
+      const key = app.incidentId ?? "unknown";
       const existing = deduped.get(key);
       if (!existing) {
         deduped.set(key, app);

@@ -4,7 +4,7 @@
 // It has read-only access to sim state and writes only to the coach panel.
 //
 // Three helpfulness levels control proactive behaviour:
-//   novice       — proactive nudges on inactivity, passive-browse stall, SEV1, red herring
+//   novice       — proactive nudges on inactivity, passive-browse stall, SEV1, red herring, remediation_taken
 //   intermediate — nudges on longer inactivity, passive-browse stall (higher threshold), red herring
 //   expert       — silent unless the trainee explicitly asks, EXCEPT resolve-with-alarms-firing
 
@@ -56,7 +56,9 @@ export type CoachTriggerReason =
   /** Trainee just took an action the scenario marks as a red herring */
   | { type: "red_herring"; action: string; why: string }
   /** Trainee called mark_resolved while alarms are still firing */
-  | { type: "resolve_with_alarms_firing"; firingAlarmCount: number };
+  | { type: "resolve_with_alarms_firing"; firingAlarmCount: number }
+  /** Trainee just triggered a remediation action — novice only, only fires if something is worth saying */
+  | { type: "remediation_taken"; action: string; version?: string };
 
 export interface CoachContext {
   sessionId: string;
@@ -191,6 +193,10 @@ function shouldFireForLevel(
         // 5+ tabs in 5+ minutes
         return reason.tabsSwitched >= 5 && reason.wallSecondsStalled >= 300;
       return false;
+
+    case "remediation_taken":
+      // Never fire proactively — let the trainee observe consequences themselves.
+      return false;
   }
 }
 
@@ -317,6 +323,16 @@ function buildTriggerBlock(reason: CoachTriggerReason): string {
         "## Why you are being asked to coach right now",
         `The trainee just marked the incident as resolved, but ${reason.firingAlarmCount} alarm(s) are still firing.`,
         "This is an objective mistake — they should verify the alarms have cleared before resolving.",
+      ].join("\n");
+
+    case "remediation_taken":
+      return [
+        "## Why you are being asked to coach right now",
+        `The trainee just triggered: "${reason.action}"${reason.version ? ` (version: ${reason.version})` : ""}.`,
+        "Evaluate whether this action was correct, premature, or wrong given the current incident state.",
+        "ONLY respond if you have something substantive to say — e.g. the action was wrong, premature, or the trainee is missing a critical step.",
+        "If the action was correct and there is nothing useful to add, do NOT call send_coach_message — return nothing.",
+        "Do NOT affirm correct actions for the sake of it. Silence is better than noise.",
       ].join("\n");
   }
 }

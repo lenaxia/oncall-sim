@@ -71,6 +71,7 @@ export const PASSIVE_ACTIONS = new Set<string>([
 // Firing immediately would make metrics react before the fix is live in prod.
 export const DEFERRED_METRIC_REACT_ACTIONS = new Set<string>([
   "trigger_rollback",
+  "trigger_deploy",
   "emergency_deploy",
 ]);
 

@@ -550,9 +550,12 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
           continue;
         }
 
-        // Check if this stage should start (i.e. become in_progress)
-        if (elapsed < entry.startAtSim) {
-          // Not yet time for this stage to start
+        // Check if this stage should start yet.
+        // Use a small epsilon to absorb floating-point overshoot from the prior
+        // stage completing at exactly entry.startAtSim — without it, the loop
+        // would break and wait a full second before starting the next stage.
+        const STAGE_START_EPSILON = 0.5; // sim-seconds
+        if (elapsed < entry.startAtSim - STAGE_START_EPSILON) {
           break;
         }
 
@@ -1118,6 +1121,45 @@ export function createGameLoop(deps: GameLoopDependencies): GameLoop {
               });
               // Metric reaction is delayed until prod stage completes — do NOT
               // call triggerMetricReact() here.
+            }
+          }
+          break;
+        }
+        case "trigger_deploy": {
+          const pipelineId = params["pipelineId"] as string | undefined;
+          const stageId = params["stageId"] as string | undefined;
+          const targetVersion = params["targetVersion"] as string | undefined;
+          if (pipelineId && stageId && targetVersion) {
+            const pipeline = store.getPipeline(pipelineId);
+            const stageIdx = pipeline?.stages.findIndex(
+              (s) => s.id === stageId,
+            );
+            if (pipeline && stageIdx !== undefined && stageIdx >= 0) {
+              const stage = pipeline.stages[stageIdx];
+              const now = clock.getSimTime();
+              let cumulativeSim = 0;
+              const stageSchedule = pipeline.stages.slice(stageIdx).map((s) => {
+                const durationSecs =
+                  STAGE_DURATION_SECS[s.type] ?? STAGE_DURATION_SECS.deploy;
+                const entry = {
+                  stageId: s.id,
+                  startAtSim: cumulativeSim,
+                  durationSecs,
+                };
+                cumulativeSim += durationSecs;
+                return entry;
+              });
+              store.enqueuePendingDeployment({
+                pipelineId,
+                stageSchedule,
+                initiatedAtSim: now,
+                version: targetVersion,
+                previousVersion: stage.currentVersion,
+                commitMessage: `Deploy ${targetVersion}`,
+                author: "trainee",
+                isEmergency: false,
+              });
+              // Metric reaction is delayed until prod stage completes.
             }
           }
           break;

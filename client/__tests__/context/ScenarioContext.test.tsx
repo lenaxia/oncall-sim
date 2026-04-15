@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { renderHook, act } from "@testing-library/react";
 import React from "react";
 import {
   ScenarioProvider,
@@ -101,7 +101,6 @@ describe("ScenarioContext", () => {
       const { result } = renderHook(() => useScenario(), {
         wrapper: makeWrapper(scenario),
       });
-      const { act } = require("@testing-library/react");
       act(() => {
         result.current.adjustHostGroup("g1", 3);
       });
@@ -117,7 +116,6 @@ describe("ScenarioContext", () => {
       const { result } = renderHook(() => useScenario(), {
         wrapper: makeWrapper(scenario),
       });
-      const { act } = require("@testing-library/react");
       act(() => {
         result.current.adjustHostGroup("g1", -999);
       });

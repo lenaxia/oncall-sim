@@ -359,8 +359,7 @@ export const IncidentConfigSchema = z
      */
     propagation_direction: z
       .enum(["upstream", "downstream", "both"])
-      .optional()
-      .default("upstream"),
+      .optional(),
   })
   .superRefine((val, ctx) => {
     if (val.onset_overlay === "saturation" && val.magnitude > 1.0) {

@@ -239,6 +239,7 @@ export type ActionType =
   // Remediation
   | "trigger_rollback"
   | "trigger_roll_forward"
+  | "trigger_deploy"
   | "override_blocker" // force-promote through an alarm/time-window blocker
   | "approve_gate" // approve a manual_approval gate
   | "block_promotion" // halt further promotion from a stage

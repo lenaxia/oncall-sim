@@ -175,7 +175,7 @@ function DeploySection({
               title: `Deploy ${ra.targetVersion ?? ra.label}`,
               body: `Deploy ${ra.targetVersion} to ${ra.service} through all pipeline stages.`,
               action: () =>
-                dispatchAction("trigger_rollback", {
+                dispatchAction("trigger_deploy", {
                   pipelineId: pipeline?.id ?? "",
                   stageId: pipeline?.stages[0]?.id ?? "",
                   targetVersion: ra.targetVersion,
