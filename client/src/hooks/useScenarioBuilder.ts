@@ -112,6 +112,22 @@ Additional required fields per type:
 VALID TYPE VALUES (only these 12): load_balancer, api_gateway, ecs_cluster, ec2_fleet,
   lambda, kinesis_stream, sqs_queue, dynamodb, rds, elasticache, s3, scheduler
 
+── TOPOLOGY ──────────────────────────────────────────────────
+topology: {
+  focal_service: ServiceNode,     ← the main service the incident affects
+  upstream: ServiceNode[],        ← services that CALL the focal service (can be [])
+  downstream: ServiceNode[]       ← services the focal service CALLS (can be [])
+}
+
+Every ServiceNode (focal_service, upstream[], downstream[]) MUST have:
+  name: string          ← REQUIRED
+  description: string   ← REQUIRED
+  components: []        ← REQUIRED (can be empty array for upstream/downstream)
+  incidents: []         ← REQUIRED (can be empty array for upstream/downstream)
+
+Example upstream/downstream node (minimal valid form):
+  { name: "web-frontend", description: "React SPA calling the order API", components: [], incidents: [] }
+
 ── INCIDENT ──────────────────────────────────────────────────
 {
   id: string,
