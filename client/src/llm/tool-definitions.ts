@@ -1,4 +1,4 @@
-// tool-definitions.ts — LLM tool schemas for stakeholder and coach roles.
+// tool-definitions.ts — LLM tool schemas for stakeholder, coach, and builder roles.
 
 import type { LLMToolDefinition, LLMToolCall } from "./llm-client";
 import type { LoadedScenario } from "../scenario/types";
@@ -442,3 +442,46 @@ export function validateToolCall(
 
   return { valid: true };
 }
+
+// ── Builder tools (scenario_builder role) ─────────────────────────────────────
+
+export const BUILDER_TOOLS: LLMToolDefinition[] = [
+  {
+    name: "update_scenario",
+    description:
+      "Commit new or changed scenario data. The patch is deep-merged into the current draft. " +
+      "Arrays are replaced in full — always send the complete updated array for any array field you change. " +
+      "The patch is validated before being applied. If validation fails, errors are returned and you must " +
+      "fix them before the draft updates. Call this as often as you like — after each user answer, " +
+      "after making an assumption, mid-conversation.",
+    parameters: {
+      type: "object",
+      required: ["patch"],
+      properties: {
+        patch: {
+          type: "object",
+          description:
+            "Partial RawScenarioConfig (snake_case). Only include fields you are adding or changing.",
+        },
+        assumptions: {
+          type: "array",
+          description:
+            "List of fields you filled without asking the user. Displayed on the canvas Assumptions card.",
+          items: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    name: "mark_complete",
+    description:
+      "Signal that the scenario is ready for download. Triggers final full validation. " +
+      "If validation fails, errors are returned — fix them with update_scenario then call mark_complete again. " +
+      "After mark_complete succeeds, remain available for refinements. " +
+      "Each change should call update_scenario then mark_complete again.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+  },
+];

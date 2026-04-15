@@ -21,10 +21,17 @@ export interface MockCoachResponse {
   message: string;
 }
 
+export interface MockBuilderResponse {
+  trigger: string;
+  text?: string;
+  tool_calls: Array<{ tool: string; params: Record<string, unknown> }>;
+}
+
 export interface MockLLMResponses {
   stakeholder_responses: MockStakeholderResponse[];
   coach_responses: MockCoachResponse[];
   debrief_response: { narrative: string };
+  scenario_builder_responses?: MockBuilderResponse[];
 }
 
 export type MockLLMProvider = MockProvider;
@@ -45,6 +52,9 @@ export class MockProvider implements LLMClient {
     }
     if (request.role === "coach") {
       return Promise.resolve(this._matchCoach(request));
+    }
+    if (request.role === "scenario_builder") {
+      return Promise.resolve(this._matchBuilder(request));
     }
     return Promise.resolve(this._matchStakeholder(request));
   }
@@ -100,6 +110,40 @@ export class MockProvider implements LLMClient {
     return { toolCalls: [] };
   }
 
+  private _matchBuilder(request: LLMRequest): LLMResponse {
+    const responses = this.responses.scenario_builder_responses ?? [];
+    const lastUserMsg = [...(request.messages ?? [])]
+      .reverse()
+      .find((m) => m.role === "user");
+    const content = lastUserMsg?.content ?? "";
+
+    // "mark_complete" trigger fires when the user says they're done
+    if (
+      content.toLowerCase().includes("complete") ||
+      content.toLowerCase().includes("done") ||
+      content.toLowerCase().includes("finish")
+    ) {
+      const match = responses.find((r) => r.trigger === "mark_complete");
+      if (match) return this._toBuilderResponse(match);
+    }
+
+    // "generic" trigger matches any first message
+    const generic = responses.find((r) => r.trigger === "generic");
+    if (generic) return this._toBuilderResponse(generic);
+
+    return { toolCalls: [], text: "" };
+  }
+
+  private _toBuilderResponse(r: MockBuilderResponse): LLMResponse {
+    return {
+      toolCalls: (r.tool_calls ?? []).map((tc) => ({
+        tool: tc.tool,
+        params: tc.params ?? {},
+      })),
+      text: r.text,
+    };
+  }
+
   private _toResponse(
     toolCalls: Array<{ tool: string; params: Record<string, unknown> }>,
   ): LLMResponse {
@@ -120,6 +164,7 @@ function parseMockResponses(yamlText: string): MockLLMResponses {
     stakeholder_responses: parsed.stakeholder_responses ?? [],
     coach_responses: parsed.coach_responses ?? [],
     debrief_response: parsed.debrief_response ?? { narrative: "" },
+    scenario_builder_responses: parsed.scenario_builder_responses ?? [],
   };
 }
 

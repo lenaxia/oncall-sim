@@ -33,7 +33,7 @@ export interface LLMToolDefinition {
   parameters: Record<string, unknown>;
 }
 
-export type LLMRole = "stakeholder" | "coach" | "debrief";
+export type LLMRole = "stakeholder" | "coach" | "debrief" | "scenario_builder";
 
 export class LLMError extends Error {
   constructor(

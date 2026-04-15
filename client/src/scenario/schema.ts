@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const PersonaSchema = z.object({
+export const PersonaSchema = z.object({
   id: z.string().min(1),
   display_name: z.string().min(1),
   job_title: z.string().min(1),
@@ -15,7 +15,7 @@ const PersonaSchema = z.object({
   system_prompt: z.string().min(1),
 });
 
-const AlarmConfigSchema = z.object({
+export const AlarmConfigSchema = z.object({
   id: z.string().min(1),
   service: z.string().min(1),
   metric_id: z.string().min(1),
@@ -28,7 +28,7 @@ const AlarmConfigSchema = z.object({
   page_message: z.string().optional(),
 });
 
-const ThrottleTargetSchema = z.object({
+export const ThrottleTargetSchema = z.object({
   id: z.string().min(1),
   scope: z.enum(["endpoint", "customer", "consumer", "concurrent", "global"]),
   label: z.string().min(1),
@@ -38,7 +38,7 @@ const ThrottleTargetSchema = z.object({
   baseline_rate: z.number().positive(),
 });
 
-const RemediationActionSchema = z.object({
+export const RemediationActionSchema = z.object({
   id: z.string().min(1),
   type: z.enum([
     "rollback",
@@ -60,7 +60,7 @@ const RemediationActionSchema = z.object({
   throttle_targets: z.array(ThrottleTargetSchema).optional(),
 });
 
-const EvaluationSchema = z.object({
+export const EvaluationSchema = z.object({
   root_cause: z.string().min(1),
   relevant_actions: z.array(
     z.object({
@@ -79,7 +79,7 @@ const EvaluationSchema = z.object({
   debrief_context: z.string().min(1),
 });
 
-const MetricConfigSchema = z.object({
+export const MetricConfigSchema = z.object({
   archetype: z.string().min(1),
   label: z.string().optional(),
   unit: z.string().optional(),
@@ -105,7 +105,7 @@ const MetricConfigSchema = z.object({
     .optional(),
 });
 
-const LLMEventToolSchema = z.object({
+export const LLMEventToolSchema = z.object({
   tool: z.string().min(1),
   enabled: z.boolean().optional(),
   max_calls: z.number().positive().optional(),
@@ -113,7 +113,7 @@ const LLMEventToolSchema = z.object({
   services: z.array(z.string()).optional(),
 });
 
-const EngineSchema = z.object({
+export const EngineSchema = z.object({
   tick_interval_seconds: z.number().positive(),
   llm_event_tools: z.array(LLMEventToolSchema).optional().default([]),
   default_tab: z
@@ -121,7 +121,7 @@ const EngineSchema = z.object({
     .optional(),
 });
 
-const ScriptedEmailSchema = z.object({
+export const ScriptedEmailSchema = z.object({
   id: z.string().min(1),
   at_second: z.number(),
   thread_id: z.string().min(1),
@@ -132,23 +132,23 @@ const ScriptedEmailSchema = z.object({
   body_file: z.string().optional(),
 });
 
-const ChatChannelSchema = z.object({
+export const ChatChannelSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
 });
-const ScriptedChatMessageSchema = z.object({
+export const ScriptedChatMessageSchema = z.object({
   id: z.string().min(1),
   at_second: z.number(),
   channel: z.string().min(1),
   persona: z.string().min(1),
   text: z.string().min(1),
 });
-const ChatSchema = z.object({
+export const ChatSchema = z.object({
   channels: z.array(ChatChannelSchema),
   messages: z.array(ScriptedChatMessageSchema).optional().default([]),
 });
 
-const TicketSchema = z.object({
+export const TicketSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   severity: z.enum(["SEV1", "SEV2", "SEV3", "SEV4"]),
@@ -160,7 +160,7 @@ const TicketSchema = z.object({
   at_second: z.number(),
 });
 
-const ScriptedLogSchema = z.object({
+export const ScriptedLogSchema = z.object({
   id: z.string().min(1),
   at_second: z.number(),
   level: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]),
@@ -168,7 +168,7 @@ const ScriptedLogSchema = z.object({
   message: z.string().min(1),
 });
 
-const LogPatternSchema = z.object({
+export const LogPatternSchema = z.object({
   id: z.string().min(1),
   level: z.enum(["DEBUG", "INFO", "WARN", "ERROR"]),
   service: z.string().min(1),
@@ -181,7 +181,7 @@ const LogPatternSchema = z.object({
   seed: z.number().int().optional(),
 });
 
-const BackgroundLogsSchema = z.object({
+export const BackgroundLogsSchema = z.object({
   profile: z.string().min(1),
   service: z.string().min(1),
   from_second: z.number(),
@@ -190,31 +190,31 @@ const BackgroundLogsSchema = z.object({
   seed: z.number().int().optional(),
 });
 
-const WikiPageSchema = z.object({
+export const WikiPageSchema = z.object({
   title: z.string().min(1),
   content: z.string().optional(),
   content_file: z.string().optional(),
 });
-const WikiSchema = z.object({ pages: z.array(WikiPageSchema) });
+export const WikiSchema = z.object({ pages: z.array(WikiPageSchema) });
 
-const StageBlockerSchema = z.object({
+export const StageBlockerSchema = z.object({
   type: z.enum(["alarm", "time_window", "manual_approval", "test_failure"]),
   alarm_id: z.string().optional(),
   message: z.string().optional(),
 });
-const StageTestSchema = z.object({
+export const StageTestSchema = z.object({
   name: z.string().min(1),
   status: z.enum(["pending", "running", "passed", "failed", "skipped"]),
   url: z.string().optional(),
   note: z.string().optional(),
 });
-const PromotionEventSchema = z.object({
+export const PromotionEventSchema = z.object({
   version: z.string().min(1),
   sim_time: z.number(),
   status: z.enum(["succeeded", "failed", "blocked"]),
   note: z.string().min(1),
 });
-const PipelineStageSchema = z.object({
+export const PipelineStageSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   type: z.enum(["build", "deploy"]),
@@ -235,13 +235,13 @@ const PipelineStageSchema = z.object({
   tests: z.array(StageTestSchema).optional().default([]),
   promotion_events: z.array(PromotionEventSchema).optional().default([]),
 });
-const PipelineSchema = z.object({
+export const PipelineSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   service: z.string().min(1),
   stages: z.array(PipelineStageSchema).min(1),
 });
-const DeploymentSchema = z.object({
+export const DeploymentSchema = z.object({
   service: z.string().min(1),
   version: z.string().min(1),
   deployed_at_sec: z.number(),
@@ -249,18 +249,18 @@ const DeploymentSchema = z.object({
   commit_message: z.string().min(1),
   author: z.string().min(1),
 });
-const CICDSchema = z.object({
+export const CICDSchema = z.object({
   pipelines: z.array(PipelineSchema).optional().default([]),
   deployments: z.array(DeploymentSchema).optional().default([]),
 });
 
-const FeatureFlagSchema = z.object({
+export const FeatureFlagSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   default_on: z.boolean().optional().default(false),
   description: z.string().optional(),
 });
-const HostGroupSchema = z.object({
+export const HostGroupSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   service: z.string().min(1),
@@ -415,7 +415,7 @@ export const ServiceNodeSchema = z.object({
 
 // ── Topology schema ───────────────────────────────────────────────────────────
 
-const TopologySchema = z.object({
+export const TopologySchema = z.object({
   focal_service: ServiceNodeSchema,
   upstream: z.array(ServiceNodeSchema).optional().default([]),
   downstream: z.array(ServiceNodeSchema).optional().default([]),
@@ -423,7 +423,7 @@ const TopologySchema = z.object({
 
 // ── Timeline schema ───────────────────────────────────────────────────────────
 
-const TimelineSchema = z.object({
+export const TimelineSchema = z.object({
   default_speed: z.union([
     z.literal(1),
     z.literal(2),

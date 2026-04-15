@@ -2,10 +2,32 @@
 // The checkFileRef existence check (fs.accessSync) is removed.
 // Path-traversal guard uses string prefix matching instead of path.resolve.
 
-import type { z } from "zod";
-import type { ScenarioSchema } from "./schema";
+import { z } from "zod";
+import {
+  ScenarioSchema,
+  PersonaSchema,
+  AlarmConfigSchema,
+  RemediationActionSchema,
+  EvaluationSchema,
+  EngineSchema,
+  ScriptedEmailSchema,
+  ChatSchema,
+  TicketSchema,
+  ScriptedLogSchema,
+  LogPatternSchema,
+  BackgroundLogsSchema,
+  WikiSchema,
+  CICDSchema,
+  FeatureFlagSchema,
+  HostGroupSchema,
+  TopologySchema,
+  TimelineSchema,
+} from "./schema";
 import { getValidArchetypes } from "../metrics/archetypes";
 import type { ActionType } from "@shared/types/events";
+import { lintScenario } from "./lint";
+import type { ScenarioValidationError } from "./lint";
+export type { ScenarioValidationError } from "./lint";
 
 const VALID_ACTION_TYPES: Set<string> = new Set<ActionType>([
   "ack_page",
@@ -366,3 +388,237 @@ function findDuplicates(values: string[]): string[] {
   }
   return [...dups];
 }
+
+// ── ScenarioValidator — reusable validation pipeline ─────────────────────────
+
+// ScenarioValidationError is defined in lint.ts and re-exported from here
+// to keep it as a single source of truth and avoid circular imports.
+
+// full() and partial() succeed even with lint warnings.
+export interface ValidationSuccess<T> {
+  ok: true;
+  data: T;
+  warnings: ScenarioValidationError[]; // lint issues — non-blocking; log and surface in UI
+}
+
+export interface ValidationFailure {
+  ok: false;
+  errors: ScenarioValidationError[]; // schema or cross_ref issues — always blocking
+}
+
+export type ValidationResult<T = unknown> =
+  | ValidationSuccess<T>
+  | ValidationFailure;
+
+// Names of top-level scenario sections that can be validated independently.
+export type ScenarioSection =
+  | "personas"
+  | "remediation_actions"
+  | "topology"
+  | "timeline"
+  | "engine"
+  | "alarms"
+  | "email"
+  | "chat"
+  | "ticketing"
+  | "wiki"
+  | "cicd"
+  | "evaluation"
+  | "logs"
+  | "log_patterns"
+  | "background_logs"
+  | "feature_flags"
+  | "host_groups";
+
+// Maps each section name to its Zod sub-schema.
+const SECTION_SCHEMAS: Record<ScenarioSection, z.ZodTypeAny> = {
+  personas: z.array(PersonaSchema),
+  remediation_actions: z.array(RemediationActionSchema),
+  topology: TopologySchema,
+  timeline: TimelineSchema,
+  engine: EngineSchema,
+  alarms: z.array(AlarmConfigSchema),
+  email: z.array(ScriptedEmailSchema),
+  chat: ChatSchema,
+  ticketing: z.array(TicketSchema),
+  wiki: WikiSchema,
+  cicd: CICDSchema,
+  evaluation: EvaluationSchema,
+  logs: z.array(ScriptedLogSchema),
+  log_patterns: z.array(LogPatternSchema),
+  background_logs: z.array(BackgroundLogsSchema),
+  feature_flags: z.array(FeatureFlagSchema),
+  host_groups: z.array(HostGroupSchema),
+};
+
+// Converts Zod issues to ScenarioValidationError[] with source:"schema".
+function fromZodError(error: z.ZodError): ScenarioValidationError[] {
+  return error.issues.map((issue) => ({
+    source: "schema" as const,
+    path: issue.path.join(".") || "(root)",
+    message: issue.message,
+  }));
+}
+
+// Converts cross-ref ValidationError[] to ScenarioValidationError[].
+function fromCrossRefErrors(
+  errors: ValidationError[],
+): ScenarioValidationError[] {
+  return errors.map((e) => ({
+    source: "cross_ref" as const,
+    path: e.field,
+    message: e.message,
+  }));
+}
+
+// ── Validation modes ──────────────────────────────────────────────────────────
+
+/**
+ * Full validation. Schema and cross-ref errors are blocking (ok:false).
+ * Lint issues are NON-BLOCKING — returned as warnings on a successful result.
+ * Use for loading bundled/remote/uploaded scenarios.
+ */
+function full(raw: unknown): ValidationResult<RawConfig> {
+  // Stage 1: structural Zod parse
+  const zodResult = ScenarioSchema.safeParse(raw);
+  if (!zodResult.success) {
+    return { ok: false, errors: fromZodError(zodResult.error) };
+  }
+
+  // Stage 2: cross-reference integrity
+  const xrefErrors = validateCrossReferences(zodResult.data);
+  if (xrefErrors.length > 0) {
+    return { ok: false, errors: fromCrossRefErrors(xrefErrors) };
+  }
+
+  // Stage 3: authoring quality lint — warnings only, never blocking
+  const warnings = lintScenario(zodResult.data, { partial: false });
+
+  return { ok: true, data: zodResult.data, warnings };
+}
+
+/**
+ * Strict validation. All three stages are blocking including lint.
+ * Use for builder mark_complete where the scenario must be fully correct
+ * before it can be downloaded.
+ */
+function strict(raw: unknown): ValidationResult<RawConfig> {
+  // Stage 1: structural Zod parse
+  const zodResult = ScenarioSchema.safeParse(raw);
+  if (!zodResult.success) {
+    return { ok: false, errors: fromZodError(zodResult.error) };
+  }
+
+  // Stage 2: cross-reference integrity
+  const xrefErrors = validateCrossReferences(zodResult.data);
+  if (xrefErrors.length > 0) {
+    return { ok: false, errors: fromCrossRefErrors(xrefErrors) };
+  }
+
+  // Stage 3: lint — fully blocking including strict-only rules
+  const lintErrors = lintScenario(zodResult.data, {
+    partial: false,
+    strict: true,
+  });
+  if (lintErrors.length > 0) {
+    return { ok: false, errors: lintErrors };
+  }
+
+  return { ok: true, data: zodResult.data, warnings: [] };
+}
+
+/**
+ * Partial validation for an incomplete builder draft.
+ * Missing required top-level fields are allowed; wrong types on present
+ * fields are caught. Lint issues are non-blocking warnings.
+ */
+function partial(draft: unknown): ValidationResult<Partial<RawConfig>> {
+  // Stage 1: structural parse on a deeply-partial schema
+  const zodResult = ScenarioSchema.deepPartial().safeParse(draft);
+  if (!zodResult.success) {
+    return { ok: false, errors: fromZodError(zodResult.error) };
+  }
+
+  const candidate = zodResult.data as Partial<RawConfig>;
+
+  // Stage 2: cross-reference integrity — only when enough fields are present
+  if (
+    candidate.personas !== undefined &&
+    (candidate.chat !== undefined || candidate.email !== undefined)
+  ) {
+    const stub = buildStubForCrossRef(candidate);
+    const xrefErrors = validateCrossReferences(stub);
+    const relevant = xrefErrors.filter(
+      (e) => !e.field.includes("alarms") || candidate.alarms !== undefined,
+    );
+    if (relevant.length > 0) {
+      return { ok: false, errors: fromCrossRefErrors(relevant) };
+    }
+  }
+
+  // Stage 3: lint in partial mode — warnings only
+  const warnings = lintScenario(candidate, { partial: true });
+
+  return { ok: true, data: candidate, warnings };
+}
+
+/**
+ * Section validation — validates a single named section in isolation.
+ * Lint issues are non-blocking warnings on success.
+ * Cross-reference rules are NOT run (they span multiple sections).
+ */
+function section(
+  sectionName: ScenarioSection,
+  value: unknown,
+): ValidationResult {
+  const schema = SECTION_SCHEMAS[sectionName];
+
+  const zodResult = schema.safeParse(value);
+  if (!zodResult.success) {
+    return { ok: false, errors: fromZodError(zodResult.error) };
+  }
+
+  const draft: Partial<RawConfig> = { [sectionName]: zodResult.data };
+  const warnings = lintScenario(draft, { partial: true });
+
+  return { ok: true, data: zodResult.data, warnings };
+}
+
+// Builds a minimal RawConfig stub from a partial draft for cross-ref validation.
+function buildStubForCrossRef(draft: Partial<RawConfig>): RawConfig {
+  return ScenarioSchema.parse({
+    id: draft.id ?? "_stub",
+    title: draft.title ?? "stub",
+    description: draft.description ?? "",
+    difficulty: draft.difficulty ?? "easy",
+    tags: draft.tags ?? [],
+    timeline: draft.timeline ?? { default_speed: 1, duration_minutes: 15 },
+    topology: draft.topology ?? {
+      focal_service: {
+        name: "stub",
+        description: "",
+        components: [],
+        incidents: [],
+      },
+      upstream: [],
+      downstream: [],
+    },
+    engine: draft.engine ?? { tick_interval_seconds: 15, llm_event_tools: [] },
+    email: draft.email ?? [],
+    chat: draft.chat ?? { channels: [], messages: [] },
+    ticketing: draft.ticketing ?? [],
+    alarms: draft.alarms ?? [],
+    wiki: draft.wiki ?? { pages: [] },
+    cicd: draft.cicd ?? { pipelines: [], deployments: [] },
+    personas: draft.personas ?? [],
+    remediation_actions: draft.remediation_actions ?? [],
+    evaluation: draft.evaluation ?? {
+      root_cause: "stub",
+      relevant_actions: [],
+      red_herrings: [],
+      debrief_context: "stub",
+    },
+  });
+}
+
+export const ScenarioValidator = { full, strict, partial, section } as const;

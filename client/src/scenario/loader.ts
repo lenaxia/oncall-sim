@@ -5,7 +5,7 @@
 
 import yaml from "js-yaml";
 import { ScenarioSchema } from "./schema";
-import { validateCrossReferences, type ValidationError } from "./validator";
+import { ScenarioValidator, type ValidationError } from "./validator";
 import { LOG_PROFILES, getDensityMultiplier, makeRng } from "./log-profiles";
 import { logger } from "../logger";
 import type {
@@ -92,27 +92,37 @@ export async function loadScenarioFromText(
     };
   }
 
-  // Step 2: Zod schema parse
-  const zodResult = ScenarioSchema.safeParse(rawObject);
-  if (!zodResult.success) {
+  // Step 2: Zod schema parse + cross-reference validation + lint (via ScenarioValidator)
+  const validationResult = ScenarioValidator.full(rawObject);
+  if (!validationResult.ok) {
     const scenarioId =
       ((rawObject as Record<string, unknown>)?.["id"] as string) ?? "unknown";
-    const errors: ValidationError[] = zodResult.error.issues.map((issue) => ({
+    const errors: ValidationError[] = validationResult.errors.map((e) => ({
       scenarioId,
-      field: issue.path.join("."),
-      message: issue.message,
+      field: e.path,
+      message: e.message,
     }));
     return { scenarioId, errors };
   }
-  const raw = zodResult.data;
 
-  // Step 3: Cross-reference validation
-  const crossRefErrors = validateCrossReferences(raw);
-  if (crossRefErrors.length > 0) {
-    return { scenarioId: raw.id, errors: crossRefErrors };
+  // Surface lint warnings — non-blocking but logged so authors can find them
+  if (validationResult.warnings.length > 0) {
+    log.warn(
+      {
+        scenarioId: validationResult.data.id,
+        warnings: validationResult.warnings.map((w) => ({
+          rule: w.rule,
+          path: w.path,
+          message: w.message,
+        })),
+      },
+      "Scenario loaded with lint warnings — scenario will run but these should be fixed",
+    );
   }
 
-  // Step 4: Transform
+  const raw = validationResult.data;
+
+  // Step 3: Transform
   try {
     const loaded = await transform(raw, resolveFile);
     return loaded;

@@ -4,11 +4,12 @@ import { SessionProvider } from "./context/SessionContext";
 import { ScenarioPicker } from "./components/ScenarioPicker";
 import { SimShell } from "./components/SimShell";
 import { DebriefScreen } from "./components/DebriefScreen";
+import { ScenarioBuilderScreen } from "./components/ScenarioBuilderScreen";
 import { ErrorToast } from "./components/ErrorToast";
 import type { LoadedScenario } from "./scenario/types";
 import type { DebriefResult } from "@shared/types/events";
 
-type AppScreen = "picker" | "sim" | "debrief";
+type AppScreen = "picker" | "sim" | "debrief" | "builder";
 
 interface ActiveSession {
   scenario: LoadedScenario;
@@ -66,7 +67,16 @@ export function App() {
 
   return (
     <>
-      {screen === "picker" && <ScenarioPicker onStart={handleStart} />}
+      {screen === "picker" && (
+        <ScenarioPicker
+          onStart={handleStart}
+          onCreateScenario={() => setScreen("builder")}
+        />
+      )}
+
+      {screen === "builder" && (
+        <ScenarioBuilderScreen onBack={() => setScreen("picker")} />
+      )}
 
       {screen === "sim" && session && (
         <ScenarioProvider scenario={session.scenario}>

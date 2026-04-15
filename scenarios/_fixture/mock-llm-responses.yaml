@@ -44,3 +44,132 @@ debrief_response:
 
     Key things to watch for: always correlate deployment timing with incident onset,
     and confirm metric recovery before declaring victory.
+
+scenario_builder_responses:
+  - trigger: "generic"
+    text: "Got it — sounds like a database connection pool exhaustion scenario on a payment service. Let me start building that out."
+    tool_calls:
+      - tool: update_scenario
+        params:
+          patch:
+            id: "fixture-builder-scenario"
+            title: "Payment Service DB Pool Exhaustion"
+            description: "The payment service connection pool is exhausted due to a misconfigured pool size."
+            difficulty: "medium"
+            tags: ["database", "connection-pool", "payments"]
+            timeline:
+              default_speed: 2
+              duration_minutes: 15
+              pre_incident_seconds: 43200
+              resolution_seconds: 60
+            topology:
+              focal_service:
+                name: "payment-service"
+                description: "Payment processing microservice."
+                typical_rps: 200
+                traffic_profile: "always_on_api"
+                health: "healthy"
+                components:
+                  - id: alb
+                    type: load_balancer
+                    label: "Application Load Balancer"
+                    inputs: []
+                  - id: ecs
+                    type: ecs_cluster
+                    label: "payment-service ECS"
+                    instance_count: 4
+                    utilization: 0.55
+                    inputs: [alb]
+                  - id: postgres
+                    type: rds
+                    label: "postgres-primary"
+                    instance_count: 1
+                    max_connections: 5
+                    utilization: 0.40
+                    connection_utilization: 0.40
+                    inputs: [ecs]
+                incidents:
+                  - id: db_pool_exhaustion
+                    affected_component: postgres
+                    description: "HikariCP connection pool exhausted."
+                    onset_overlay: saturation
+                    onset_second: 300
+                    magnitude: 1.0
+                    propagation_direction: upstream
+              upstream: []
+              downstream: []
+            engine:
+              tick_interval_seconds: 15
+              llm_event_tools: []
+            email: []
+            chat:
+              channels:
+                - id: incidents
+                  name: "#incidents"
+              messages: []
+            ticketing:
+              - id: ticket-001
+                title: "payment-service elevated error rate"
+                severity: SEV2
+                status: open
+                description: "Connection pool exhausted."
+                created_by: "sara-chen"
+                at_second: 0
+            alarms:
+              - id: alarm-pool
+                service: payment-service
+                metric_id: connection_pool_used
+                condition: "connection_pool_used > 85%"
+                severity: SEV2
+                auto_fire: true
+                auto_page: false
+            wiki:
+              pages:
+                - title: "payment-service Runbook"
+                  content: "# payment-service Runbook\n\n## DB Pool Exhaustion\n\nRollback the config change to restore pool size."
+            cicd:
+              pipelines: []
+              deployments: []
+            personas:
+              - id: sara-chen
+                display_name: "Sara Chen"
+                job_title: "Staff Software Engineer"
+                team: "Payments"
+                avatar_color: "#7C3AED"
+                initiates_contact: true
+                cooldown_seconds: 90
+                silent_until_contacted: false
+                system_prompt: "You are Sara Chen, Staff SWE on the Payments team."
+            remediation_actions:
+              - id: rollback_config
+                type: rollback
+                service: payment-service
+                is_correct_fix: true
+                target_version: v2.4.0
+              - id: restart_service
+                type: restart_service
+                service: payment-service
+                is_correct_fix: false
+                side_effect: "Restarts with same bad config."
+            evaluation:
+              root_cause: "HikariCP connection pool misconfigured — MAX_DB_CONNECTIONS set to 5 instead of 20."
+              relevant_actions:
+                - action: view_deployment_history
+                  why: "Identifies the config change deployment as the root cause."
+                - action: trigger_rollback
+                  why: "Rolling back to the previous config restores the pool size."
+                  service: payment-service
+              red_herrings:
+                - action: restart_service
+                  why: "Restarting does not fix the misconfigured pool size."
+              debrief_context: "A config change accidentally set MAX_DB_CONNECTIONS to 5 instead of 20."
+          assumptions:
+            - "id derived from scenario description"
+            - "difficulty set to medium (default)"
+            - "single persona Sara Chen added as service owner"
+
+  - trigger: "mark_complete"
+    text: "The scenario is complete. You can download it now."
+    tool_calls:
+      - tool: mark_complete
+        params: {}
