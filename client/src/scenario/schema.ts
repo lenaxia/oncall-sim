@@ -553,6 +553,13 @@ export function buildSchemaReference(): string {
   const pipelineStageTypes = PipelineStageSchema.shape.type.options as string[];
   const deploymentStatuses = DeploymentSchema.shape.status.options as string[];
 
+  // engine.default_tab valid values — extracted from the optional enum wrapper
+  const defaultTabVals = (
+    EngineSchema.shape.default_tab._def as {
+      innerType: z.ZodEnum<[string, ...string[]]>;
+    }
+  ).innerType.options;
+
   return `\
 ═══════════════════════════════════════════════════════════════
 EXACT SCHEMA — use these field names and types precisely
@@ -566,7 +573,7 @@ difficulty: ${difficultyVals.map((v) => `"${v}"`).join(" | ")}
 tags: string[]
 timeline: { default_speed: ${speedVals.join("|")}, duration_minutes: number }
 topology: { focal_service: ServiceNode, upstream: ServiceNode[], downstream: ServiceNode[] }
-engine: { llm_event_tools: [] }
+engine: { llm_event_tools: [], default_tab?: ${defaultTabVals.map((v) => `"${v}"`).join(" | ")} }
 personas: Persona[]
 remediation_actions: RemediationAction[]
 evaluation: Evaluation
@@ -670,6 +677,8 @@ ticketing is an ARRAY:
 { id, service, metric_id, condition, severity: ${alarmSeverities.map((v) => `"${v}"`).join("|")},
   auto_fire: boolean, auto_page: boolean,
   onset_second?: number, page_message?: string }
+
+metric_id must be a registered archetype ID (see METRIC IDs section below).
 
 ── CICD (only if user explicitly asks) ──────────────────────
 cicd: { pipelines: Pipeline[], deployments: Deployment[] }

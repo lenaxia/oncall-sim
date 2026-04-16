@@ -10,6 +10,7 @@ import { ScenarioValidator } from "../scenario/validator";
 import type { ScenarioValidationError } from "../scenario/lint";
 import type { RawScenarioConfig } from "../scenario/schema";
 import { buildSchemaReference } from "../scenario/schema";
+import { getValidArchetypes } from "../metrics/archetypes";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -136,8 +137,37 @@ VALIDATION:
 `;
 
 function buildSystemPrompt(): string {
-  return SYSTEM_PROMPT_BASE + "\n" + buildSchemaReference();
+  const archetypeIds = getValidArchetypes().sort();
+  const metricIdSection = `
+── VALID METRIC IDs FOR ALARMS ───────────────────────────────
+metric_id MUST be one of these registered archetype IDs. Anything else produces
+no metric signal in the ops dashboard and makes the scenario untrainable.
+
+  ${archetypeIds.join(", ")}
+
+Choose based on component type and incident:
+  rds / connection pool  → connection_pool_used
+  rds / query perf       → request_rate, error_rate
+  ecs_cluster            → cpu_utilization, error_rate, fault_rate
+  lambda                 → concurrent_executions, error_rate
+  elasticache            → cache_hit_rate
+  sqs_queue              → queue_depth, queue_age_ms
+  kinesis_stream         → queue_depth
+  dynamodb               → write_capacity_used, read_capacity_used, write_throttles
+  availability           → availability
+  jvm                    → memory_jvm, memory_heap, thread_count
+  network                → network_in_bytes, network_out_bytes, throughput_bytes
+  disk                   → disk_usage, disk_iops
+  tls / cert             → cert_expiry
+  business               → conversion_rate, active_users`;
+
+  return (
+    SYSTEM_PROMPT_BASE + "\n" + buildSchemaReference() + "\n" + metricIdSection
+  );
 }
+
+// Module-level constant — computed once at load time, never changes.
+const SYSTEM_PROMPT = buildSystemPrompt();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -224,32 +254,26 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
     return clientPromiseRef.current;
   }
 
-  // Full conversation history including system prompt (not shown in UI).
-  // Injects the current YAML state as the first two messages after the system
-  // prompt so the LLM always has the authoritative draft in context, regardless
-  // of how many turns have elapsed.
+  // Full conversation history sent to the LLM on every call.
+  // The current YAML state is appended to the system prompt so the LLM always
+  // has the authoritative draft in context without polluting the message history
+  // with synthetic user/assistant turns.
   function buildMessages(
     currentMessages: BuilderMessage[],
     currentDraft: Partial<RawScenarioConfig> | null,
   ): LLMMessage[] {
-    const history: LLMMessage[] = [
-      { role: "system", content: buildSystemPrompt() },
-    ];
-
-    // Inject current YAML state. Done on every request so the LLM never has to
-    // reconstruct it from memory. Two messages are used — user then assistant —
-    // to avoid a back-to-back user message which some providers reject.
     const yamlState = currentDraft
       ? yaml.dump(currentDraft, { indent: 2, lineWidth: 120 })
       : "(no draft yet)";
-    history.push({
-      role: "user",
-      content: `Current scenario YAML state:\n\`\`\`yaml\n${yamlState}\`\`\``,
-    });
-    history.push({
-      role: "assistant",
-      content: "Understood. I have the current YAML state.",
-    });
+
+    const systemContent =
+      SYSTEM_PROMPT +
+      `\n\n═══════════════════════════════════════════════════════════════\n` +
+      `CURRENT SCENARIO DRAFT (authoritative — update_scenario patches this)\n` +
+      `═══════════════════════════════════════════════════════════════\n` +
+      `\`\`\`yaml\n${yamlState}\n\`\`\``;
+
+    const history: LLMMessage[] = [{ role: "system", content: systemContent }];
 
     for (const msg of currentMessages) {
       history.push({

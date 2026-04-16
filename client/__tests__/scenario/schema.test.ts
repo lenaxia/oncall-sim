@@ -566,4 +566,24 @@ describe("buildSchemaReference — stays in sync with schema.ts", () => {
     expect(ref).toContain("EXACT SCHEMA");
     expect(ref.length).toBeGreaterThan(500);
   });
+
+  it("contains every engine.default_tab value", () => {
+    const ref = buildSchemaReference();
+    for (const tab of [
+      "email",
+      "chat",
+      "tickets",
+      "ops",
+      "logs",
+      "wiki",
+      "cicd",
+    ]) {
+      expect(ref).toContain(`"${tab}"`);
+    }
+  });
+
+  it("does not reference tick_interval_seconds (removed from schema)", () => {
+    const ref = buildSchemaReference();
+    expect(ref).not.toContain("tick_interval_seconds");
+  });
 });
