@@ -11,7 +11,6 @@ timeline:
   default_speed: 2
   duration_minutes: 15
   pre_incident_seconds: 43200 # 12 hours — enough to show cert_expiry at 90 days then sudden_drop to 0
-  resolution_seconds: 30
 
 topology:
   focal_service:
@@ -66,7 +65,6 @@ topology:
       correlation: upstream_impact
 
 engine:
-  tick_interval_seconds: 15
   default_tab: wiki
   llm_event_tools:
     - tool: select_metric_reaction

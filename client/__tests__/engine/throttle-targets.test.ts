@@ -205,7 +205,7 @@ topology:
   upstream: []
   downstream: []
 engine:
-  tick_interval_seconds: 15
+  default_tab: wiki
 email: []
 chat:
   channels:
@@ -324,7 +324,6 @@ describe("metric-reaction-engine prompt — throttle context", () => {
         defaultSpeed: 1,
         durationMinutes: 15,
         preIncidentSeconds: 300,
-        resolutionSeconds: 15,
       },
       topology: {
         focalService: {
@@ -337,7 +336,6 @@ describe("metric-reaction-engine prompt — throttle context", () => {
         downstream: [],
       },
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -347,7 +345,6 @@ describe("metric-reaction-engine prompt — throttle context", () => {
       tickets: [],
       opsDashboard: {
         preIncidentSeconds: 300,
-        resolutionSeconds: 60,
         focalService: {
           name: "svc",
           scale: { typicalRps: 200 },

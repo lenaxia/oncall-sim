@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LOG_PROFILES } from "./log-profiles";
 
 export const PersonaSchema = z.object({
   id: z.string().min(1),
@@ -105,16 +106,23 @@ export const MetricConfigSchema = z.object({
     .optional(),
 });
 
+export const LLMEventToolNameEnum = z.enum([
+  "select_metric_reaction",
+  "apply_metric_response",
+  "fire_alarm",
+  "silence_alarm",
+  "inject_log_entry",
+  "trigger_cascade",
+]);
+
 export const LLMEventToolSchema = z.object({
-  tool: z.string().min(1),
+  tool: LLMEventToolNameEnum,
   enabled: z.boolean().optional(),
   max_calls: z.number().positive().optional(),
-  requires_action: z.string().optional(),
   services: z.array(z.string()).optional(),
 });
 
 export const EngineSchema = z.object({
-  tick_interval_seconds: z.number().positive(),
   llm_event_tools: z.array(LLMEventToolSchema).optional().default([]),
   default_tab: z
     .enum(["email", "chat", "tickets", "ops", "logs", "wiki", "cicd"])
@@ -182,7 +190,7 @@ export const LogPatternSchema = z.object({
 });
 
 export const BackgroundLogsSchema = z.object({
-  profile: z.string().min(1),
+  profile: z.enum(Object.keys(LOG_PROFILES) as [string, ...string[]]),
   service: z.string().min(1),
   from_second: z.number(),
   to_second: z.number(),
@@ -432,7 +440,6 @@ export const TimelineSchema = z.object({
   ]),
   duration_minutes: z.number().positive(),
   pre_incident_seconds: z.number().positive().optional().default(43200), // defaults to 12h
-  resolution_seconds: z.number().positive().optional().default(15),
 });
 
 // ── Root scenario schema ──────────────────────────────────────────────────────
@@ -467,3 +474,245 @@ export const ScenarioSchema = z.object({
 });
 
 export type RawScenarioConfig = z.infer<typeof ScenarioSchema>;
+
+// ── Schema reference for LLM prompt generation ───────────────────────────────
+
+/**
+ * Generates the authoritative schema reference string for the scenario builder
+ * LLM prompt. Derived directly from the Zod schemas above so it never goes
+ * stale when fields, enums, or component types change.
+ */
+export function buildSchemaReference(): string {
+  const componentTypes = ComponentSchema.options.map((o) => {
+    const shape = o.shape as Record<string, z.ZodTypeAny>;
+    const typeVal = (shape.type as z.ZodLiteral<string>).value;
+    const extras = Object.entries(shape)
+      .filter(([k]) => !["id", "label", "inputs", "type"].includes(k))
+      .map(([k, v]) => {
+        const isOpt = v instanceof z.ZodOptional || v instanceof z.ZodDefault;
+        const inner = isOpt
+          ? (v as z.ZodOptional<z.ZodTypeAny> | z.ZodDefault<z.ZodTypeAny>)._def
+              .innerType
+          : v;
+        let typeName = "unknown";
+        if (inner instanceof z.ZodNumber) {
+          typeName = inner._def.checks.some(
+            (c: z.ZodNumberCheck) => c.kind === "int",
+          )
+            ? "int"
+            : "float";
+        } else if (inner instanceof z.ZodEnum) {
+          typeName = inner.options.map((o: string) => `"${o}"`).join("|");
+        }
+        return `${k}: ${typeName}${isOpt ? "?" : ""}`;
+      });
+    return { typeVal, extras };
+  });
+
+  const simpleTypes = componentTypes
+    .filter((c) => c.extras.length === 0)
+    .map((c) => `  type: "${c.typeVal}"  → no extra fields`)
+    .join("\n");
+
+  const complexTypes = componentTypes
+    .filter((c) => c.extras.length > 0)
+    .map((c) => `  type: "${c.typeVal}"  → ${c.extras.join(", ")}`)
+    .join("\n");
+
+  const onsetOverlays = IncidentConfigSchema._def.schema.shape.onset_overlay
+    .options as string[];
+
+  const remediationTypes = RemediationActionSchema.shape.type
+    .options as string[];
+
+  const alarmSeverities = AlarmConfigSchema.shape.severity.options as string[];
+
+  const ticketSeverities = TicketSchema.shape.severity.options as string[];
+  const ticketStatuses = TicketSchema.shape.status.options as string[];
+
+  const logLevels = ScriptedLogSchema.shape.level.options as string[];
+
+  const difficultyVals = ScenarioSchema.shape.difficulty.options as string[];
+
+  const speedVals = TimelineSchema.shape.default_speed.options.map(
+    (o: z.ZodLiteral<number>) => o.value,
+  );
+
+  const bgLogProfiles = BackgroundLogsSchema.shape.profile.options as string[];
+  // density is z.enum(...).optional().default(...) — extract values directly
+  const bgLogDensities = ["low", "medium", "high"] as const;
+
+  const trafficProfiles = ServiceNodeSchema.shape.traffic_profile._def.innerType
+    .options as string[];
+
+  const propagationDirs = IncidentConfigSchema._def.schema.shape
+    .propagation_direction._def.innerType.options as string[];
+
+  const pipelineStageStatuses = PipelineStageSchema.shape.status
+    .options as string[];
+  const pipelineStageTypes = PipelineStageSchema.shape.type.options as string[];
+  const deploymentStatuses = DeploymentSchema.shape.status.options as string[];
+
+  return `\
+═══════════════════════════════════════════════════════════════
+EXACT SCHEMA — use these field names and types precisely
+═══════════════════════════════════════════════════════════════
+
+── TOP-LEVEL FIELDS ──────────────────────────────────────────
+id: string (slug, e.g. "order-api-cascade")
+title: string
+description: string
+difficulty: ${difficultyVals.map((v) => `"${v}"`).join(" | ")}
+tags: string[]
+timeline: { default_speed: ${speedVals.join("|")}, duration_minutes: number }
+topology: { focal_service: ServiceNode, upstream: ServiceNode[], downstream: ServiceNode[] }
+engine: { llm_event_tools: [] }
+personas: Persona[]
+remediation_actions: RemediationAction[]
+evaluation: Evaluation
+email: []
+chat: { channels: [{ id: "incidents", name: "#incidents" }], messages: [] }
+ticketing: Ticket[]
+alarms: Alarm[]
+wiki: { pages: [{ title: string, content: string }] }
+cicd: { pipelines: [], deployments: [] }   ← DEFAULT: empty unless user asks
+logs: []                                    ← DEFAULT: always empty
+log_patterns: LogPattern[]                  ← AUTO-GENERATED in Phase 5
+background_logs: BackgroundLog[]            ← AUTO-GENERATED in Phase 5
+feature_flags: []                           ← DEFAULT: always empty
+host_groups: []                             ← DEFAULT: always empty
+
+── COMPONENT TYPES (discriminated union on "type") ───────────
+Every component MUST have: id (string), label (string), inputs (string[])
+Additional required fields per type:
+
+${simpleTypes}
+
+${complexTypes}
+
+VALID TYPE VALUES (only these ${componentTypes.length}): ${componentTypes.map((c) => c.typeVal).join(", ")}
+
+── TOPOLOGY ──────────────────────────────────────────────────
+topology: {
+  focal_service: ServiceNode,     ← the main service the incident affects
+  upstream: ServiceNode[],        ← services that CALL the focal service (can be [])
+  downstream: ServiceNode[]       ← services the focal service CALLS (can be [])
+}
+
+Every ServiceNode MUST have:
+  name: string          ← REQUIRED
+  description: string   ← REQUIRED
+  components: []        ← REQUIRED (can be empty for upstream/downstream)
+  incidents: []         ← REQUIRED (can be empty for upstream/downstream)
+
+Optional ServiceNode fields:
+  traffic_profile: ${trafficProfiles.map((v) => `"${v}"`).join(" | ")}
+  health: "healthy" | "degraded" | "flaky"
+  correlation: "upstream_impact" | "exonerated" | "independent"
+  lag_seconds: number
+  impact_factor: number (0.0–1.0)
+
+── INCIDENT ──────────────────────────────────────────────────
+{
+  id: string,
+  affected_component: string,   ← must match a component id in the same service
+  description: string,
+  onset_overlay: ${onsetOverlays.map((v) => `"${v}"`).join(" | ")},
+  onset_second: number,
+  magnitude: number,
+  propagation_direction: ${propagationDirs.map((v) => `"${v}"`).join(" | ")}   ← optional, default "upstream"
+  ramp_duration_seconds?: number,
+  end_second?: number
+}
+magnitude rules:
+  saturation  → 0 < magnitude ≤ 1.0
+  sudden_drop → 0 < magnitude < 1.0  (fraction the metric drops TO)
+  others      → magnitude > 0 (multiplier, e.g. 5.0 = 5× normal)
+
+── PERSONA ───────────────────────────────────────────────────
+{
+  id: string, display_name: string, job_title: string, team: string,
+  avatar_color: string (hex), initiates_contact: boolean,
+  cooldown_seconds: number, silent_until_contacted: boolean,
+  system_prompt: string
+}
+
+DEFAULT PERSONA BEHAVIOUR:
+  silent_until_contacted: true   ← default for all personas
+  initiates_contact: false       ← default for all personas
+  cooldown_seconds: 120
+The trainee should drive the sim. Only set initiates_contact: true for
+personas with a clear, realistic reason to reach out unprompted (e.g. an
+on-call manager paging at incident start, or an automated alert bot).
+
+── REMEDIATION ACTION ────────────────────────────────────────
+{
+  id: string,
+  type: ${remediationTypes.map((v) => `"${v}"`).join(" | ")},
+  service: string, is_correct_fix: boolean, side_effect?: string
+}
+
+── TICKET ────────────────────────────────────────────────────
+ticketing is an ARRAY:
+[{ id, title, severity: ${ticketSeverities.map((v) => `"${v}"`).join("|")},
+   status: ${ticketStatuses.map((v) => `"${v}"`).join("|")},
+   description, created_by: (persona id), at_second: number }]
+
+── EVALUATION ────────────────────────────────────────────────
+{
+  root_cause: string (non-empty),
+  relevant_actions: [{ action: string, why: string, service?: string }],
+  red_herrings: [{ action: string, why: string }],
+  debrief_context: string (non-empty)
+}
+
+── ALARM ─────────────────────────────────────────────────────
+{ id, service, metric_id, condition, severity: ${alarmSeverities.map((v) => `"${v}"`).join("|")},
+  auto_fire: boolean, auto_page: boolean,
+  onset_second?: number, page_message?: string }
+
+── CICD (only if user explicitly asks) ──────────────────────
+cicd: { pipelines: Pipeline[], deployments: Deployment[] }
+
+Pipeline: { id, name, service, stages: PipelineStage[] }
+PipelineStage: {
+  id, name, type: ${pipelineStageTypes.map((v) => `"${v}"`).join("|")}, current_version,
+  previous_version?: string|null,
+  status: ${pipelineStageStatuses.map((v) => `"${v}"`).join("|")},
+  deployed_at_sec: number, commit_message, author
+}
+Deployment: {
+  service, version,
+  deployed_at_sec: number,
+  status: ${deploymentStatuses.map((v) => `"${v}"`).join("|")},
+  commit_message, author
+}
+
+── LOG PATTERNS (auto-generated in Phase 5) ─────────────────
+Generate 3–6 entries that tell the story of the incident. Use real service
+names and component types from the topology. Cover: normal traffic before
+onset, early warning signals around onset_second, and error/warn patterns
+during the incident.
+log_patterns: [{
+  id, level: ${logLevels.map((v) => `"${v}"`).join("|")}, service,
+  message, interval_seconds: number (positive),
+  from_second: number, to_second: number,
+  count?: number, jitter_seconds?: number
+}]
+
+── BACKGROUND LOGS (auto-generated in Phase 5) ───────────────
+Generate one entry per service in the topology. Choose the most appropriate
+profile for each service based on its role and component types.
+background_logs: [{
+  profile: ${bgLogProfiles.map((v) => `"${v}"`).join("|")},
+  service, from_second: number, to_second: number,
+  density?: ${bgLogDensities.map((v) => `"${v}"`).join("|")}
+}]
+
+── FEATURE FLAGS (only if user explicitly asks) ──────────────
+feature_flags: [{ id, label, default_on?: boolean, description?: string }]
+
+── HOST GROUPS (only if user explicitly asks) ────────────────
+host_groups: [{ id, label, service, instance_count: int, description?: string }]
+═══════════════════════════════════════════════════════════════`;
+}

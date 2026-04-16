@@ -379,14 +379,6 @@ function TimelineEngineCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
             <span className="text-sim-text">{timeline.default_speed}×</span>
           </>
         )}
-        {engine?.tick_interval_seconds !== undefined && (
-          <>
-            <span className="text-sim-text-muted">Tick interval</span>
-            <span className="text-sim-text">
-              {engine.tick_interval_seconds}s
-            </span>
-          </>
-        )}
       </div>
     </Card>
   );

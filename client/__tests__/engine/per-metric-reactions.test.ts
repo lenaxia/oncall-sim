@@ -26,7 +26,7 @@ function makeRpWithIncident(
     unit: "",
     fromSecond: -300,
     toSecond: 900,
-    resolutionSeconds: 15,
+    resolutionSeconds: 60,
     baselineValue: 1,
     resolvedValue: 1,
     rhythmProfile: "none",
@@ -61,7 +61,6 @@ function makeStoreWithTwoMetrics() {
   clearFixtureCache();
   const scenario = buildLoadedScenario({
     engine: {
-      tickIntervalSeconds: 15,
       defaultTab: "email",
       llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
     },

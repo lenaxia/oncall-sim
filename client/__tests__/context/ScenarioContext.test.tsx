@@ -67,7 +67,6 @@ describe("ScenarioContext", () => {
           defaultSpeed: 1,
           durationMinutes: 15,
           preIncidentSeconds: 300,
-          resolutionSeconds: 15,
         },
       });
       const { result } = renderHook(() => useScenario(), {

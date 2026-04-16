@@ -17,7 +17,6 @@ vi.mock("../../src/scenario/loader", () => {
       defaultSpeed: 1,
       durationMinutes: 10,
       preIncidentSeconds: 300,
-      resolutionSeconds: 15,
     },
     topology: {
       focalService: {
@@ -29,7 +28,7 @@ vi.mock("../../src/scenario/loader", () => {
       upstream: [],
       downstream: [],
     },
-    engine: { tickIntervalSeconds: 15, defaultTab: "email", llmEventTools: [] },
+    engine: { defaultTab: "email", llmEventTools: [] },
     personas: [
       {
         id: "fp",
@@ -47,7 +46,6 @@ vi.mock("../../src/scenario/loader", () => {
     tickets: [],
     opsDashboard: {
       preIncidentSeconds: 300,
-      resolutionSeconds: 15,
       focalService: {
         name: "fixture-service",
         scale: { typicalRps: 100 },

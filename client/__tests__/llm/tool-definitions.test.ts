@@ -45,7 +45,6 @@ describe("getStakeholderTools", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [{ tool: "apply_metric_response", enabled: true }],
       },
@@ -60,7 +59,6 @@ describe("getStakeholderTools", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -75,7 +73,6 @@ describe("getStakeholderTools", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [],
       },
@@ -90,7 +87,6 @@ describe("getStakeholderTools", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [],
       },
@@ -182,7 +178,6 @@ describe("validateToolCall", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [
           { tool: "trigger_cascade", services: ["downstream-svc"] },
@@ -206,7 +201,6 @@ describe("validateToolCall", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [{ tool: "trigger_cascade", services: ["allowed-svc"] }],
       },
@@ -230,7 +224,6 @@ describe("validateToolCall", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [{ tool: "apply_metric_response", enabled: true }],
       },
@@ -249,7 +242,6 @@ describe("validateToolCall", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [{ tool: "apply_metric_response", enabled: true }],
       },
@@ -273,7 +265,6 @@ describe("validateToolCall", () => {
     const scenario: LoadedScenario = {
       ..._fixture,
       engine: {
-        tickIntervalSeconds: 10,
         defaultTab: "email" as const,
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },

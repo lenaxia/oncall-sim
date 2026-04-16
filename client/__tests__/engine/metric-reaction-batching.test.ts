@@ -34,7 +34,7 @@ function makeRp(
     unit: "percent",
     fromSecond: -300,
     toSecond: 900,
-    resolutionSeconds: 15,
+    resolutionSeconds: 60,
     baselineValue: 0.5,
     resolvedValue: 0.5,
     rhythmProfile: "none",
@@ -69,7 +69,6 @@ function makeStore() {
   clearFixtureCache();
   const scenario = buildLoadedScenario({
     engine: {
-      tickIntervalSeconds: 15,
       defaultTab: "email",
       llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
     },

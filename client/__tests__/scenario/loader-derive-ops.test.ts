@@ -32,7 +32,7 @@ function makeScenarioYaml(
     tags: [],
     timeline: { default_speed: 1, duration_minutes: 15 },
     topology,
-    engine: { tick_interval_seconds: 15 },
+    engine: {},
     email: [],
     chat: { channels: [], messages: [] },
     ticketing: [],
@@ -329,7 +329,9 @@ describe("deriveOpsDashboard — timeline values", () => {
     }
   });
 
-  it("resolutionSeconds comes from timeline.resolution_seconds", async () => {
+  it("resolutionSeconds is a sim engine constant — not authored in scenario YAML", async () => {
+    // SIM_RESOLUTION_SECONDS=60 is defined in loader.ts, not in the scenario config.
+    // Passing resolution_seconds in the YAML is silently ignored (unknown key stripped by Zod).
     const yamlStr = makeScenarioYaml(
       {
         focal_service: { name: "svc", description: "test" },
@@ -340,13 +342,14 @@ describe("deriveOpsDashboard — timeline values", () => {
         timeline: {
           default_speed: 1,
           duration_minutes: 10,
-          resolution_seconds: 30,
+          resolution_seconds: 30, // unknown key — stripped
         },
       },
     );
     const result = await loadScenarioFromText(yamlStr, noopResolve);
     if (!isScenarioLoadError(result)) {
-      expect(result.opsDashboard.resolutionSeconds).toBe(30);
+      // opsDashboard no longer carries resolutionSeconds
+      expect(result.opsDashboard).not.toHaveProperty("resolutionSeconds");
     }
   });
 });

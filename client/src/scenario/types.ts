@@ -170,14 +170,20 @@ export interface TimelineConfig {
   defaultSpeed: 1 | 2 | 5 | 10;
   durationMinutes: number;
   preIncidentSeconds: number;
-  resolutionSeconds: number;
 }
 
+export type LLMEventToolName =
+  | "select_metric_reaction"
+  | "apply_metric_response"
+  | "fire_alarm"
+  | "silence_alarm"
+  | "inject_log_entry"
+  | "trigger_cascade";
+
 export interface LLMEventToolConfig {
-  tool: string;
+  tool: LLMEventToolName;
   enabled?: boolean;
   maxCalls?: number;
-  requiresAction?: string;
   services?: string[];
 }
 
@@ -191,7 +197,6 @@ export type TabId =
   | "cicd";
 
 export interface EngineConfig {
-  tickIntervalSeconds: number;
   llmEventTools: LLMEventToolConfig[];
   defaultTab: TabId;
 }
@@ -332,7 +337,6 @@ export interface CorrelatedServiceConfig {
 
 export interface OpsDashboardConfig {
   preIncidentSeconds: number;
-  resolutionSeconds: number;
   focalService: FocalServiceConfig;
   correlatedServices: CorrelatedServiceConfig[];
 }

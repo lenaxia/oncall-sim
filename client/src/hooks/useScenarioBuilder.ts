@@ -9,6 +9,7 @@ import { BUILDER_TOOLS } from "../llm/tool-definitions";
 import { ScenarioValidator } from "../scenario/validator";
 import type { ScenarioValidationError } from "../scenario/lint";
 import type { RawScenarioConfig } from "../scenario/schema";
+import { buildSchemaReference } from "../scenario/schema";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ export interface UseScenarioBuilderReturn {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a scenario co-author for an on-call incident training simulator.
+const SYSTEM_PROMPT_BASE = `You are a scenario co-author for an on-call incident training simulator.
 Your job is to help the user build a realistic, playable AWS incident scenario through natural conversation.
 
 ═══════════════════════════════════════════════════════════════
@@ -66,6 +67,15 @@ PHASE 2 — Personas (required)
   Use ask_question for number and roles if not specified
   Build: personas array
 
+  PERSONA DEFAULTS — apply these unless the user says otherwise:
+  - silent_until_contacted: true for all personas
+  - initiates_contact: false for all personas
+  - cooldown_seconds: 120 (2 minutes between messages)
+  This is a skill-building sim. The trainee should drive the scenario.
+  Personas should only initiate contact if there is an explicit, realistic
+  reason (e.g. an on-call manager paging the trainee at incident start,
+  or a monitor bot firing an alert). When in doubt, keep them silent.
+
 PHASE 3 — Remediation + evaluation (required)
   Ask: what is the correct fix? what are the red herrings?
   Build: remediation_actions (at least one is_correct_fix: true),
@@ -74,22 +84,32 @@ PHASE 3 — Remediation + evaluation (required)
 PHASE 4 — Supporting infrastructure (use defaults unless user wants detail)
   Build: alarms, ticketing, chat, wiki
   Default ALL of these unless the user specifically asks for customisation:
-    log_patterns: []
-    background_logs: []
     logs: []
     feature_flags: []
     host_groups: []
     cicd: { pipelines: [], deployments: [] }
     email: []
 
-PHASE 5 — Review + complete
+PHASE 5 — Log generation (required, no user input needed)
+  Without asking the user, generate realistic log_patterns and background_logs
+  based on what has already been built:
+  - background_logs: one entry per service in the topology using the most
+    appropriate profile (java_web_service, nodejs_api, python_worker,
+    sidecar_proxy). Cover from pre-incident through end of scenario.
+  - log_patterns: 3–6 entries that tell the story of the incident — normal
+    traffic before onset, degradation signals around onset_second, and
+    error/warn patterns during the incident. Reference the actual service
+    names, component types, and incident description from the topology.
+  After generating, call send_message to briefly tell the user what log
+  coverage was added and offer to adjust it.
+
+PHASE 6 — Review + complete
   Call send_message with a summary of what was built and assumptions made
   Offer ask_question if any important choices are still open
   Call mark_complete when the user is satisfied
 
-KEY RULE: Never author log_patterns, background_logs, cicd.pipelines,
-cicd.deployments, feature_flags, or host_groups unless the user explicitly
-asks for them. Always default these to empty arrays/objects.
+KEY RULE: Never author feature_flags, host_groups, or cicd.pipelines/deployments
+unless the user explicitly asks for them. Always default these to empty arrays/objects.
 
 ═══════════════════════════════════════════════════════════════
 CONVERSATION PRINCIPLES
@@ -113,161 +133,11 @@ VALIDATION:
   errors in a single pass and call update_scenario again. Do not mention
   the errors to the user unless you cannot fix them after two attempts.
 - If mark_complete fails, fix errors with update_scenario then call mark_complete again.
+`;
 
-═══════════════════════════════════════════════════════════════
-EXACT SCHEMA — use these field names and types precisely
-═══════════════════════════════════════════════════════════════
-
-── TOP-LEVEL FIELDS ──────────────────────────────────────────
-id: string (slug, e.g. "order-api-cascade")
-title: string
-description: string
-difficulty: "easy" | "medium" | "hard"
-tags: string[]
-timeline: { default_speed: 1|2|5|10, duration_minutes: number }
-topology: { focal_service: ServiceNode, upstream: ServiceNode[], downstream: ServiceNode[] }
-engine: { tick_interval_seconds: 15, llm_event_tools: [] }
-personas: Persona[]
-remediation_actions: RemediationAction[]
-evaluation: Evaluation
-email: []
-chat: { channels: [{ id: "incidents", name: "#incidents" }], messages: [] }
-ticketing: Ticket[]
-alarms: Alarm[]
-wiki: { pages: [{ title: string, content: string }] }
-cicd: { pipelines: [], deployments: [] }   ← DEFAULT: empty unless user asks
-logs: []                                    ← DEFAULT: always empty
-log_patterns: []                            ← DEFAULT: always empty
-background_logs: []                         ← DEFAULT: always empty
-feature_flags: []                           ← DEFAULT: always empty
-host_groups: []                             ← DEFAULT: always empty
-
-── COMPONENT TYPES (discriminated union on "type") ───────────
-Every component MUST have: id (string), label (string), inputs (string[])
-Additional required fields per type:
-
-  type: "load_balancer"    → no extra fields
-  type: "api_gateway"      → no extra fields
-  type: "sqs_queue"        → no extra fields
-  type: "s3"               → no extra fields
-  type: "scheduler"        → no extra fields
-
-  type: "ecs_cluster"      → instance_count (int), utilization (0.0-1.0)
-  type: "ec2_fleet"        → instance_count (int), utilization (0.0-1.0)
-  type: "elasticache"      → instance_count (int), utilization (0.0-1.0)
-
-  type: "lambda"           → reserved_concurrency (int), lambda_utilization (0.0-1.0)
-
-  type: "kinesis_stream"   → shard_count (int)
-
-  type: "rds"              → instance_count (int), max_connections (int),
-                             utilization (0.0-1.0), connection_utilization (0.0-1.0)
-
-  type: "dynamodb"         → write_capacity (int), read_capacity (int),
-                             write_utilization (0.0-1.0), read_utilization (0.0-1.0)
-
-VALID TYPE VALUES (only these 12): load_balancer, api_gateway, ecs_cluster, ec2_fleet,
-  lambda, kinesis_stream, sqs_queue, dynamodb, rds, elasticache, s3, scheduler
-
-── TOPOLOGY ──────────────────────────────────────────────────
-topology: {
-  focal_service: ServiceNode,     ← the main service the incident affects
-  upstream: ServiceNode[],        ← services that CALL the focal service (can be [])
-  downstream: ServiceNode[]       ← services the focal service CALLS (can be [])
+function buildSystemPrompt(): string {
+  return SYSTEM_PROMPT_BASE + "\n" + buildSchemaReference();
 }
-
-Every ServiceNode MUST have:
-  name: string          ← REQUIRED
-  description: string   ← REQUIRED
-  components: []        ← REQUIRED (can be empty for upstream/downstream)
-  incidents: []         ← REQUIRED (can be empty for upstream/downstream)
-
-── INCIDENT ──────────────────────────────────────────────────
-{
-  id: string,
-  affected_component: string,   ← must match a component id in the same focal_service
-  description: string,
-  onset_overlay: "spike_and_sustain" | "gradual_degradation" | "saturation" | "sudden_drop",
-  onset_second: number,
-  magnitude: number,
-  propagation_direction: "upstream" | "downstream" | "both"   ← optional
-}
-magnitude: saturation → 0 < magnitude ≤ 1.0
-           sudden_drop → 0 < magnitude < 1.0
-           others → magnitude > 0 (multiplier, e.g. 5.0 = 5× normal)
-
-── PERSONA ───────────────────────────────────────────────────
-{
-  id: string, display_name: string, job_title: string, team: string,
-  avatar_color: string (hex), initiates_contact: boolean,
-  cooldown_seconds: number, silent_until_contacted: boolean,
-  system_prompt: string
-}
-
-── REMEDIATION ACTION ────────────────────────────────────────
-{
-  id: string,
-  type: "rollback" | "roll_forward" | "restart_service" | "scale_cluster" |
-        "throttle_traffic" | "emergency_deploy" | "toggle_feature_flag",
-  service: string, is_correct_fix: boolean, side_effect?: string
-}
-
-── TICKET ────────────────────────────────────────────────────
-ticketing is an ARRAY:
-[{ id, title, severity: "SEV1"|"SEV2"|"SEV3"|"SEV4",
-   status: "open"|"in_progress"|"resolved",
-   description, created_by: (persona id), at_second: number }]
-
-── EVALUATION ────────────────────────────────────────────────
-{
-  root_cause: string (non-empty),
-  relevant_actions: [{ action: string, why: string, service?: string }],
-  red_herrings: [{ action: string, why: string }],
-  debrief_context: string (non-empty)
-}
-
-── ALARM ─────────────────────────────────────────────────────
-{ id, service, metric_id, condition, severity: "SEV1"|"SEV2"|"SEV3"|"SEV4",
-  auto_fire: boolean, auto_page: boolean,
-  onset_second?: number, page_message?: string }
-
-── CICD (only if user explicitly asks) ──────────────────────
-cicd: { pipelines: Pipeline[], deployments: Deployment[] }
-
-Pipeline: { id, name, service, stages: PipelineStage[] }
-PipelineStage: {
-  id, name, type: "build"|"deploy", current_version,
-  previous_version?: string|null,
-  status: "not_started"|"in_progress"|"succeeded"|"failed"|"blocked",
-  deployed_at_sec: number, commit_message, author
-}
-Deployment: {
-  service, version,
-  deployed_at_sec: number,
-  status: "active"|"previous"|"rolled_back",
-  commit_message, author
-}
-
-── LOG PATTERNS (only if user explicitly asks) ───────────────
-log_patterns: [{
-  id, level: "DEBUG"|"INFO"|"WARN"|"ERROR", service,
-  message, interval_seconds: number (positive),
-  from_second: number, to_second: number,
-  count?: number, jitter_seconds?: number
-}]
-
-── BACKGROUND LOGS (only if user explicitly asks) ────────────
-background_logs: [{
-  profile: string, service, from_second: number, to_second: number,
-  density?: "low"|"medium"|"high"
-}]
-
-── FEATURE FLAGS (only if user explicitly asks) ──────────────
-feature_flags: [{ id, label, default_on?: boolean, description?: string }]
-
-── HOST GROUPS (only if user explicitly asks) ────────────────
-host_groups: [{ id, label, service, instance_count: int, description?: string }]
-═══════════════════════════════════════════════════════════════`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -354,10 +224,33 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
     return clientPromiseRef.current;
   }
 
-  // Full conversation history including system prompt (not shown in UI)
-  // We build this from current state on every call.
-  function buildMessages(currentMessages: BuilderMessage[]): LLMMessage[] {
-    const history: LLMMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+  // Full conversation history including system prompt (not shown in UI).
+  // Injects the current YAML state as the first two messages after the system
+  // prompt so the LLM always has the authoritative draft in context, regardless
+  // of how many turns have elapsed.
+  function buildMessages(
+    currentMessages: BuilderMessage[],
+    currentDraft: Partial<RawScenarioConfig> | null,
+  ): LLMMessage[] {
+    const history: LLMMessage[] = [
+      { role: "system", content: buildSystemPrompt() },
+    ];
+
+    // Inject current YAML state. Done on every request so the LLM never has to
+    // reconstruct it from memory. Two messages are used — user then assistant —
+    // to avoid a back-to-back user message which some providers reject.
+    const yamlState = currentDraft
+      ? yaml.dump(currentDraft, { indent: 2, lineWidth: 120 })
+      : "(no draft yet)";
+    history.push({
+      role: "user",
+      content: `Current scenario YAML state:\n\`\`\`yaml\n${yamlState}\`\`\``,
+    });
+    history.push({
+      role: "assistant",
+      content: "Understood. I have the current YAML state.",
+    });
+
     for (const msg of currentMessages) {
       history.push({
         role: msg.role === "user" ? "user" : "assistant",
@@ -445,7 +338,7 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
 
       // Build the full conversation history to send to the LLM.
       // On retry this grows to include the injected error tool result.
-      let messages = buildMessages([...currentMessages, userMsg]);
+      let messages = buildMessages([...currentMessages, userMsg], currentDraft);
 
       let newMessages: BuilderMessage[] = [];
       let newDraft = currentDraft;

@@ -95,7 +95,6 @@ describe("payment-db-pool-exhaustion — schema validation", () => {
     const result = await loadScenarioFromText(paymentYaml, noopResolve);
     if (!isScenarioLoadError(result)) {
       expect(result.timeline.preIncidentSeconds).toBe(43200);
-      expect(result.timeline.resolutionSeconds).toBe(60);
       expect(result.timeline.defaultSpeed).toBe(2);
     }
   });

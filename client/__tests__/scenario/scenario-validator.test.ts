@@ -269,7 +269,6 @@ describe("ScenarioValidator.section — timeline", () => {
       default_speed: 2 as const,
       duration_minutes: 15,
       pre_incident_seconds: 300,
-      resolution_seconds: 15,
     };
     const result = ScenarioValidator.section("timeline", timeline);
     expect(result.ok).toBe(true);
@@ -280,7 +279,6 @@ describe("ScenarioValidator.section — timeline", () => {
       default_speed: 2 as const,
       duration_minutes: 0,
       pre_incident_seconds: 300,
-      resolution_seconds: 15,
     };
     const result = ScenarioValidator.section("timeline", timeline);
     // duration_minutes: 0 is rejected by Zod (.positive()) before lint runs.

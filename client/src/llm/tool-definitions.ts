@@ -312,7 +312,7 @@ export const COACH_TOOLS: LLMToolDefinition[] = [
 export function getStakeholderTools(
   scenario: LoadedScenario,
 ): LLMToolDefinition[] {
-  const enabledTools = new Set(
+  const enabledTools = new Set<string>(
     scenario.engine.llmEventTools
       .filter((t) => t.enabled !== false)
       .map((t) => t.tool),

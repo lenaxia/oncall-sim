@@ -118,7 +118,6 @@ function makeEngine(
   clearFixtureCache();
   const scenario = buildLoadedScenario({
     engine: {
-      tickIntervalSeconds: 15,
       defaultTab: "email",
       llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
     },
@@ -553,7 +552,6 @@ describe("e2e: multiple metrics in one reaction", () => {
 
     const scenario = buildLoadedScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -649,7 +647,6 @@ describe("e2e: all ActiveOverlay patterns produce visible movement", () => {
     clearFixtureCache();
     const scenario = buildLoadedScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -824,7 +821,6 @@ describe("e2e: second reaction supersedes active overlay", () => {
 
     const scenario = buildLoadedScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -953,7 +949,6 @@ describe("e2e: magnitude=0 → target equals current, no movement", () => {
 
     const scenario = buildLoadedScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -1053,7 +1048,6 @@ describe("e2e: gradual_degradation scripted overlay stacking with reaction", () 
 
     const scenario = buildLoadedScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },

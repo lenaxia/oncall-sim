@@ -426,7 +426,7 @@ describe("background_logs — basic expansion", () => {
     }
   });
 
-  it("unknown profile is skipped with no error — scenario still loads", async () => {
+  it("unknown profile fails schema validation — scenario does not load", async () => {
     const result = await loadWithOverrides({
       background_logs: [
         {
@@ -439,10 +439,8 @@ describe("background_logs — basic expansion", () => {
         },
       ],
     });
-    expect(isScenarioLoadError(result)).toBe(false);
-    if (!isScenarioLoadError(result)) {
-      expect(result.logs.filter((l) => l.id.startsWith("bg-0")).length).toBe(0);
-    }
+    // Unknown profiles are now caught at schema parse time (enum validation).
+    expect(isScenarioLoadError(result)).toBe(true);
   });
 });
 

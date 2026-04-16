@@ -424,10 +424,10 @@ describe("IncidentConfigSchema — invalid", () => {
   });
 });
 
-// ── 4. TimelineSchema — pre_incident_seconds and resolution_seconds ────────────
+// ── 4. TimelineSchema — pre_incident_seconds ─────────────────────────────────
 
 describe("TimelineSchema — new fields", () => {
-  it("parses timeline with pre_incident_seconds and resolution_seconds", () => {
+  it("parses timeline with pre_incident_seconds", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
@@ -435,13 +435,11 @@ describe("TimelineSchema — new fields", () => {
         default_speed: 1,
         duration_minutes: 10,
         pre_incident_seconds: 600,
-        resolution_seconds: 30,
       },
     });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.timeline.pre_incident_seconds).toBe(600);
-      expect(result.data.timeline.resolution_seconds).toBe(30);
     }
   });
 
@@ -457,15 +455,23 @@ describe("TimelineSchema — new fields", () => {
     }
   });
 
-  it("defaults resolution_seconds to 15 when omitted", () => {
+  it("resolution_seconds is not a scenario field — ignored if passed as unknown key", () => {
+    // resolution_seconds is a sim engine constant (SIM_RESOLUTION_SECONDS=60), not authored in YAML.
     const raw = loadFixture() as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
-      timeline: { default_speed: 1, duration_minutes: 10 },
+      timeline: {
+        default_speed: 1,
+        duration_minutes: 10,
+        resolution_seconds: 30,
+      },
     });
+    // Zod strips unknown keys — parse succeeds, field absent from result
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.timeline.resolution_seconds).toBe(15);
+      expect(
+        (result.data.timeline as Record<string, unknown>).resolution_seconds,
+      ).toBeUndefined();
     }
   });
 

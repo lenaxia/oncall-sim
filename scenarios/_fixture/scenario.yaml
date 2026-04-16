@@ -8,7 +8,6 @@ timeline:
   default_speed: 1
   duration_minutes: 10
   pre_incident_seconds: 120
-  resolution_seconds: 15
 
 topology:
   focal_service:
@@ -40,7 +39,6 @@ topology:
   downstream: []
 
 engine:
-  tick_interval_seconds: 10
   default_tab: wiki
   llm_event_tools:
     - tool: fire_alarm

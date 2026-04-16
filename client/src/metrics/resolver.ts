@@ -11,6 +11,7 @@ import type { ResolvedMetricParams } from "./types";
 import { NOISE_LEVEL_MULTIPLIERS, HEALTH_MULTIPLIERS } from "./types";
 import { getArchetypeDefaults } from "./archetypes";
 import { getIncidentResponse } from "./incident-types";
+import { SIM_RESOLUTION_SECONDS } from "../scenario/loader";
 
 export { validateIncidentType } from "./incident-types";
 
@@ -47,9 +48,8 @@ export function resolveMetricParams(
 
   const fromSecond = -opsDashboard.preIncidentSeconds;
   const toSecond = scenarioConfig.timeline.durationMinutes * 60;
-  // One data point per in-game minute — always 60s resolution regardless
-  // of scenario config. The tick interval adjusts to match: 60/speed seconds real.
-  const resolutionSeconds = 60;
+  // One data point per in-game minute. Engine ticks every in-game second (see SIM_RESOLUTION_SECONDS).
+  const resolutionSeconds = SIM_RESOLUTION_SECONDS;
 
   let baselineValue = metricConfig.baselineValue ?? 0;
   if (

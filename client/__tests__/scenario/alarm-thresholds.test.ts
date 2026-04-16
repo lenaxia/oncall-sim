@@ -31,7 +31,7 @@ function makeScenarioYaml(
     tags: [],
     timeline: { default_speed: 1, duration_minutes: 15 },
     topology,
-    engine: { tick_interval_seconds: 15 },
+    engine: {},
     email: [],
     chat: { channels: [], messages: [] },
     ticketing: [],

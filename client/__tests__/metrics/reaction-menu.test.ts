@@ -32,7 +32,7 @@ function makeRpWithIncident(
     unit: "",
     fromSecond: -300,
     toSecond: 900,
-    resolutionSeconds: 15,
+    resolutionSeconds: 60,
     baselineValue: 1,
     resolvedValue: 1,
     rhythmProfile: "none",
@@ -311,7 +311,6 @@ describe("getMetricReactionTools — select_metric_reaction schema", () => {
       await import("../../src/llm/tool-definitions");
     const scenario = makeScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -326,7 +325,6 @@ describe("getMetricReactionTools — select_metric_reaction schema", () => {
       await import("../../src/llm/tool-definitions");
     const scenario = makeScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -352,7 +350,6 @@ describe("getMetricReactionTools — select_metric_reaction schema", () => {
       await import("../../src/llm/tool-definitions");
     const scenario = makeScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -378,7 +375,6 @@ describe("metric-reaction-engine — select_metric_reaction (templated)", () => 
   function makeEngine(overrides: Partial<LoadedScenario> = {}) {
     const scenario = makeScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -423,7 +419,6 @@ describe("metric-reaction-engine — select_metric_reaction (templated)", () => 
       await import("../../src/engine/metric-reaction-engine");
     const scenario = makeScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },
@@ -529,7 +524,6 @@ describe("metric-reaction-engine — select_metric_reaction (templated)", () => 
       await import("../../src/engine/metric-reaction-engine");
     const scenario = makeScenario({
       engine: {
-        tickIntervalSeconds: 15,
         defaultTab: "email",
         llmEventTools: [{ tool: "select_metric_reaction", enabled: true }],
       },

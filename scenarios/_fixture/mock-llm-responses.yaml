@@ -61,7 +61,6 @@ scenario_builder_responses:
               default_speed: 2
               duration_minutes: 15
               pre_incident_seconds: 43200
-              resolution_seconds: 60
             topology:
               focal_service:
                 name: "payment-service"
@@ -99,7 +98,6 @@ scenario_builder_responses:
               upstream: []
               downstream: []
             engine:
-              tick_interval_seconds: 15
               llm_event_tools: []
             email: []
             chat:

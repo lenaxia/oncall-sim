@@ -603,7 +603,7 @@ function buildStubForCrossRef(draft: Partial<RawConfig>): RawConfig {
       upstream: [],
       downstream: [],
     },
-    engine: draft.engine ?? { tick_interval_seconds: 15, llm_event_tools: [] },
+    engine: draft.engine ?? { llm_event_tools: [] },
     email: draft.email ?? [],
     chat: draft.chat ?? { channels: [], messages: [] },
     ticketing: draft.ticketing ?? [],

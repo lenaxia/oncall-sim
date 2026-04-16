@@ -10,7 +10,6 @@ timeline:
   default_speed: 2
   duration_minutes: 15
   pre_incident_seconds: 43200
-  resolution_seconds: 60
 
 topology:
   focal_service:
@@ -59,7 +58,6 @@ topology:
       correlation: independent
 
 engine:
-  tick_interval_seconds: 15
   default_tab: wiki
   llm_event_tools:
     - tool: select_metric_reaction

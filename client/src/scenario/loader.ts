@@ -47,6 +47,11 @@ import {
   propagationLag,
 } from "./component-topology";
 
+// ── Simulation constants ──────────────────────────────────────────────────────
+
+/** One metric data point per in-game minute. Engine ticks every in-game second. */
+export const SIM_RESOLUTION_SECONDS = 60;
+
 const log = logger.child({ component: "loader" });
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -441,7 +446,6 @@ function deriveTrafficProfile(entrypointType: ComponentType): TrafficProfile {
 function deriveOpsDashboard(
   focalNode: ServiceNode,
   preIncidentSeconds: number,
-  resolutionSeconds: number,
   downstreamNodes: ServiceNode[],
 ): OpsDashboardConfig {
   const focalService = deriveFocalServiceConfig(focalNode);
@@ -451,7 +455,6 @@ function deriveOpsDashboard(
 
   return {
     preIncidentSeconds,
-    resolutionSeconds,
     focalService,
     correlatedServices,
   };
@@ -815,7 +818,6 @@ async function transform(
   const opsDashboard = deriveOpsDashboard(
     topology.focalService,
     raw.timeline.pre_incident_seconds,
-    raw.timeline.resolution_seconds,
     topology.downstream,
   );
 
@@ -1063,17 +1065,14 @@ async function transform(
       defaultSpeed: raw.timeline.default_speed,
       durationMinutes: raw.timeline.duration_minutes,
       preIncidentSeconds: raw.timeline.pre_incident_seconds,
-      resolutionSeconds: raw.timeline.resolution_seconds,
     },
     topology,
     engine: {
-      tickIntervalSeconds: raw.engine.tick_interval_seconds,
       defaultTab: raw.engine.default_tab ?? "wiki",
       llmEventTools: (raw.engine.llm_event_tools ?? []).map((t) => ({
         tool: t.tool,
         enabled: t.enabled,
         maxCalls: t.max_calls,
-        requiresAction: t.requires_action,
         services: t.services,
       })),
     },

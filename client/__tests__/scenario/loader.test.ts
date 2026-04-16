@@ -114,13 +114,11 @@ describe("loadScenarioFromText — happy paths", () => {
     }
   });
 
-  it("timeline has preIncidentSeconds and resolutionSeconds", async () => {
+  it("timeline has preIncidentSeconds", async () => {
     const result = await loadScenarioFromText(fixtureYaml, noopResolve);
     if (!isScenarioLoadError(result)) {
       expect(typeof result.timeline.preIncidentSeconds).toBe("number");
-      expect(typeof result.timeline.resolutionSeconds).toBe("number");
       expect(result.timeline.preIncidentSeconds).toBe(120);
-      expect(result.timeline.resolutionSeconds).toBe(15);
     }
   });
 });

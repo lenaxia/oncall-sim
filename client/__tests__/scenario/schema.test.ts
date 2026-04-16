@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { ScenarioSchema } from "../../src/scenario/schema";
+import {
+  ScenarioSchema,
+  ComponentSchema,
+  IncidentConfigSchema,
+  RemediationActionSchema,
+  AlarmConfigSchema,
+  BackgroundLogsSchema,
+  buildSchemaReference,
+} from "../../src/scenario/schema";
 import yaml from "js-yaml";
 import fixtureYaml from "../../../scenarios/_fixture/scenario.yaml?raw";
 
@@ -497,7 +505,7 @@ describe("ScenarioSchema — MetricConfig is derived (not authored)", () => {
     }
   });
 
-  it("timeline resolution_seconds defaults to 15", () => {
+  it("timeline resolution_seconds is not a schema field — engine constant SIM_RESOLUTION_SECONDS=60", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({
       ...raw,
@@ -505,7 +513,57 @@ describe("ScenarioSchema — MetricConfig is derived (not authored)", () => {
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.timeline.resolution_seconds).toBe(15);
+      // resolution_seconds was removed from the schema; it is a sim engine constant.
+      expect(
+        (result.data.timeline as Record<string, unknown>).resolution_seconds,
+      ).toBeUndefined();
     }
+  });
+});
+
+// ── buildSchemaReference ──────────────────────────────────────────────────────
+
+describe("buildSchemaReference — stays in sync with schema.ts", () => {
+  it("contains every component type defined in ComponentSchema", () => {
+    const ref = buildSchemaReference();
+    for (const option of ComponentSchema.options) {
+      const typeVal = (option.shape.type as { value: string }).value;
+      expect(ref).toContain(`"${typeVal}"`);
+    }
+  });
+
+  it("contains every onset_overlay defined in IncidentConfigSchema", () => {
+    const ref = buildSchemaReference();
+    for (const overlay of IncidentConfigSchema._def.schema.shape.onset_overlay
+      .options) {
+      expect(ref).toContain(`"${overlay}"`);
+    }
+  });
+
+  it("contains every remediation action type", () => {
+    const ref = buildSchemaReference();
+    for (const type of RemediationActionSchema.shape.type.options) {
+      expect(ref).toContain(`"${type}"`);
+    }
+  });
+
+  it("contains every alarm severity", () => {
+    const ref = buildSchemaReference();
+    for (const sev of AlarmConfigSchema.shape.severity.options) {
+      expect(ref).toContain(`"${sev}"`);
+    }
+  });
+
+  it("contains every background_logs profile", () => {
+    const ref = buildSchemaReference();
+    for (const profile of BackgroundLogsSchema.shape.profile.options) {
+      expect(ref).toContain(`"${profile}"`);
+    }
+  });
+
+  it("produces a non-empty string with the section header", () => {
+    const ref = buildSchemaReference();
+    expect(ref).toContain("EXACT SCHEMA");
+    expect(ref.length).toBeGreaterThan(500);
   });
 });

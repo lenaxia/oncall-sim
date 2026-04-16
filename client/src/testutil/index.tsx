@@ -503,7 +503,6 @@ export function buildLoadedScenario(
       defaultSpeed: 1,
       durationMinutes: 10,
       preIncidentSeconds: 300,
-      resolutionSeconds: 15,
     },
     topology: {
       focalService: {
@@ -515,7 +514,7 @@ export function buildLoadedScenario(
       upstream: [],
       downstream: [],
     },
-    engine: { tickIntervalSeconds: 15, defaultTab: "email", llmEventTools: [] },
+    engine: { defaultTab: "email", llmEventTools: [] },
     personas: [
       {
         id: "fixture-persona",
@@ -536,7 +535,6 @@ export function buildLoadedScenario(
     tickets: [],
     opsDashboard: {
       preIncidentSeconds: 300,
-      resolutionSeconds: 15,
       focalService: {
         name: "fixture-service",
         scale: { typicalRps: 100 },

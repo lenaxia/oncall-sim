@@ -52,7 +52,6 @@ function makeMinimalDraft(): Partial<RawScenarioConfig> {
       default_speed: 1 as const,
       duration_minutes: 15,
       pre_incident_seconds: 300,
-      resolution_seconds: 15,
     },
     topology: {
       focal_service: {
@@ -72,7 +71,7 @@ function makeMinimalDraft(): Partial<RawScenarioConfig> {
       red_herrings: [],
       debrief_context: "debrief here",
     },
-    engine: { tick_interval_seconds: 15, llm_event_tools: [] },
+    engine: { llm_event_tools: [] },
     email: [],
     chat: { channels: [], messages: [] },
     ticketing: [],
@@ -496,7 +495,6 @@ describe("lintScenario — duration_positive", () => {
         default_speed: 1 as const,
         duration_minutes: 0,
         pre_incident_seconds: 300,
-        resolution_seconds: 15,
       },
     };
     const errors = lintScenario(draft, { partial: true });
