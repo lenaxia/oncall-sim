@@ -1,8 +1,8 @@
 # Phase 12 — Scenario Builder & Custom Scenario Upload
 
-**Version:** 1.1
-**Last Updated:** 2026-04-15
-**Status:** Design — awaiting approval
+**Version:** 1.2
+**Last Updated:** 2026-04-16
+**Status:** Implemented (v1.0.40) — Amendment 1.2 pending implementation
 
 ---
 
@@ -13,6 +13,7 @@
 3. [Screen Layout](#3-screen-layout)
 4. [Architecture](#4-architecture)
 5. [LLM Role & Tools](#5-llm-role--tools)
+   - 5a. [Amendment 1.2 — send_message & ask_question tools](#5a-amendment-12--send_message--ask_question-tools)
 6. [ScenarioValidator — Reusable Validation Pipeline](#6-scenariovalidator--reusable-validation-pipeline)
 7. [Tool Call Validation Pipeline](#7-tool-call-validation-pipeline)
 8. [useScenarioBuilder Hook](#8-usescenariobuilder-hook)
@@ -299,6 +300,279 @@ The builder system prompt is a constant in `useScenarioBuilder.ts`. It includes:
    - `alarms`: at least one SEV2 alarm on the affected component's primary metric
 
 5. **Error handling instruction**: "If `update_scenario` returns `{ ok: false, errors: [...] }`, read all errors carefully, fix them all in a single pass, and call `update_scenario` again with the corrected data. Never ignore errors."
+
+---
+
+## 5a. Amendment 1.2 — `send_message` & `ask_question` Tools
+
+### Motivation
+
+The original two-tool design (`update_scenario`, `mark_complete`) has no structured mechanism for the LLM to:
+
+1. **Communicate to the user mid-sequence** — e.g. after calling `update_scenario`, the LLM needs to tell the user what it just built and prompt for the next piece of information it needs. Without a tool for this, the LLM either buries text in the `assumptions` parameter (wrong place) or can only speak via the plain `text` field of the LLM response, which only fires once per round-trip.
+2. **Present a structured choice** — when the LLM has 3–4 equally valid options (difficulty, incident type, persona roles, remediation type), asking the user to type their answer introduces friction and increases the chance of misunderstanding. A choice widget lets the user click an option and keeps the conversation moving.
+
+### New Tools
+
+Two new tools added to `BUILDER_TOOLS` in `tool-definitions.ts`.
+
+---
+
+#### `send_message`
+
+Used by the LLM to emit a conversational message at any point in the tool-call sequence — after a patch, mid-refinement, or to prompt the user for the next piece of information needed to continue building the scenario.
+
+**Key distinction from plain LLM text response:** Plain text is emitted once at the end of the LLM's turn. `send_message` can be called between other tool calls within the same turn (e.g. call `update_scenario`, then call `send_message` to tell the user what was built and ask what to work on next).
+
+```ts
+{
+  name: "send_message",
+  description:
+    "Send a message to the user. Use this to: explain what you just built, " +
+    "tell the user what assumptions were made, or ask for the next piece of " +
+    "information you need to continue building the scenario. " +
+    "Call this after update_scenario to explain the patch. " +
+    "Do NOT put conversational text inside update_scenario or mark_complete parameters.",
+  parameters: {
+    type: "object",
+    required: ["message"],
+    properties: {
+      message: {
+        type: "string",
+        description: "The message to display to the user.",
+      },
+    },
+  },
+}
+```
+
+**Hook behaviour:** Appends a `BuilderMessage { role: "bot", text: message }` to `state.messages`. No state transition. No round-trip to the LLM.
+
+---
+
+#### `ask_question`
+
+Used by the LLM to present a focused question with 2–5 labelled options rendered as clickable buttons. The question and its options persist in the chat until resolved.
+
+```ts
+{
+  name: "ask_question",
+  description:
+    "Ask the user a focused question with selectable options. " +
+    "Use when the user needs to choose between specific alternatives " +
+    "(e.g. difficulty level, incident type, number of personas). " +
+    "Keep option labels short — 1 to 5 words each. " +
+    "The user may ignore the options and type a free-form reply instead; " +
+    "handle either response gracefully.",
+  parameters: {
+    type: "object",
+    required: ["question", "options"],
+    properties: {
+      question: {
+        type: "string",
+        description: "The question to ask.",
+      },
+      options: {
+        type: "array",
+        description: "2 to 5 short option labels (1–5 words each).",
+        items: { type: "string" },
+        minItems: 2,
+        maxItems: 5,
+      },
+    },
+  },
+}
+```
+
+**Hook behaviour:**
+
+1. Appends a `BuilderMessage { role: "bot", text: question }` to `state.messages` so the question persists in history after dismissal.
+2. Sets `state.pendingQuestion = { question, options }`.
+
+**Resolution — two paths:**
+
+| Path                       | What happens                                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| User clicks an option      | `sendMessage(optionLabel)` called; `pendingQuestion` cleared before the LLM call; option label sent as normal user message |
+| User types free-form reply | `pendingQuestion` cleared before `sendMessage` is called; typed text sent as normal user message                           |
+
+In both cases the LLM receives a plain user message and continues the conversation. It never receives a special "option selected" signal — the option label is simply the user's next message.
+
+---
+
+### State Changes
+
+One new field on `ScenarioBuilderState`:
+
+```ts
+export interface ScenarioBuilderState {
+  phase: BuilderPhase;
+  messages: BuilderMessage[];
+  draft: Partial<RawScenarioConfig> | null;
+  assumptions: string[];
+  validatedYaml: string | null;
+  validationErrors: ScenarioValidationError[];
+  thinking: boolean;
+  pendingQuestion: PendingQuestion | null; // ← NEW
+}
+
+export interface PendingQuestion {
+  question: string;
+  options: string[];
+}
+```
+
+`pendingQuestion` is set to `null`:
+
+- On mount (initial state)
+- When `sendMessage` is called (whether from option click or free-form input) — cleared **before** the LLM call so the buttons disappear immediately as feedback that the choice was registered
+- When `reset()` is called
+
+---
+
+### UI — `ScenarioBuilderChat` changes
+
+The `ScenarioBuilderChat` component receives `pendingQuestion` as a prop (alongside `messages`, `thinking`, `onSend`).
+
+**Rendering position:** The pending question widget renders between the message list and the input area — below the last message bubble, above the text input. It is not a bubble itself; it renders inline as a card:
+
+```
+┌──────────────────────────────────────────┐
+│  [message list scrollable area]          │
+│                                          │
+│    bot: "What difficulty should this     │
+│          scenario be?"                   │
+│                                          │
+├──────────────────────────────────────────┤
+│  ┌──────────┐  ┌──────────┐  ┌────────┐ │
+│  │   Easy   │  │  Medium  │  │  Hard  │ │
+│  └──────────┘  └──────────┘  └────────┘ │
+│  Or type your own answer below           │
+├──────────────────────────────────────────┤
+│  [text input]                   [Send]   │
+└──────────────────────────────────────────┘
+```
+
+**Interaction rules:**
+
+- Option buttons are only shown when `pendingQuestion !== null && !thinking`
+- Clicking an option calls `onOptionSelect(label)` (new prop) — which calls `sendMessage(label)` in the parent, which clears `pendingQuestion` and sends to LLM
+- A muted sub-label "Or type your own answer below" appears beneath the option row to signal free-form is always available
+- While `thinking` is true, option buttons are hidden (replaced by the thinking indicator) — the question bubble remains in message history
+- The input field remains enabled while options are shown — free-form always works
+
+**New prop:**
+
+```ts
+interface ScenarioBuilderChatProps {
+  messages: BuilderMessage[];
+  thinking: boolean;
+  onSend: (text: string) => void;
+  pendingQuestion: PendingQuestion | null; // ← NEW
+  onOptionSelect: (option: string) => void; // ← NEW
+}
+```
+
+`onOptionSelect` in `ScenarioBuilderScreen`:
+
+```ts
+function handleOptionSelect(option: string) {
+  // Clears pendingQuestion then sends the option label as a user message
+  // Both happen inside sendMessage — pendingQuestion is cleared at the start
+  // of sendMessage before the LLM call.
+  sendMessage(option);
+}
+```
+
+`sendMessage` already clears `thinking` and appends the user message. It must also clear `pendingQuestion` at the start:
+
+```ts
+setState((prev) => ({
+  ...prev,
+  phase: prev.phase === "idle" ? "building" : prev.phase,
+  messages: [...prev.messages, userMsg],
+  thinking: true,
+  pendingQuestion: null, // ← always clear on any new message
+}));
+```
+
+---
+
+### System Prompt Additions
+
+Three new instructions added to the `CONVERSATION PRINCIPLES` section of the system prompt:
+
+```
+- Use send_message to communicate with the user mid-sequence — after calling
+  update_scenario, use send_message to tell the user what was built and prompt
+  for the next piece of information you need to continue building the scenario.
+- Use ask_question when you want the user to choose between specific alternatives
+  (e.g. difficulty, incident type, number of personas). Keep option labels
+  short — 1 to 5 words. The user may ignore options and type freely; handle
+  either response gracefully.
+- Do NOT put conversational text inside update_scenario assumptions or
+  mark_complete parameters. Use send_message for all communication.
+```
+
+---
+
+### Tool Call Ordering Convention
+
+The recommended call sequence for a typical exchange is:
+
+```
+1. update_scenario(patch, assumptions)   ← commit the data
+2. send_message("Here's what I built...  ← explain it
+   What should we work on next?")
+```
+
+Or when a choice is needed:
+
+```
+1. update_scenario(patch)
+2. ask_question("How hard should this be?", ["Easy", "Medium", "Hard"])
+```
+
+The LLM may call these in any order within a single turn. The hook processes them sequentially in the order they appear in `response.toolCalls`.
+
+---
+
+### Modified Files Summary (Amendment 1.2)
+
+| File                                              | Change                                                                                                                                 |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `client/src/llm/tool-definitions.ts`              | Add `send_message` and `ask_question` to `BUILDER_TOOLS`                                                                               |
+| `client/src/hooks/useScenarioBuilder.ts`          | Add `pendingQuestion` to state; handle `send_message` and `ask_question` tool calls; clear `pendingQuestion` at start of `sendMessage` |
+| `client/src/components/ScenarioBuilderChat.tsx`   | Add `pendingQuestion` + `onOptionSelect` props; render option button row between message list and input                                |
+| `client/src/components/ScenarioBuilderScreen.tsx` | Pass `pendingQuestion` and `onOptionSelect` to `ScenarioBuilderChat`                                                                   |
+| `scenarios/_fixture/mock-llm-responses.yaml`      | Add `send_message` and `ask_question` fixture entries to `scenario_builder_responses`                                                  |
+
+---
+
+### Test Cases (Amendment 1.2)
+
+**`tool-definitions.ts`**
+
+- `BUILDER_TOOLS` contains exactly 4 tools: `update_scenario`, `mark_complete`, `send_message`, `ask_question`
+- `send_message` requires `message` string parameter
+- `ask_question` requires `question` string and `options` array
+
+**`useScenarioBuilder` hook**
+
+- `send_message` tool call appends a bot message with the given text
+- `ask_question` tool call appends a bot message with the question text AND sets `pendingQuestion`
+- `sendMessage()` clears `pendingQuestion` regardless of input source
+- `reset()` clears `pendingQuestion`
+- `pendingQuestion` is `null` in initial state
+
+**`ScenarioBuilderChat` component**
+
+- Renders option buttons when `pendingQuestion` is non-null and `thinking` is false
+- Does not render option buttons when `pendingQuestion` is null
+- Does not render option buttons when `thinking` is true
+- Clicking an option calls `onOptionSelect` with the option label
+- "Or type your own answer below" hint visible when options are shown
+- Input field remains enabled when options are shown
 
 ---
 
@@ -1198,3 +1472,4 @@ The following are explicitly out of scope for Phase 12:
 | ------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1.0     | 2026-04-15 | Initial design                                                                                                                                                                                                                                       |
 | 1.1     | 2026-04-15 | Added `ScenarioValidator` reusable pipeline; `validator.ts` extended as single validation entry point; `useScenarioBuilder` simplified to call `ScenarioValidator` directly; `schema.ts` sub-schemas to be exported; `loader.ts` migrated internally |
+| 1.2     | 2026-04-16 | Amendment: `send_message` and `ask_question` builder tools; `pendingQuestion` state; option button UI in `ScenarioBuilderChat`                                                                                                                       |
