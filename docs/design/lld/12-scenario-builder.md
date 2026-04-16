@@ -1,6 +1,6 @@
 # Phase 12 — Scenario Builder & Custom Scenario Upload
 
-**Version:** 1.2
+**Version:** 1.3
 **Last Updated:** 2026-04-16
 **Status:** Implemented (v1.0.40) — Amendment 1.2 pending implementation
 
@@ -206,7 +206,7 @@ export type LLMRole = "stakeholder" | "coach" | "debrief" | "scenario_builder";
 
 ### Builder Tools
 
-Two tools, defined in `tool-definitions.ts` under a new `BUILDER_TOOLS` export:
+Four tools defined in `tool-definitions.ts` under the `BUILDER_TOOLS` export: `update_scenario`, `mark_complete`, `send_message`, and `ask_question`. The first two manage scenario data; the latter two manage communication. See Section 5a for the full definitions of `send_message` and `ask_question`.
 
 #### `update_scenario`
 
@@ -271,19 +271,25 @@ The builder system prompt is a constant in `useScenarioBuilder.ts`. It includes:
    - Start by inviting the user to describe the incident — anything from one sentence to a full brief.
    - Build iteratively: populate fields from what the user provides, make reasonable assumptions for the rest, and tell the user what was assumed.
    - Call `update_scenario` after each meaningful chunk of new information — don't wait until everything is settled.
+   - Use `send_message` after `update_scenario` to tell the user what was built and prompt for the next piece of information needed — do not put conversational text inside tool parameters.
+   - Use `ask_question` when the user needs to choose between specific alternatives (difficulty, incident type, persona roles). Keep option labels 1–5 words. Handle free-form replies gracefully.
    - Ask one focused question at a time. Never ask a list of five questions at once.
    - Cover, at minimum: incident type and affected service, at least one persona, at least one remediation action (with `is_correct_fix: true`), and evaluation/debrief context.
-   - For derived fields (`id`, `title`, `tags`, `slug`) — derive from context, never ask.
+   - For derived fields (`id`, `title`, `tags`) — derive from context, never ask.
    - When the scenario feels complete, summarise what was built and what assumptions were made, then call `mark_complete`.
    - After `mark_complete` succeeds, remain available for refinements.
 
-3. **Schema reference**: A concise prose description of the required fields and their constraints (not the full Zod schema — that is too verbose for a context window). Key constraints called out explicitly:
+3. **Schema reference**: A full, precise schema reference card (not vague prose) giving the exact field names, discriminated union values, required fields per component type, and magnitude constraints — sufficient for the LLM to produce valid YAML without guessing. As of v1.0.39 this is embedded verbatim in the system prompt constant. Key items:
+   - 12 valid component `type` values with exact required fields per type
+   - `topology` `upstream`/`downstream` nodes require `name`, `description`, `components: []`, `incidents: []`
+   - `ticketing` is an **array** of ticket objects (not an object)
+   - `cicd` is `{ pipelines: [], deployments: [] }` (not an array)
    - `personas`: at least one required; must have `id`, `display_name`, `job_title`, `team`, `system_prompt`
    - `remediation_actions`: at least one required; at least one must have `is_correct_fix: true`
-   - `topology.focal_service.components`: at least one; exactly one must have `inputs: []` (the entrypoint)
-   - `topology.focal_service.incidents`: at least one; `affected_component` must match a component `id`
+   - `topology.focal_service.incidents`: `affected_component` must match a component `id`
    - `evaluation.root_cause`: non-empty string
    - `timeline.duration_minutes`: positive number
+   - Incident magnitude rules per `onset_overlay` type
 
 4. **Opinionated defaults** (fields the LLM should fill without asking unless the user specifies):
    - `engine.tick_interval_seconds: 15`
@@ -535,6 +541,12 @@ Or when a choice is needed:
 
 The LLM may call these in any order within a single turn. The hook processes them sequentially in the order they appear in `response.toolCalls`.
 
+**Edge cases:**
+
+- **Multiple `ask_question` calls in one turn:** The last call wins — earlier pending questions are overwritten silently. The LLM should not call `ask_question` more than once per turn.
+- **`ask_question` and `mark_complete` in the same turn:** If `mark_complete` succeeds, `pendingQuestion` is cleared when committing state — a completed scenario never has a pending question displayed. The LLM should not combine these in the same turn.
+- **`ask_question` and `send_message` in the same turn:** Permitted. `send_message` messages are appended first; `ask_question` sets the pending question last. The result is a bot message followed by the option buttons.
+
 ---
 
 ### Modified Files Summary (Amendment 1.2)
@@ -545,7 +557,30 @@ The LLM may call these in any order within a single turn. The hook processes the
 | `client/src/hooks/useScenarioBuilder.ts`          | Add `pendingQuestion` to state; handle `send_message` and `ask_question` tool calls; clear `pendingQuestion` at start of `sendMessage` |
 | `client/src/components/ScenarioBuilderChat.tsx`   | Add `pendingQuestion` + `onOptionSelect` props; render option button row between message list and input                                |
 | `client/src/components/ScenarioBuilderScreen.tsx` | Pass `pendingQuestion` and `onOptionSelect` to `ScenarioBuilderChat`                                                                   |
-| `scenarios/_fixture/mock-llm-responses.yaml`      | Add `send_message` and `ask_question` fixture entries to `scenario_builder_responses`                                                  |
+| `scenarios/_fixture/mock-llm-responses.yaml`      | Add `send_message` and `ask_question` fixture entries to `scenario_builder_responses` (see Section 13 for full fixture format)         |
+
+The fixture additions required for Amendment 1.2 (to be appended to `scenario_builder_responses` in the existing fixture file):
+
+```yaml
+# send_message fixture — triggered after update_scenario to prompt the user
+- trigger: "send_message_after_update"
+  text: ""
+  tool_calls:
+    - tool: send_message
+      params:
+        message: "I've drafted the topology and incident. What difficulty level should this scenario be?"
+
+# ask_question fixture — triggered when the mock receives a "difficulty" message
+- trigger: "ask_difficulty"
+  text: ""
+  tool_calls:
+    - tool: ask_question
+      params:
+        question: "How difficult should this scenario be for the trainee?"
+        options: ["Easy", "Medium", "Hard"]
+```
+
+In practice, the mock provider's `_matchBuilder` uses trigger keyword matching (see Section 13 for the matching logic). These fixtures allow the existing test suite to exercise the new tool handlers without a real LLM.
 
 ---
 
@@ -997,7 +1032,7 @@ All canvas cards are **read-only**. The user edits via chat only.
 
 ---
 
-## 9. ScenarioCanvas — Card Definitions
+## 10. ScenarioCanvas — Card Definitions
 
 Each card renders from `draft` (a `Partial<RawScenarioConfig>`). Before a section has any data, its card shows a muted placeholder row: "Not yet defined".
 
@@ -1018,7 +1053,7 @@ Validation errors (if any, from the most recent `mark_complete` failure) are sho
 
 ---
 
-## 10. Thinking Indicator
+## 11. Thinking Indicator
 
 The `thinking: boolean` flag in state drives two visual elements simultaneously:
 
@@ -1044,7 +1079,7 @@ No per-card thinking indicator. Cards that have data show their current data thr
 
 ---
 
-## 11. Download Button States
+## 12. Download Button States
 
 The Download button lives in the `ScenarioBuilderScreen` header, always visible.
 
@@ -1060,7 +1095,7 @@ The Download button lives in the `ScenarioBuilderScreen` header, always visible.
 
 ---
 
-## 12. Upload Feature
+## 13. Upload Feature
 
 ### Location
 
@@ -1149,7 +1184,7 @@ Uploaded scenarios get a `custom: true` flag in the in-memory list. The picker c
 
 ---
 
-## 13. Mock Mode
+## 14. Mock Mode
 
 ### New fixture keys
 
@@ -1214,7 +1249,7 @@ export interface MockBuilderResponse {
 
 ---
 
-## 14. New & Modified Files
+## 15. New & Modified Files
 
 ### New files
 
@@ -1239,7 +1274,7 @@ client/__tests__/scenario/lint.test.ts
 | `client/src/scenario/validator.ts`           | Add `ScenarioValidator` object, `ValidationResult`, `ScenarioValidationError`, `ScenarioSection` types; migrate `loadScenarioFromText` to use `ScenarioValidator.full` internally; keep `ValidationError` as deprecated alias |
 | `client/src/scenario/loader.ts`              | Replace inline `ScenarioSchema.safeParse` + `validateCrossReferences` calls with `ScenarioValidator.full`; public API unchanged                                                                                               |
 | `client/src/llm/llm-client.ts`               | Add `"scenario_builder"` to `LLMRole` union                                                                                                                                                                                   |
-| `client/src/llm/tool-definitions.ts`         | Add `BUILDER_TOOLS` export (`update_scenario` + `mark_complete`)                                                                                                                                                              |
+| `client/src/llm/tool-definitions.ts`         | Add `BUILDER_TOOLS` export (`update_scenario`, `mark_complete`, `send_message`, `ask_question`)                                                                                                                               |
 | `client/src/llm/mock-provider.ts`            | Add `scenario_builder_responses` to `MockLLMResponses`; add `_matchBuilder` branch                                                                                                                                            |
 | `client/src/components/ScenarioPicker.tsx`   | Add "Build scenario" + "Load scenario" buttons; upload logic; inline error display; custom badge on cards                                                                                                                     |
 | `client/src/App.tsx`                         | Add `"builder"` to `AppScreen` union; render `ScenarioBuilderScreen` on `screen === "builder"`                                                                                                                                |
@@ -1247,7 +1282,7 @@ client/__tests__/scenario/lint.test.ts
 
 ---
 
-## 15. TypeScript Interfaces
+## 16. TypeScript Interfaces
 
 New types are distributed across three files based on concern:
 
@@ -1329,6 +1364,12 @@ export interface ScenarioBuilderState {
   validatedYaml: string | null;
   validationErrors: ScenarioValidationError[];
   thinking: boolean;
+  pendingQuestion: PendingQuestion | null; // null until LLM calls ask_question
+}
+
+export interface PendingQuestion {
+  question: string;
+  options: string[];
 }
 
 export interface UseScenarioBuilderReturn {
@@ -1341,7 +1382,7 @@ export interface UseScenarioBuilderReturn {
 
 ---
 
-## 16. Test Strategy
+## 17. Test Strategy
 
 ### TDD workflow (mandatory per project guidelines)
 
@@ -1454,7 +1495,7 @@ Unhappy paths:
 
 ---
 
-## 17. Non-Goals
+## 18. Non-Goals
 
 The following are explicitly out of scope for Phase 12:
 
@@ -1468,8 +1509,9 @@ The following are explicitly out of scope for Phase 12:
 
 ---
 
-| Version | Date       | Changes                                                                                                                                                                                                                                              |
-| ------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.0     | 2026-04-15 | Initial design                                                                                                                                                                                                                                       |
-| 1.1     | 2026-04-15 | Added `ScenarioValidator` reusable pipeline; `validator.ts` extended as single validation entry point; `useScenarioBuilder` simplified to call `ScenarioValidator` directly; `schema.ts` sub-schemas to be exported; `loader.ts` migrated internally |
-| 1.2     | 2026-04-16 | Amendment: `send_message` and `ask_question` builder tools; `pendingQuestion` state; option button UI in `ScenarioBuilderChat`                                                                                                                       |
+| Version | Date       | Changes                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1.0     | 2026-04-15 | Initial design                                                                                                                                                                                                                                                                                                                                                                                               |
+| 1.1     | 2026-04-15 | Added `ScenarioValidator` reusable pipeline; `validator.ts` extended as single validation entry point; `useScenarioBuilder` simplified to call `ScenarioValidator` directly; `schema.ts` sub-schemas to be exported; `loader.ts` migrated internally                                                                                                                                                         |
+| 1.2     | 2026-04-16 | Amendment: `send_message` and `ask_question` builder tools; `pendingQuestion` state; option button UI in `ScenarioBuilderChat`                                                                                                                                                                                                                                                                               |
+| 1.3     | 2026-04-16 | LLD review fixes: "Two tools" → "Four tools"; Section 5 system prompt updated to reflect new tool instructions; multiple `ask_question`/`mark_complete` same-turn edge cases documented; fixture YAML examples added for new tools; `PendingQuestion` + `pendingQuestion` added to Section 16 interfaces; Section 5 schema reference updated to reflect exact reference card; duplicate Section 9 renumbered |
