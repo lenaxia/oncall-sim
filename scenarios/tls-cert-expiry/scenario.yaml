@@ -45,7 +45,7 @@ topology:
         affected_component: apigw
         description: "TLS certificate for api.acme.io expired at midnight. API Gateway rejects all HTTPS connections. fault_rate hits 100%."
         onset_overlay: spike_and_sustain
-        onset_second: 32400 # cert expires 3h before session open (visible in chart as sudden spike)
+        onset_second: -10800 # cert expires 3h before session open (visible in chart as sudden spike)
         magnitude: 25.0
         ramp_duration_seconds: 0
         propagation_direction: downstream # cert failure on apigw floods all downstream services with errors
@@ -53,7 +53,7 @@ topology:
         affected_component: apigw
         description: "cert_expiry metric reaches 0 at onset — certificate has expired."
         onset_overlay: sudden_drop
-        onset_second: 32400 # cert_expiry metric drops to 0 at same moment cert expires
+        onset_second: -10800 # cert_expiry metric drops to 0 at same moment cert expires
         magnitude: 0.0
         propagation_direction: downstream # cert_expiry metric is on apigw; only apigw affected
   upstream: []

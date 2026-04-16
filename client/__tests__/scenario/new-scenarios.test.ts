@@ -210,7 +210,7 @@ describe("tls-cert-expiry", () => {
     );
     expect(certExpiry!.incidentResponses!.length).toBeGreaterThan(0);
     expect(certExpiry!.incidentResponses![0].overlay).toBe("sudden_drop");
-    expect(certExpiry!.incidentResponses![0].onsetSecond).toBe(32400);
+    expect(certExpiry!.incidentResponses![0].onsetSecond).toBe(-10800);
   });
 
   it("fault_rate also has spike_and_sustain overlay from cert_expired incident", async () => {

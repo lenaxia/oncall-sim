@@ -44,7 +44,7 @@ topology:
         affected_component: postgres
         description: "HikariCP connection pool exhausted — MAX_DB_CONNECTIONS misconfigured as 5 (should be 20). All connections active, requests queuing."
         onset_overlay: saturation
-        onset_second: 32400 # incident starts 3h before session open (1h into the 4h chart window)
+        onset_second: -10800 # incident starts 3h before session open (1h into the 4h chart window)
         magnitude: 1.0
         propagation_direction: upstream # pool exhaustion is felt by callers (ecs service)
   upstream:

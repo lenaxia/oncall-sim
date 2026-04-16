@@ -1,48 +1,54 @@
 @import "tailwindcss";
 
 @theme {
-  --color-sim-bg:           #0d1117;
-  --color-sim-surface:      #161b22;
-  --color-sim-surface-2:    #1c2128;
-  --color-sim-border:       #30363d;
+  --color-sim-bg: #0d1117;
+  --color-sim-surface: #161b22;
+  --color-sim-surface-2: #1c2128;
+  --color-sim-border: #30363d;
   --color-sim-border-muted: #21262d;
-  --color-sim-text:         #e6edf3;
-  --color-sim-text-muted:   #8b949e;
-  --color-sim-text-faint:   #484f58;
-  --color-sim-accent:       #1f6feb;
-  --color-sim-accent-dim:   #0d419d;
-  --color-sim-green:        #3fb950;
-  --color-sim-green-dim:    #196127;
-  --color-sim-yellow:       #d29922;
-  --color-sim-yellow-dim:   #4d3900;
-  --color-sim-orange:       #db6d28;
-  --color-sim-orange-dim:   #5a2000;
-  --color-sim-red:          #f85149;
-  --color-sim-red-dim:      #5d0f0d;
-  --color-sim-info:         #0099ff;
-  --color-sim-info-dim:     #003366;
-  --color-sim-trainee:      #79c0ff;
-  --color-sim-persona:      #d2a8ff;
+  --color-sim-text: #e6edf3;
+  --color-sim-text-muted: #8b949e;
+  --color-sim-text-faint: #484f58;
+  --color-sim-accent: #1f6feb;
+  --color-sim-accent-dim: #0d419d;
+  --color-sim-green: #3fb950;
+  --color-sim-green-dim: #196127;
+  --color-sim-yellow: #d29922;
+  --color-sim-yellow-dim: #4d3900;
+  --color-sim-orange: #db6d28;
+  --color-sim-orange-dim: #5a2000;
+  --color-sim-red: #f85149;
+  --color-sim-red-dim: #5d0f0d;
+  --color-sim-info: #0099ff;
+  --color-sim-info-dim: #003366;
+  --color-sim-trainee: #79c0ff;
+  --color-sim-persona: #d2a8ff;
 
-  --font-family-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  --font-family-mono:
+    "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
 }
 
 /* Base */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   margin: 0;
   padding: 0;
 }
 
 body {
-  background-color: #0d1117;  /* sim-bg */
-  color: #e6edf3;             /* sim-text */
-  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
-  font-size: 0.75rem;         /* 12px — dense default */
+  background-color: #0d1117; /* sim-bg */
+  color: #e6edf3; /* sim-text */
+  font-family:
+    "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
+  font-size: 0.75rem; /* 12px — dense default */
   line-height: 1.25;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -50,7 +56,7 @@ body {
 
 /* Text selection */
 ::selection {
-  background-color: #1f6feb40;  /* sim-accent at 25% opacity */
+  background-color: #1f6feb40; /* sim-accent at 25% opacity */
   color: #e6edf3;
 }
 
@@ -63,11 +69,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #30363d;   /* sim-border */
+  background: #30363d; /* sim-border */
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #484f58;   /* sim-text-faint */
+  background: #484f58; /* sim-text-faint */
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
@@ -86,7 +92,9 @@ button {
   font-size: inherit;
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   font-family: inherit;
   font-size: inherit;
 }
@@ -96,25 +104,48 @@ input, textarea, select {
   outline: none;
 }
 :focus-visible {
-  outline: 2px solid #1f6feb;   /* sim-accent */
+  outline: 2px solid #1f6feb; /* sim-accent */
   outline-offset: 1px;
 }
 
-/* .sim-prose — scoped styles for MarkdownRenderer */
+/* Thinking dots — pulsates between grey and accent blue */
+@keyframes dot-pulse {
+  0%,
+  100% {
+    background-color: #8b949e;
+  } /* sim-text-muted */
+  50% {
+    background-color: #1f6feb;
+  } /* sim-accent */
+}
+.animate-dot-pulse {
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
 .sim-prose {
   color: #e6edf3;
   font-size: 0.875rem;
   line-height: 1.5;
 }
-.sim-prose h1, .sim-prose h2, .sim-prose h3 {
+.sim-prose h1,
+.sim-prose h2,
+.sim-prose h3 {
   color: #e6edf3;
   font-weight: 600;
   margin: 1rem 0 0.5rem;
 }
-.sim-prose h1 { font-size: 1rem; }
-.sim-prose h2 { font-size: 0.875rem; }
-.sim-prose h3 { font-size: 0.875rem; color: #8b949e; }
-.sim-prose p  { margin: 0.5rem 0; }
+.sim-prose h1 {
+  font-size: 1rem;
+}
+.sim-prose h2 {
+  font-size: 0.875rem;
+}
+.sim-prose h3 {
+  font-size: 0.875rem;
+  color: #8b949e;
+}
+.sim-prose p {
+  margin: 0.5rem 0;
+}
 .sim-prose code {
   background: #1c2128;
   padding: 0.1em 0.3em;
@@ -130,19 +161,40 @@ input, textarea, select {
   overflow-x: auto;
   margin: 0.75rem 0;
 }
-.sim-prose pre code { background: none; padding: 0; }
-.sim-prose a { color: #1f6feb; text-decoration: underline; }
-.sim-prose a:hover { color: #79c0ff; }
-.sim-prose ul, .sim-prose ol { padding-left: 1.25rem; margin: 0.5rem 0; }
-.sim-prose li  { margin: 0.25rem 0; }
+.sim-prose pre code {
+  background: none;
+  padding: 0;
+}
+.sim-prose a {
+  color: #1f6feb;
+  text-decoration: underline;
+}
+.sim-prose a:hover {
+  color: #79c0ff;
+}
+.sim-prose ul,
+.sim-prose ol {
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+.sim-prose li {
+  margin: 0.25rem 0;
+}
 .sim-prose blockquote {
   border-left: 3px solid #30363d;
   padding-left: 0.75rem;
   color: #8b949e;
   margin: 0.5rem 0;
 }
-.sim-prose hr  { border-color: #30363d; margin: 1rem 0; }
-.sim-prose table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; }
+.sim-prose hr {
+  border-color: #30363d;
+  margin: 1rem 0;
+}
+.sim-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+}
 .sim-prose th {
   text-align: left;
   padding: 0.375rem 0.75rem;

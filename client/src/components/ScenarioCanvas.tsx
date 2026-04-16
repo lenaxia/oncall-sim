@@ -4,6 +4,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { RawScenarioConfig } from "../scenario/schema";
 import type { ScenarioValidationError } from "../scenario/lint";
+import { ThinkingDots } from "./ThinkingDots";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -86,24 +87,9 @@ function DifficultyBadge({ difficulty }: { difficulty: string }) {
 }
 
 // ── Thinking dots ─────────────────────────────────────────────────────────────
-
-export function ThinkingDots() {
-  return (
-    <span
-      data-testid="thinking-dots"
-      className="inline-flex items-center gap-1"
-      aria-label="Thinking"
-    >
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="w-1.5 h-1.5 rounded-full bg-sim-text-muted animate-bounce"
-          style={{ animationDelay: `${i * 150}ms` }}
-        />
-      ))}
-    </span>
-  );
-}
+// Re-exported from the shared ThinkingDots component for consumers that
+// import it from ScenarioCanvas (e.g. ScenarioBuilderChat).
+export { ThinkingDots } from "./ThinkingDots";
 
 // ── Cards ─────────────────────────────────────────────────────────────────────
 

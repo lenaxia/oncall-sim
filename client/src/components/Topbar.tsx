@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useScenario } from "../context/ScenarioContext";
 import { useSimClock } from "../hooks/useSimClock";
 import { SimClockContext } from "../hooks/useSimClock";
@@ -30,6 +31,72 @@ function GitHubIcon({ className }: { className?: string }) {
   );
 }
 
+// ── Spoiler title ─────────────────────────────────────────────────────────────
+
+function ScenarioTitle({ title }: { title: string }) {
+  const [revealed, setRevealed] = useState(false);
+  const [showDialog, setShowDialog] = useState(false);
+
+  if (!title) return null;
+
+  return (
+    <>
+      <button
+        onClick={() => {
+          if (!revealed) setShowDialog(true);
+          else setRevealed(false);
+        }}
+        title={
+          revealed ? "Click to hide title" : "Click to reveal scenario title"
+        }
+        className="text-xs font-semibold text-sim-text truncate flex-1 text-left cursor-pointer hover:opacity-80 transition-opacity"
+        style={
+          revealed
+            ? undefined
+            : { filter: "blur(6px)", userSelect: "none", pointerEvents: "auto" }
+        }
+      >
+        {title}
+      </button>
+
+      {showDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-sim-surface border border-sim-border rounded-lg p-5 max-w-sm w-full mx-4 flex flex-col gap-4 shadow-xl">
+            <p className="text-xs font-semibold text-sim-text">
+              Spoiler warning
+            </p>
+            <p className="text-xs text-sim-text-muted">
+              The scenario title may reveal the nature of the incident before
+              you've had a chance to investigate. Seeing it early can reduce the
+              training value of the exercise.
+            </p>
+            <p className="text-xs text-sim-text-muted">
+              Do you want to reveal the title anyway?
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowDialog(false)}
+                className="text-xs px-3 py-1.5 rounded border border-sim-border text-sim-text-muted hover:text-sim-text hover:border-sim-text-muted transition-colors"
+              >
+                Keep hidden
+              </button>
+              <button
+                onClick={() => {
+                  setRevealed(true);
+                  setShowDialog(false);
+                }}
+                className="text-xs px-3 py-1.5 rounded bg-sim-accent text-white hover:bg-sim-accent/80 transition-colors"
+              >
+                Reveal title
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function Topbar() {
   const { scenario } = useScenario();
   const { state } = useSession();
@@ -44,10 +111,14 @@ export function Topbar() {
   return (
     <SimClockContext.Provider value={clockInput}>
       <div className="flex-shrink-0 h-10 flex items-center border-b border-sim-border bg-sim-surface px-3 gap-3">
-        {/* Scenario title */}
-        <span className="text-xs font-semibold text-sim-text truncate flex-1">
-          {scenario?.title ?? "On-Call Simulator"}
-        </span>
+        {/* Scenario title — pixelated until user reveals */}
+        {scenario?.title ? (
+          <ScenarioTitle title={scenario.title} />
+        ) : (
+          <span className="text-xs font-semibold text-sim-text truncate flex-1">
+            On-Call Simulator
+          </span>
+        )}
 
         {/* GitHub link */}
         <a

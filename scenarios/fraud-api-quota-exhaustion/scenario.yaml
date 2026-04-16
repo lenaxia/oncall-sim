@@ -45,7 +45,7 @@ topology:
         affected_component: ecs
         description: "FraudShield API returning 429 Too Many Requests — checkout-service has exhausted its monthly API quota 3 days early due to a billing tier misconfiguration. All fraud scoring calls fail, causing checkout failures. fault_rate spikes to ~40%."
         onset_overlay: spike_and_sustain
-        onset_second: 10800 # incident starts 3h before session open (1h into the 4h chart window)
+        onset_second: -10800 # incident starts 3h before session open (1h into the 4h chart window)
         magnitude: 20.0
         ramp_duration_seconds: 0
         propagation_direction: both # ECS is the affected service — alb upstream sees fault_rate spike, rds downstream sees load

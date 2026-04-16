@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useSession } from "../context/SessionContext";
 import type { CoachLevel } from "../engine/coach-engine";
 import { WallTimestamp } from "./Timestamp";
+import { ThinkingDots } from "./ThinkingDots";
 
 // ── Level config ───────────────────────────────────────────────────────────────
 
@@ -53,9 +54,7 @@ function TypingIndicator() {
     <div className="px-3 py-2 border-t border-sim-border-muted flex flex-col gap-0.5 items-start">
       <span className="text-[10px] text-sim-text-faint font-mono">Coach</span>
       <div className="px-2.5 py-2 rounded bg-sim-border self-start flex items-center gap-1">
-        <span className="w-1.5 h-1.5 rounded-full bg-sim-text-faint animate-bounce [animation-delay:0ms]" />
-        <span className="w-1.5 h-1.5 rounded-full bg-sim-text-faint animate-bounce [animation-delay:150ms]" />
-        <span className="w-1.5 h-1.5 rounded-full bg-sim-text-faint animate-bounce [animation-delay:300ms]" />
+        <ThinkingDots />
       </div>
     </div>
   );

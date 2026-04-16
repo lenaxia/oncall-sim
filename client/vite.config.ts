@@ -34,6 +34,11 @@ export default defineConfig({
   server: {
     port: 3001,
     strictPort: true,
+    watch: {
+      // scenarios/ sits outside the Vite root (client/), so we must explicitly
+      // include it so HMR picks up YAML changes without a server restart.
+      ignored: (p: string) => p.includes("node_modules"),
+    },
     proxy: {
       // k8s mode: forward LLM proxy requests to sidecar
       "/llm": {

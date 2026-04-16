@@ -180,11 +180,14 @@ describe("payment-db-pool-exhaustion — upstream incident propagation", () => {
 
   it("ecs p95 overlay onsetSecond reflects propagation lag from postgres", async () => {
     // The incident onset_second=0. ecs_cluster metrics have lagSeconds up to 30.
-    // The overlay onset for ecs metrics should be > 0 (lag from postgres to ecs).
+    // The overlay onset for ecs metrics should be later than the postgres onset
+    // (positive propagation lag). onset_second is negative (pre-incident), so
+    // the propagated value is greater than (less negative than) the root onset.
     const result = await loadPayment();
+    const rootOnset = -10800; // postgres incident onset_second
     const p95 = result.opsDashboard.focalService.metrics.find(
       (m) => m.archetype === "p95_latency_ms",
     );
-    expect(p95!.incidentResponses![0].onsetSecond).toBeGreaterThan(0);
+    expect(p95!.incidentResponses![0].onsetSecond).toBeGreaterThan(rootOnset);
   });
 });
