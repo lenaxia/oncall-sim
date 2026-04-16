@@ -41,20 +41,26 @@ function useChangePulse(value: unknown): boolean {
 
 interface CardProps {
   title: string;
+  description?: string;
   children: React.ReactNode;
   pulsing?: boolean;
 }
 
-function Card({ title, children, pulsing = false }: CardProps) {
+function Card({ title, description, children, pulsing = false }: CardProps) {
   return (
     <div
       className={`bg-sim-surface border rounded p-4 flex flex-col gap-2 transition-colors duration-500 ${
         pulsing ? "border-sim-accent" : "border-sim-border"
       }`}
     >
-      <h3 className="text-xs font-semibold text-sim-text-muted uppercase tracking-wide">
-        {title}
-      </h3>
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-xs font-semibold text-sim-text-muted uppercase tracking-wide">
+          {title}
+        </h3>
+        {description && (
+          <p className="text-xs text-sim-text-faint">{description}</p>
+        )}
+      </div>
       {children}
     </div>
   );
@@ -111,7 +117,11 @@ function OverviewCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   const pulsing = useChangePulse(key);
 
   return (
-    <Card title="Overview" pulsing={pulsing}>
+    <Card
+      title="Overview"
+      description="Scenario metadata shown to the trainee at start. Difficulty and tags help filter scenarios in the picker."
+      pulsing={pulsing}
+    >
       {draft.title ? (
         <span className="text-sm font-semibold text-sim-text">
           {draft.title}
@@ -142,45 +152,17 @@ function OverviewCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   );
 }
 
-function IncidentCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
-  const incidents = draft.topology?.focal_service?.incidents ?? [];
-  const pulsing = useChangePulse(JSON.stringify(incidents));
-
-  if (incidents.length === 0) {
-    return (
-      <Card title="Incident" pulsing={pulsing}>
-        <Placeholder />
-      </Card>
-    );
-  }
-
-  const inc = incidents[0];
-  return (
-    <Card title="Incident" pulsing={pulsing}>
-      <span className="text-xs text-sim-text">{inc.description}</span>
-      <div className="flex flex-wrap gap-2 mt-1">
-        <span className="text-xs text-sim-text-faint">
-          Component:{" "}
-          <strong className="text-sim-text">{inc.affected_component}</strong>
-        </span>
-        <span className="text-xs bg-sim-surface-2 text-sim-text-muted px-1.5 py-0.5 rounded">
-          {inc.onset_overlay}
-        </span>
-        <span className="text-xs text-sim-text-faint">
-          T+{Math.round(inc.onset_second / 60)}m
-        </span>
-      </div>
-    </Card>
-  );
-}
-
 function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   const focal = draft.topology?.focal_service;
-  const pulsing = useChangePulse(JSON.stringify(focal));
+  const pulsing = useChangePulse(JSON.stringify(draft.topology));
 
   if (!focal) {
     return (
-      <Card title="Service Topology" pulsing={pulsing}>
+      <Card
+        title="Service Topology"
+        description="The focal service (where the incident occurs) plus any upstream callers and downstream dependencies."
+        pulsing={pulsing}
+      >
         <Placeholder />
       </Card>
     );
@@ -189,7 +171,11 @@ function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   const chain = focal.components.map((c) => c.label ?? c.id).join(" → ");
 
   return (
-    <Card title="Service Topology" pulsing={pulsing}>
+    <Card
+      title="Service Topology"
+      description="The focal service (where the incident occurs) plus any upstream callers and downstream dependencies."
+      pulsing={pulsing}
+    >
       <span className="text-xs font-semibold text-sim-text">{focal.name}</span>
       {chain && (
         <span className="text-xs text-sim-text-muted font-mono">{chain}</span>
@@ -208,22 +194,81 @@ function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   );
 }
 
+function IncidentCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const incidents = draft.topology?.focal_service?.incidents ?? [];
+  const pulsing = useChangePulse(JSON.stringify(incidents));
+
+  if (incidents.length === 0) {
+    return (
+      <Card
+        title="Incident"
+        description="What breaks and how. Defines the metric overlay applied to the focal service at onset_second."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
+
+  const inc = incidents[0];
+  return (
+    <Card
+      title={`Incident${incidents.length > 1 ? `s (${incidents.length})` : ""}`}
+      description="What breaks and how. Defines the metric overlay applied to the focal service at onset_second."
+      pulsing={pulsing}
+    >
+      {incidents.map((inc, i) => (
+        <div key={i} className="flex flex-col gap-1">
+          <span className="text-xs text-sim-text">{inc.description}</span>
+          <div className="flex flex-wrap gap-2">
+            <span className="text-xs text-sim-text-faint">
+              Component:{" "}
+              <strong className="text-sim-text">
+                {inc.affected_component}
+              </strong>
+            </span>
+            <span className="text-xs bg-sim-surface-2 text-sim-text-muted px-1.5 py-0.5 rounded">
+              {inc.onset_overlay}
+            </span>
+            <span className="text-xs text-sim-text-faint">
+              T+{Math.round(inc.onset_second / 60)}m
+            </span>
+            {inc.magnitude !== undefined && (
+              <span className="text-xs text-sim-text-faint">
+                ×{inc.magnitude}
+              </span>
+            )}
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 function PersonasCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   const personas = draft.personas;
   const pulsing = useChangePulse(JSON.stringify(personas));
 
-  if (!personas) {
+  if (!personas || personas.length === 0) {
     return (
-      <Card title="Personas" pulsing={pulsing}>
+      <Card
+        title="Personas"
+        description="NPCs the trainee can message. Each has a role, cooldown, and a system prompt governing how they respond."
+        pulsing={pulsing}
+      >
         <Placeholder />
       </Card>
     );
   }
 
   return (
-    <Card title={`Personas (${personas.length})`} pulsing={pulsing}>
+    <Card
+      title={`Personas (${personas.length})`}
+      description="NPCs the trainee can message. Each has a role, cooldown, and a system prompt governing how they respond."
+      pulsing={pulsing}
+    >
       {personas.map((p) => (
-        <div key={p.id} className="flex items-center gap-2">
+        <div key={p.id} className="flex items-center gap-2 flex-wrap">
           <span
             className="w-3 h-3 rounded-full flex-shrink-0"
             style={{ backgroundColor: p.avatar_color ?? "#888" }}
@@ -258,16 +303,24 @@ function RemediationActionsCard({
   const actions = draft.remediation_actions;
   const pulsing = useChangePulse(JSON.stringify(actions));
 
-  if (!actions) {
+  if (!actions || actions.length === 0) {
     return (
-      <Card title="Remediation Actions" pulsing={pulsing}>
+      <Card
+        title="Remediation Actions"
+        description="Actions available to the trainee. Correct fixes resolve the incident; red herrings are plausible but wrong."
+        pulsing={pulsing}
+      >
         <Placeholder />
       </Card>
     );
   }
 
   return (
-    <Card title={`Remediation Actions (${actions.length})`} pulsing={pulsing}>
+    <Card
+      title={`Remediation Actions (${actions.length})`}
+      description="Actions available to the trainee. Correct fixes resolve the incident; red herrings are plausible but wrong."
+      pulsing={pulsing}
+    >
       {actions.map((a) => (
         <div key={a.id} className="flex items-start gap-2">
           {a.is_correct_fix ? (
@@ -288,7 +341,9 @@ function RemediationActionsCard({
             </span>
           )}
           <div className="flex flex-col gap-0.5">
-            <span className="text-xs text-sim-text">{a.type}</span>
+            <span className="text-xs text-sim-text">
+              {a.label ?? a.type} · {a.service}
+            </span>
             {a.side_effect && (
               <span className="text-xs text-sim-text-faint">
                 {a.side_effect}
@@ -307,14 +362,22 @@ function EvaluationCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
 
   if (!evaluation) {
     return (
-      <Card title="Evaluation" pulsing={pulsing}>
+      <Card
+        title="Evaluation"
+        description="Post-incident debrief material. Defines the correct root cause, which actions count as correct, and which are red herrings."
+        pulsing={pulsing}
+      >
         <Placeholder />
       </Card>
     );
   }
 
   return (
-    <Card title="Evaluation" pulsing={pulsing}>
+    <Card
+      title="Evaluation"
+      description="Post-incident debrief material. Defines the correct root cause, which actions count as correct, and which are red herrings."
+      pulsing={pulsing}
+    >
       {evaluation.root_cause && (
         <div>
           <span className="text-xs font-medium text-sim-text-muted">
@@ -349,6 +412,320 @@ function EvaluationCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   );
 }
 
+function AlarmsCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const alarms = draft.alarms;
+  const pulsing = useChangePulse(JSON.stringify(alarms));
+
+  const SEVERITY_COLOURS: Record<string, string> = {
+    SEV1: "text-red-400",
+    SEV2: "text-orange-400",
+    SEV3: "text-yellow-400",
+    SEV4: "text-sim-text-muted",
+  };
+
+  if (!alarms || alarms.length === 0) {
+    return (
+      <Card
+        title="Alarms"
+        description="Metric thresholds that fire automatically during the sim. Can page the trainee or trigger silently in the background."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title={`Alarms (${alarms.length})`}
+      description="Metric thresholds that fire automatically during the sim. Can page the trainee or trigger silently in the background."
+      pulsing={pulsing}
+    >
+      {alarms.map((a) => (
+        <div key={a.id} className="flex items-center gap-2 flex-wrap">
+          <span
+            className={`text-xs font-semibold flex-shrink-0 ${SEVERITY_COLOURS[a.severity] ?? "text-sim-text-muted"}`}
+          >
+            {a.severity}
+          </span>
+          <span className="text-xs text-sim-text font-medium">{a.id}</span>
+          <span className="text-xs text-sim-text-faint">{a.metric_id}</span>
+          {a.auto_fire === false && (
+            <span className="text-xs bg-sim-surface-2 text-sim-text-faint px-1 rounded">
+              manual
+            </span>
+          )}
+          {a.auto_page && (
+            <span className="text-xs bg-blue-900/30 text-blue-400 px-1 rounded">
+              pages
+            </span>
+          )}
+          {a.onset_second !== undefined && (
+            <span className="text-xs text-sim-text-faint">
+              T+{Math.round(a.onset_second / 60)}m
+            </span>
+          )}
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function TicketsCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const tickets = draft.ticketing;
+  const pulsing = useChangePulse(JSON.stringify(tickets));
+
+  const STATUS_COLOURS: Record<string, string> = {
+    open: "text-red-400",
+    in_progress: "text-yellow-400",
+    resolved: "text-green-400",
+  };
+
+  if (!tickets || tickets.length === 0) {
+    return (
+      <Card
+        title="Tickets"
+        description="Pre-existing incident tickets visible in the ticketing panel. Gives the trainee early context about what's already known."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title={`Tickets (${tickets.length})`}
+      description="Pre-existing incident tickets visible in the ticketing panel. Gives the trainee early context about what's already known."
+      pulsing={pulsing}
+    >
+      {tickets.map((t) => (
+        <div key={t.id} className="flex items-start gap-2">
+          <span
+            className={`text-xs font-semibold flex-shrink-0 mt-0.5 ${STATUS_COLOURS[t.status] ?? "text-sim-text-muted"}`}
+          >
+            {t.severity}
+          </span>
+          <div className="flex flex-col gap-0.5 min-w-0">
+            <span className="text-xs text-sim-text truncate">{t.title}</span>
+            <span className="text-xs text-sim-text-faint">
+              {t.status} · by {t.created_by}
+            </span>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function ChatCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const chat = draft.chat;
+  const pulsing = useChangePulse(JSON.stringify(chat));
+
+  const channels = chat?.channels ?? [];
+  const messages = chat?.messages ?? [];
+
+  if (channels.length === 0 && messages.length === 0) {
+    return (
+      <Card
+        title="Chat"
+        description="Slack-style channels where personas and the trainee communicate. Scripted messages play out at set sim-time offsets."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title="Chat"
+      description="Slack-style channels where personas and the trainee communicate. Scripted messages play out at set sim-time offsets."
+      pulsing={pulsing}
+    >
+      <div className="flex flex-wrap gap-2">
+        {channels.map((ch) => (
+          <span
+            key={ch.id}
+            className="text-xs bg-sim-surface-2 text-sim-text-muted px-1.5 py-0.5 rounded font-mono"
+          >
+            {ch.name}
+          </span>
+        ))}
+      </div>
+      {messages.length > 0 && (
+        <span className="text-xs text-sim-text-faint">
+          {messages.length} scripted message{messages.length !== 1 ? "s" : ""}
+        </span>
+      )}
+    </Card>
+  );
+}
+
+function WikiCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const wiki = draft.wiki;
+  const pulsing = useChangePulse(JSON.stringify(wiki));
+  const pages = wiki?.pages ?? [];
+
+  if (pages.length === 0) {
+    return (
+      <Card
+        title="Wiki"
+        description="Internal runbooks and service docs the trainee can consult. Include on-call procedures, architecture notes, and known failure modes."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title={`Wiki (${pages.length} page${pages.length !== 1 ? "s" : ""})`}
+      description="Internal runbooks and service docs the trainee can consult. Include on-call procedures, architecture notes, and known failure modes."
+      pulsing={pulsing}
+    >
+      {pages.map((p, i) => (
+        <div key={i} className="flex flex-col gap-0.5">
+          <span className="text-xs text-sim-text font-medium">{p.title}</span>
+          {p.content && (
+            <span className="text-xs text-sim-text-faint line-clamp-1">
+              {p.content.split("\n")[0].replace(/^#+\s*/, "")}
+            </span>
+          )}
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+function LogsCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const patterns = draft.log_patterns ?? [];
+  const bgLogs = draft.background_logs ?? [];
+  const pulsing = useChangePulse(JSON.stringify({ patterns, bgLogs }));
+
+  const LEVEL_COLOURS: Record<string, string> = {
+    ERROR: "text-red-400",
+    WARN: "text-yellow-400",
+    INFO: "text-sim-text-muted",
+    DEBUG: "text-sim-text-faint",
+  };
+
+  if (patterns.length === 0 && bgLogs.length === 0) {
+    return (
+      <Card
+        title="Logs"
+        description="Scripted log patterns (specific messages at intervals) and ambient background streams that give the logs panel realistic noise."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      title="Logs"
+      description="Scripted log patterns (specific messages at intervals) and ambient background streams that give the logs panel realistic noise."
+      pulsing={pulsing}
+    >
+      {patterns.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-sim-text-muted">
+            Patterns ({patterns.length})
+          </span>
+          {patterns.map((p) => (
+            <div key={p.id} className="flex items-baseline gap-2 min-w-0">
+              <span
+                className={`text-xs font-mono flex-shrink-0 ${LEVEL_COLOURS[p.level] ?? "text-sim-text-muted"}`}
+              >
+                {p.level}
+              </span>
+              <span className="text-xs text-sim-text-faint font-medium flex-shrink-0">
+                {p.service}
+              </span>
+              <span className="text-xs text-sim-text truncate">
+                {p.message}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {bgLogs.length > 0 && (
+        <div className="flex flex-col gap-1 mt-1">
+          <span className="text-xs font-medium text-sim-text-muted">
+            Background streams ({bgLogs.length})
+          </span>
+          {bgLogs.map((b, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="text-xs text-sim-text-faint font-medium">
+                {b.service}
+              </span>
+              <span className="text-xs bg-sim-surface-2 text-sim-text-faint px-1 rounded">
+                {b.profile}
+              </span>
+              {b.density && b.density !== "medium" && (
+                <span className="text-xs text-sim-text-faint">{b.density}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CICDCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
+  const pipelines = draft.cicd?.pipelines ?? [];
+  const deployments = draft.cicd?.deployments ?? [];
+  const pulsing = useChangePulse(JSON.stringify(draft.cicd));
+
+  if (pipelines.length === 0 && deployments.length === 0) return null;
+
+  return (
+    <Card
+      title="CI/CD"
+      description="Pipeline stages and deployment history shown in the CI/CD panel. Useful for rollback and roll-forward scenarios."
+      pulsing={pulsing}
+    >
+      {pipelines.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-sim-text-muted">
+            Pipelines ({pipelines.length})
+          </span>
+          {pipelines.map((p) => (
+            <div key={p.id} className="flex items-center gap-2">
+              <span className="text-xs text-sim-text font-medium">
+                {p.name}
+              </span>
+              <span className="text-xs text-sim-text-faint">{p.service}</span>
+              <span className="text-xs text-sim-text-faint">
+                {p.stages.length} stage{p.stages.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {deployments.length > 0 && (
+        <div className="flex flex-col gap-1 mt-1">
+          <span className="text-xs font-medium text-sim-text-muted">
+            Deployments ({deployments.length})
+          </span>
+          {deployments.map((d, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="text-xs text-sim-text-faint">{d.service}</span>
+              <span className="text-xs font-mono text-sim-text">
+                {d.version}
+              </span>
+              <span className="text-xs text-sim-text-faint">{d.status}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function TimelineEngineCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   const timeline = draft.timeline;
   const engine = draft.engine;
@@ -356,14 +733,22 @@ function TimelineEngineCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
 
   if (!timeline && !engine) {
     return (
-      <Card title="Timeline & Engine" pulsing={pulsing}>
+      <Card
+        title="Timeline & Engine"
+        description="How long the sim runs, the default playback speed, and which LLM tools are available to the stakeholder personas."
+        pulsing={pulsing}
+      >
         <Placeholder />
       </Card>
     );
   }
 
   return (
-    <Card title="Timeline & Engine" pulsing={pulsing}>
+    <Card
+      title="Timeline & Engine"
+      description="How long the sim runs, the default playback speed, and which LLM tools are available to the stakeholder personas."
+      pulsing={pulsing}
+    >
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
         {timeline?.duration_minutes !== undefined && (
           <>
@@ -389,7 +774,10 @@ function AssumptionsCard({ assumptions }: { assumptions: string[] }) {
 
   return (
     <div data-testid="assumptions-card">
-      <Card title="Assumptions">
+      <Card
+        title="Assumptions"
+        description="Choices the LLM made on your behalf. Review these and ask for changes if anything is wrong."
+      >
         <div className="flex flex-col gap-1">
           {assumptions.map((a, i) => (
             <span key={i} className="text-xs text-sim-text-faint">
@@ -440,6 +828,12 @@ export function ScenarioCanvas({
           <PersonasCard draft={draft} />
           <RemediationActionsCard draft={draft} />
           <EvaluationCard draft={draft} />
+          <AlarmsCard draft={draft} />
+          <TicketsCard draft={draft} />
+          <ChatCard draft={draft} />
+          <WikiCard draft={draft} />
+          <LogsCard draft={draft} />
+          <CICDCard draft={draft} />
           <TimelineEngineCard draft={draft} />
           <AssumptionsCard assumptions={assumptions} />
         </div>
