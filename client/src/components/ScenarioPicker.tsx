@@ -138,6 +138,15 @@ export function ScenarioPicker({
     };
   }, []);
 
+  function handleLucky() {
+    if (!scenarios || scenarios.length === 0) return;
+    // Pick from bundled/remote scenarios only — exclude custom uploads
+    const pool = scenarios.filter((s) => !s.custom);
+    if (pool.length === 0) return;
+    const picked = pool[Math.floor(Math.random() * pool.length)];
+    handleStart(picked.loaded);
+  }
+
   function handleStart(scenario: LoadedScenario) {
     setStarting(scenario.id);
     onStart(scenario);
@@ -208,6 +217,16 @@ export function ScenarioPicker({
           )}
           <Button variant="secondary" size="sm" onClick={handleUploadClick}>
             Load scenario
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleLucky}
+            disabled={
+              !scenarios || scenarios.filter((s) => !s.custom).length === 0
+            }
+          >
+            I'm feeling lucky
           </Button>
           <input
             ref={fileInputRef}
