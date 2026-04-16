@@ -453,7 +453,11 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
       "Arrays are replaced in full — always send the complete updated array for any array field you change. " +
       "The patch is validated before being applied. If validation fails, errors are returned and you must " +
       "fix them before the draft updates. Call this as often as you like — after each user answer, " +
-      "after making an assumption, mid-conversation.",
+      "after making an assumption, mid-conversation. " +
+      "IMPORTANT: you MUST always follow every update_scenario call with either a send_message or " +
+      "ask_question — never leave the conversation silent after committing data. Use send_message to " +
+      "explain what was just built and prompt for the next piece of information, or use ask_question " +
+      "to present specific choices. The user should always know what happens next.",
     parameters: {
       type: "object",
       required: ["patch"],
