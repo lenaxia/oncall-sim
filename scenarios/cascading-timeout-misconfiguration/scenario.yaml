@@ -1,0 +1,1038 @@
+schema_version: 1
+id: cascading-timeout-misconfiguration
+title: "User Profile Service: The Paged Service Is the Victim"
+description: >
+  user-profile-service p99 is at 12 seconds and climbing. You've been paged.
+  The service looks broken — but all its own metrics are fine. The problem
+  is somewhere else entirely.
+difficulty: hard
+tags:
+  [timeout, thread-pool, cascading-failure, distributed-systems, config-change]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 20
+  pre_incident_seconds: 28800
+
+engine:
+  default_tab: logs
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 2
+
+topology:
+  focal_service:
+    name: user-profile-service
+    description: >
+      Java/Spring user profile service — handles profile reads/writes for all
+      authenticated users. Calls auth-token-service synchronously on every request
+      to validate the bearer token before processing. ECS Fargate, 200 threads per task.
+    owner: marco-rossi
+    typical_rps: 450
+    traffic_profile: always_on_api
+    health: healthy
+    components:
+      - id: alb_profile
+        type: load_balancer
+        label: "Application Load Balancer"
+        inputs: []
+      - id: ecs_profile
+        type: ecs_cluster
+        label: "user-profile ECS (Fargate)"
+        instance_count: 6
+        utilization: 0.72
+        inputs: [alb_profile]
+      - id: rds_profile
+        type: rds
+        label: "profile-db (Aurora PostgreSQL)"
+        instance_count: 2
+        max_connections: 400
+        utilization: 0.35
+        connection_utilization: 0.35
+        inputs: [ecs_profile]
+    incidents:
+      - id: thread_pool_exhaustion
+        affected_component: ecs_profile
+        description: >
+          Every request to user-profile-service calls auth-token-service synchronously
+          and then waits. auth-token-service is responding in 200ms as normal — but
+          user-profile is configured with a 10-second timeout instead of 500ms (introduced
+          by PR #4421 "docs: standardise timeout config comments" which accidentally changed
+          the value). Each thread is occupied for the auth call duration PLUS the remaining
+          9.8 seconds of unnecessary wait. With 450 RPS and 200 threads per task, the math
+          is brutal: 450 * 10s / (200 threads * 6 tasks) = queue saturation in ~27 seconds.
+        onset_overlay: gradual_degradation
+        onset_second: -10800
+        magnitude: 6.8
+        propagation_direction: upstream
+
+  upstream:
+    - name: mobile-api-gateway
+      description: "Kong API Gateway — routes mobile app traffic to user-profile-service. Seeing elevated latency on all user-profile routes."
+      correlation: upstream_impact
+      lag_seconds: 60
+      impact_factor: 0.85
+    - name: web-frontend-bff
+      description: "Node.js BFF for the web frontend. All user profile operations go through here. Starting to see timeouts on profile page loads."
+      correlation: upstream_impact
+      lag_seconds: 90
+      impact_factor: 0.75
+
+  downstream:
+    - name: auth-token-service
+      description: >
+        Go microservice — validates JWT bearer tokens. Returns 200 in ~200ms.
+        p99 latency: 180ms. Error rate: 0.02%. By all metrics, this service is
+        completely healthy. It is the source of the problem but its own SLOs are
+        fully met. NO alarm fires on auth-token-service.
+      correlation: exonerated # from auth-token-service's own perspective — it's healthy
+      lag_seconds: 0
+      impact_factor: 0.0
+    - name: user-cache
+      description: "Redis ElastiCache — profile read cache. Hit rate 78%, healthy."
+      correlation: independent
+    - name: notification-service
+      description: "Async notification service called via SQS. Not in the request path. Unaffected."
+      correlation: independent
+
+personas:
+  - id: marco-rossi
+    display_name: "Marco Rossi"
+    job_title: "Senior Software Engineer"
+    team: "User Experience"
+    avatar_color: "#DC2626"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Marco Rossi, Senior SWE on the User Experience team. You own user-profile-service.
+      You've been paged and are frantically investigating. You believe the problem is in
+      user-profile-service itself — it's what got paged.
+
+      Your strong prior: "Our service is broken. I need to fix user-profile-service."
+
+      What you know:
+      - p99 is at 12 seconds and climbing
+      - Error rate is 8% (504 Gateway Timeout errors from ALB)
+      - DB looks fine (queries are fast, <50ms)
+      - No deploy in the last 72 hours on user-profile-service
+      - You checked memory and CPU — both are fine
+      - Thread pool shows 1,200/1,200 threads active across all 6 tasks (saturated)
+
+      What you DON'T know (until trainee surfaces it):
+      - The timeout config on auth-token-service calls was changed to 10s by PR #4421
+      - auth-token-service is actually fine — it's responding in 200ms
+
+      If the trainee asks about the auth call: "We call auth-token-service on every request,
+      but it's always been fast. Our HTTP client timeout for auth is... let me check the config."
+      Then after a pause: "Huh. It says 10000ms. That used to be 500. Let me check git blame on
+      that config file."
+
+      If trainee asks about PR #4421: "Oh no. PR #4421 was merged by Kevin Okafor last Tuesday.
+      It was described as 'docs: standardise timeout config comments' — automated review approved
+      it because no tests changed and the diff looked small. But it changed AUTH_SERVICE_TIMEOUT_MS
+      from 500 to 10000. That's not a comment change. That's a live config value."
+
+      Keep responses 2-4 sentences. Panicked but professional tone.
+
+  - id: kevin-okafor
+    display_name: "Kevin Okafor"
+    job_title: "Software Engineer"
+    team: "User Experience"
+    avatar_color: "#2563EB"
+    initiates_contact: false
+    cooldown_seconds: 150
+    silent_until_contacted: true
+    system_prompt: |
+      You are Kevin Okafor, SWE on the User Experience team. You authored PR #4421
+      last Tuesday. You genuinely believed it was a documentation-only change.
+
+      If contacted about PR #4421:
+      "I'm so sorry. I was standardising all the timeout comments across our config
+       files to match the timeout documentation standard. I thought AUTH_SERVICE_TIMEOUT_MS
+       was just a comment label — I didn't realise it was the actual timeout value in
+       milliseconds. The automated reviewer approved it because no tests changed. I should
+       have tested this in staging."
+
+      If asked what the right value is: "It should be 500ms. We always say auth
+       should be < 500ms end-to-end. I changed it to 10000ms by mistake — that's
+       10 full seconds. Every request has been waiting 10 seconds for auth to 'complete'
+       even though auth actually finishes in 200ms."
+
+      Keep responses brief. Apologetic but cooperative tone.
+
+  - id: beth-nakamura
+    display_name: "Beth Nakamura"
+    job_title: "Principal SRE"
+    team: "Platform Reliability"
+    avatar_color: "#059669"
+    initiates_contact: false
+    cooldown_seconds: 180
+    silent_until_contacted: true
+    system_prompt: |
+      You are Beth Nakamura, Principal SRE on Platform Reliability. You are the escalation
+      contact for SEV1 incidents. If paged or contacted during a SEV2 that is escalating:
+
+      You know distributed systems failure modes deeply. If the trainee is stuck:
+      "If the paged service has no recent deploy and its own dependencies (DB, cache)
+       are healthy, the problem is almost always in an outbound call it's making.
+       What does user-profile-service call synchronously on every request?"
+
+      If they've identified the thread pool exhaustion:
+      "Classic thread pool saturation from a blocking outbound call. The math: if
+       you have 200 threads per task and 450 RPS, and each request blocks for 10
+       seconds, that's 4500 active threads required. You have 1200 total. Saturation
+       was inevitable within 30 seconds of the timeout config going live."
+
+      If asked about the fix: "Emergency deploy of a one-line config change.
+       AUTH_SERVICE_TIMEOUT_MS = 500. The fix takes 3 minutes to deploy. No rollback
+       needed — there's nothing wrong with the code, just the config."
+
+      Keep responses analytical and concise. Senior/calm tone even under pressure.
+
+  - id: auth-service-bot
+    display_name: "auth-monitor-bot"
+    job_title: "Automation"
+    team: "Auth"
+    avatar_color: "#6B7280"
+    initiates_contact: true
+    cooldown_seconds: 600
+    silent_until_contacted: false
+    system_prompt: |
+      You are auth-monitor-bot, an automated monitoring bot for auth-token-service.
+      Post periodic health updates regardless of conversation state.
+      At T+0: post "auth-token-service: all systems nominal. p99=178ms, error_rate=0.02%, 
+      token_validations/min=27000. SLO compliance: 100%."
+      At T+300: post "auth-token-service: all systems nominal. p99=182ms, error_rate=0.02%,
+      token_validations/min=27000. SLO compliance: 100%." 
+      These posts are the key clue: auth is healthy but user-profile is failing.
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-profile-incident
+    from: marco-rossi
+    to: trainee
+    subject: "[SEV2] user-profile-service: p99 latency 12s, thread pool saturated"
+    body: |
+      Hey,
+
+      Getting hammered on user-profile-service. p99 is at 12 seconds and still climbing.
+      Error rate is 8% (504s from the ALB). Thread pool is fully saturated — 1,200/1,200
+      threads active across all 6 tasks.
+
+      The weird thing: DB looks completely fine. Queries are under 50ms. Memory and CPU
+      are normal. No deploys on user-profile in 72 hours.
+
+      Opened PROF-2219. Need help — I can't figure out what's wrong with our service
+      because nothing looks wrong except the thread pool.
+
+      — Marco
+
+  - id: email-002
+    at_second: 240
+    thread_id: thread-profile-incident
+    from: marco-rossi
+    to: trainee
+    subject: "[SEV2] user-profile-service: p99 latency 12s, thread pool saturated"
+    body: |
+      Update: Checked all the usual suspects.
+
+      - DB: Aurora p99 < 50ms, healthy ✓
+      - Redis cache: hit rate 78%, healthy ✓
+      - Memory: 68% usage, normal ✓
+      - CPU: 71%, elevated but not the cause ✓
+      - Network: no packet loss, latency normal ✓
+      - No deploy in 72h ✓
+
+      Everything downstream of user-profile looks fine. The service itself looks fine
+      except it's somehow blocking 1,200 threads. I'm looking at thread dumps now.
+
+      — Marco
+
+  - id: email-003
+    at_second: 480
+    thread_id: thread-profile-incident
+    from: marco-rossi
+    to: trainee
+    subject: "[SEV2] user-profile-service: p99 latency 12s, thread pool saturated"
+    body: |
+      Thread dump results:
+
+      Of 1,200 active threads, 1,193 are in state:
+        java.lang.Thread.State: WAITING (parking)
+        at sun.misc.Unsafe.park(Native Method)
+        at java.util.concurrent.locks.LockSupport.park
+        at com.user.profile.auth.AuthTokenClient.validateToken(AuthTokenClient.java:84)
+
+      They're ALL waiting on auth token validation. But auth-token-service is responding
+      in 180ms — I can see that in the auth service metrics. So why are 1,193 threads
+      waiting for an auth call?
+
+      Let me check the timeout config on our auth HTTP client...
+
+      — Marco
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: ue-engineering
+      name: "#ue-engineering"
+    - id: sre-oncall
+      name: "#sre-oncall"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: marco-rossi
+      text: "user-profile-service p99 is 12s and climbing. Thread pool saturated. DB is fine. No recent deploy. Opening SEV2 — PROF-2219."
+    - id: chat-002
+      at_second: 15
+      channel: "#incidents"
+      persona: auth-service-bot
+      text: "auth-token-service: all systems nominal. p99=178ms, error_rate=0.02%, token_validations/min=27000. SLO compliance: 100%."
+    - id: chat-003
+      at_second: 60
+      channel: "#ue-engineering"
+      persona: marco-rossi
+      text: "Anyone have eyes on user-profile right now? Thread pool is saturated but I can't find the bottleneck. DB is fast, cache is healthy."
+    - id: chat-004
+      at_second: 120
+      channel: "#incidents"
+      persona: marco-rossi
+      text: "Escalating to SEV2. p99 is now 13.4s. Mobile app is showing loading spinners on all profile pages."
+    - id: chat-005
+      at_second: 300
+      channel: "#sre-oncall"
+      persona: marco-rossi
+      text: "Thread dump shows 1193/1200 threads blocked on AuthTokenClient.validateToken() — but auth-token-service itself is reporting 178ms p99. How is this possible?"
+    - id: chat-006
+      at_second: 315
+      channel: "#incidents"
+      persona: auth-service-bot
+      text: "auth-token-service: all systems nominal. p99=182ms, error_rate=0.02%, token_validations/min=27000. SLO compliance: 100%."
+    - id: chat-007
+      at_second: 420
+      channel: "#sre-oncall"
+      persona: beth-nakamura
+      text: "Marco — thread dump shows the block is in your HTTP client, not in auth-token-service. The client is waiting for a timeout that hasn't expired yet. Check your AUTH_SERVICE_TIMEOUT_MS config value."
+    - id: chat-008
+      at_second: 540
+      channel: "#ue-engineering"
+      persona: marco-rossi
+      text: "Found it. AUTH_SERVICE_TIMEOUT_MS is set to 10000. Should be 500. PR #4421 from last Tuesday changed it. Kevin's PR — labeled as 'docs only' but it changed a live config value."
+    - id: chat-009
+      at_second: 555
+      channel: "#ue-engineering"
+      persona: kevin-okafor
+      text: "Oh god. I'm so sorry — I thought that was a comment. I was standardizing timeout comments across all config files. I didn't realize AUTH_SERVICE_TIMEOUT_MS was the actual value. I changed it from 500 to 10000."
+
+ticketing:
+  - id: PROF-2219
+    title: "user-profile-service: p99 latency 12s, thread pool saturated, 8% 504 errors"
+    severity: SEV2
+    status: open
+    description: |
+      ## Summary
+
+      user-profile-service is experiencing severe latency degradation. p99 is at 12 seconds
+      and climbing. Thread pool is fully saturated. 8% of requests are timing out at the ALB
+      (504 Gateway Timeout).
+
+      ## Symptoms
+
+      - p99 latency: **12.4s** and climbing (baseline: ~120ms)
+      - Error rate: **8.1%** — 504 Gateway Timeout from ALB
+      - Thread pool: **1,200/1,200 active** (fully saturated across all 6 tasks)
+      - DB latency: **<50ms** — healthy
+      - Cache hit rate: **78%** — healthy
+      - No deploys on user-profile-service in 72 hours
+
+      ## Thread Dump (sample)
+
+      ```
+      Thread[http-nio-8080-exec-127,5,main] WAITING
+        at sun.misc.Unsafe.park(Native Method)
+        at AuthTokenClient.validateToken(AuthTokenClient.java:84)
+        [waiting for HTTP response — timeout not yet expired]
+      ```
+
+      Of 1,200 threads: 1,193 are blocked in `AuthTokenClient.validateToken()`
+
+      ## Key Observation
+
+      auth-token-service is reporting **p99=178ms, 100% SLO compliance**.
+      But our threads are blocking for much longer. Why?
+
+    created_by: marco-rossi
+    assignee: trainee
+    at_second: -60
+
+  - id: PROF-2220
+    title: "Mobile app: profile page load timeout — all users affected"
+    severity: SEV3
+    status: open
+    description: |
+      ## Customer Impact
+
+      All mobile app users experiencing loading spinners on profile pages.
+      Profile page is timing out after 15 seconds (mobile client timeout).
+      Account settings, profile edits, and avatar uploads are all blocked.
+      Estimated affected users: ~180,000 active sessions.
+
+    created_by: marco-rossi
+    assignee: trainee
+    at_second: 120
+
+alarms:
+  - id: alarm-profile-p99
+    service: user-profile-service
+    metric_id: p99_latency_ms
+    condition: "p99 latency > 3000ms"
+    severity: SEV2
+    auto_fire: true
+    auto_page: true
+    onset_second: -10800
+    page_message: "user-profile-service p99 latency breached 3s. Thread pool may be saturating."
+  - id: alarm-profile-error
+    service: user-profile-service
+    metric_id: error_rate
+    condition: "error rate > 5%"
+    severity: SEV2
+    auto_fire: true
+    auto_page: false
+    onset_second: -10560
+  - id: alarm-profile-threads
+    service: user-profile-service
+    metric_id: p99_latency_ms
+    condition: "active_threads > 90% of max"
+    severity: SEV3
+    auto_fire: true
+    auto_page: false
+    onset_second: -10680
+  # NOTE: No alarm fires on auth-token-service — it is within SLO
+  # This is the key trap: the broken service doesn't page, the victim does.
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: WARN
+    service: user-profile-service
+    message: "Thread pool utilization: 847/1200 threads active (70%). High thread contention detected."
+  - id: log-002
+    at_second: 10
+    level: WARN
+    service: user-profile-service
+    message: "Thread pool utilization: 1094/1200 threads active (91%). Requests starting to queue."
+  - id: log-003
+    at_second: 20
+    level: ERROR
+    service: user-profile-service
+    message: "Thread pool utilization: 1200/1200 threads active (100%). Request queue depth: 247."
+  - id: log-004
+    at_second: 30
+    level: ERROR
+    service: user-profile-service
+    message: "GET /users/u_8847291/profile - 504 Gateway Timeout - duration: 10001ms - thread: http-nio-8080-exec-91"
+  - id: log-005
+    at_second: 30
+    level: DEBUG
+    service: user-profile-service
+    message: "AuthTokenClient.validateToken() START - endpoint: auth-token-service:8080/validate - timeout_ms: 10000"
+  - id: log-006
+    at_second: 30
+    level: DEBUG
+    service: user-profile-service
+    message: "AuthTokenClient.validateToken() COMPLETE - duration: 181ms - status: 200 - token_valid: true"
+  - id: log-007
+    at_second: 30
+    level: WARN
+    service: user-profile-service
+    message: "AuthTokenClient: response received in 181ms but thread held for 9819ms (timeout_ms=10000 - actual_duration=181ms = 9819ms wasted)"
+  - id: log-008
+    at_second: 45
+    level: ERROR
+    service: user-profile-service
+    message: "Request queue overflow: 500 requests dropped (queue_max=500). HTTP 503 responses being sent."
+  - id: log-009
+    at_second: 60
+    level: INFO
+    service: user-profile-service
+    message: "Config dump: AUTH_SERVICE_TIMEOUT_MS=10000 DB_POOL_SIZE=20 CACHE_TTL_SECONDS=300 MAX_THREADS_PER_TASK=200"
+  - id: log-010
+    at_second: 90
+    level: ERROR
+    service: user-profile-service
+    message: "ThreadPoolExecutor queue full: task rejected. Thread pool: coreSize=200, maxSize=200, queueSize=500, queueFull=true"
+  - id: log-011
+    at_second: 120
+    level: WARN
+    service: user-profile-service
+    message: "Auth service p99 (internal measurement): 182ms. Our configured timeout: 10000ms. Delta: 9818ms idle wait per request."
+  - id: log-012
+    at_second: 180
+    level: INFO
+    service: user-profile-service
+    message: "Outbound HTTP config: AUTH_SERVICE_URL=http://auth-token-service:8080 AUTH_SERVICE_TIMEOUT_MS=10000 AUTH_SERVICE_CONNECT_TIMEOUT_MS=1000 AUTH_SERVICE_MAX_CONNECTIONS=50"
+  - id: log-013
+    at_second: 240
+    level: DEBUG
+    service: user-profile-service
+    message: "Git config history: AUTH_SERVICE_TIMEOUT_MS: 500 → 10000 (PR #4421, 2024-01-09, author: kevin-okafor, message: 'docs: standardise timeout config comments')"
+  - id: log-014
+    at_second: 300
+    level: ERROR
+    service: user-profile-service
+    message: "Cascading timeout: 1193 threads blocked in AuthTokenClient.validateToken() — all waiting for timeout expiry, actual auth call completed long ago"
+  - id: log-015
+    at_second: 360
+    level: WARN
+    service: user-profile-service
+    message: "Health check: DB connectivity OK (47ms), cache connectivity OK, auth-token-service connectivity OK (184ms) — local health checks passing, service is not 'down' per health probe"
+
+log_patterns:
+  - id: thread-pool-saturation
+    level: ERROR
+    service: user-profile-service
+    message: "Thread pool utilization: 1200/1200 threads active (100%). Request queue depth: {n}."
+    interval_seconds: 15
+    from_second: 20
+    to_second: 1200
+    jitter_seconds: 3
+
+  - id: thread-pool-warn-climb
+    level: WARN
+    service: user-profile-service
+    message: "Thread pool utilization: {n}/1200 threads active ({n}%). Queue forming."
+    interval_seconds: 10
+    from_second: 0
+    to_second: 25
+    jitter_seconds: 2
+
+  - id: auth-timeout-waste
+    level: WARN
+    service: user-profile-service
+    message: "AuthTokenClient: response received in {n}ms but thread held for {n}ms (timeout_ms=10000 - actual_duration={n}ms = {n}ms wasted)"
+    interval_seconds: 8
+    from_second: 30
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: auth-validate-start
+    level: DEBUG
+    service: user-profile-service
+    message: "AuthTokenClient.validateToken() START - user={n} endpoint=auth-token-service:8080/validate timeout_ms=10000"
+    interval_seconds: 5
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 1
+
+  - id: auth-validate-complete
+    level: DEBUG
+    service: user-profile-service
+    message: "AuthTokenClient.validateToken() COMPLETE in {n}ms — token valid. Thread still held for remaining {n}ms of 10000ms timeout window."
+    interval_seconds: 5
+    from_second: 1
+    to_second: 1200
+    jitter_seconds: 1
+
+  - id: thread-blocked-stack
+    level: DEBUG
+    service: user-profile-service
+    message: "Thread[http-nio-8080-exec-{n}] WAITING — at AuthTokenClient.validateToken(AuthTokenClient.java:84) — holding connection for 10000ms timeout"
+    interval_seconds: 20
+    from_second: 30
+    to_second: 1200
+    jitter_seconds: 5
+
+  - id: http-504
+    level: ERROR
+    service: user-profile-service
+    message: "GET /users/{n}/profile - 504 Gateway Timeout - duration: 10001ms"
+    interval_seconds: 5
+    from_second: 60
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: http-504-update
+    level: ERROR
+    service: user-profile-service
+    message: "PUT /users/{n}/profile - 504 Gateway Timeout - duration: 10002ms - thread: http-nio-8080-exec-{n}"
+    interval_seconds: 8
+    from_second: 65
+    to_second: 1200
+    jitter_seconds: 3
+
+  - id: request-queue-overflow
+    level: ERROR
+    service: user-profile-service
+    message: "Request queue overflow: {n} requests dropped (queue_max=500, queue_current=500). Sending HTTP 503."
+    interval_seconds: 30
+    from_second: 45
+    to_second: 1200
+    jitter_seconds: 8
+
+  - id: thread-pool-executor-reject
+    level: ERROR
+    service: user-profile-service
+    message: "ThreadPoolExecutor.RejectedExecutionException: task rejected — pool=200/200 active, queue=500/500 full"
+    interval_seconds: 12
+    from_second: 40
+    to_second: 1200
+    jitter_seconds: 4
+
+  - id: auth-service-healthy-info
+    level: INFO
+    service: user-profile-service
+    message: "auth-token-service health probe: status=OK p99={n}ms (last 60s). Auth service itself is healthy."
+    interval_seconds: 60
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 5
+
+  - id: db-query-fast
+    level: DEBUG
+    service: user-profile-service
+    message: "DB query: SELECT * FROM profiles WHERE user_id={n} — duration=47ms (healthy)"
+    interval_seconds: 30
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 10
+
+  - id: cache-hit
+    level: DEBUG
+    service: user-profile-service
+    message: "Cache hit for user_id={n} — Redis latency=2ms. Cache layer healthy."
+    interval_seconds: 25
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 8
+
+  - id: config-dump-incriminating
+    level: INFO
+    service: user-profile-service
+    message: "HTTP client config: AUTH_SERVICE_TIMEOUT_MS=10000 AUTH_SERVICE_CONNECT_TIMEOUT_MS=1000 AUTH_SERVICE_URL=http://auth-token-service:8080 AUTH_SERVICE_MAX_CONNECTIONS=50"
+    interval_seconds: 300
+    from_second: 60
+    to_second: 1200
+    jitter_seconds: 30
+
+  - id: thread-math-warn
+    level: WARN
+    service: user-profile-service
+    message: "Thread saturation analysis: {n} RPS × 10000ms timeout / (200 threads × 6 tasks) = {n} required threads. Available: 1200. SATURATION INEVITABLE."
+    interval_seconds: 120
+    from_second: 90
+    to_second: 1200
+    jitter_seconds: 20
+
+  - id: auth-sidecar-200
+    level: INFO
+    service: auth-token-service
+    message: "POST /validate token_type=Bearer duration={n}ms status=200 user_id={n}"
+    interval_seconds: 3
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 1
+
+  - id: auth-p99-healthy
+    level: INFO
+    service: auth-token-service
+    message: "auth-token-service metrics: p50={n}ms p99={n}ms error_rate=0.02% token_validations_per_min=27000. SLO: COMPLIANT."
+    interval_seconds: 60
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 5
+
+background_logs:
+  - profile: java_web_service
+    service: user-profile-service
+    from_second: -300
+    to_second: 1200
+    density: high
+  - profile: sidecar_proxy
+    service: auth-token-service
+    from_second: -300
+    to_second: 1200
+    density: low
+
+wiki:
+  pages:
+    - title: "user-profile-service Runbook"
+      content: |
+        # user-profile-service Runbook
+
+        ## Overview
+
+        user-profile-service handles all user profile operations (read, update, avatar).
+        Every request validates the bearer token by calling **auth-token-service** synchronously
+        before processing. The auth call is in the hot path — it must be fast.
+
+        ## HTTP Client Configuration
+
+        Timeout values for outbound service calls (configured in `application.yml`):
+
+        | Config Key | Default | Notes |
+        |---|---|---|
+        | `AUTH_SERVICE_TIMEOUT_MS` | 500 | **Read/write timeout for auth-token-service calls** |
+        | `AUTH_SERVICE_CONNECT_TIMEOUT_MS` | 1000 | TCP connection establishment timeout |
+        | `DB_QUERY_TIMEOUT_MS` | 5000 | Individual DB query timeout |
+        | `CACHE_TIMEOUT_MS` | 200 | Redis cache operation timeout |
+
+        ⚠️ **Critical:** `AUTH_SERVICE_TIMEOUT_MS` should NEVER exceed 1000ms. auth-token-service
+        p99 is ~180ms. Setting this high causes thread pool starvation under any meaningful load.
+
+        ## Thread Pool Saturation
+
+        **Symptoms:**
+        - p99 latency climbing to match timeout value
+        - Thread pool metrics: active_threads = max_threads
+        - 504 errors from ALB (requests timing out before getting a thread)
+        - All threads blocked in the same location (check thread dump)
+
+        **Diagnosis:**
+        1. Take a thread dump: `jstack <pid>` or check ECS thread metrics
+        2. Identify which call all threads are blocked on
+        3. Check the configured timeout for that call vs. the service's actual p99
+        4. If timeout >> actual p99, threads are wasting time waiting for a timeout
+           that will never occur before the timeout expires
+
+        **Why this causes saturation (the math):**
+        - 450 RPS × 10s timeout = 4,500 concurrent "active" threads needed
+        - Actual thread pool: 200 threads × 6 tasks = 1,200 threads available
+        - Saturation at T+30s is mathematically guaranteed
+
+        **Fix:**
+        1. Reduce the offending timeout to a sane value
+        2. Emergency deploy the config change
+        3. Do NOT restart the service without fixing the timeout (restarts fill up again immediately)
+
+    - title: "auth-token-service Overview"
+      content: |
+        # auth-token-service Overview
+
+        ## Purpose
+
+        Validates JWT bearer tokens for all backend services. Returns token claims
+        on success (HTTP 200) or rejects invalid tokens (HTTP 401/403).
+
+        ## SLOs
+
+        | Metric | SLO | Current |
+        |---|---|---|
+        | p99 latency | < 500ms | ~180ms |
+        | Availability | 99.9% | 99.98% |
+        | Error rate | < 0.1% | 0.02% |
+
+        ## Important Note for Callers
+
+        auth-token-service is fast. Your configured timeout for auth calls should be
+        **500ms or less**. If you set a timeout of multiple seconds, you are not protecting
+        against auth-token-service being slow — you are guaranteeing that each of your
+        threads will be held for that duration on every request, regardless of how fast
+        auth responds.
+
+        Recommended: `AUTH_SERVICE_TIMEOUT_MS = 500`
+        Absolute maximum: `AUTH_SERVICE_TIMEOUT_MS = 1000`
+
+    - title: "Cascading Failure Patterns"
+      content: |
+        # Cascading Failure Patterns
+
+        ## Synchronous Dependency Timeout Propagation
+
+        **Pattern:** Service A calls Service B synchronously. B is slow (or configured with
+        a too-large timeout). A's thread pool exhausts. A appears broken. B looks fine.
+
+        **Why it's deceptive:**
+        - The paged service (A) is the victim, not the cause
+        - B's own metrics show it's healthy — it IS healthy
+        - No alarm fires on B — it's within SLO
+        - A's metrics show saturation — engineers focus on A
+
+        **Diagnosis checklist:**
+        1. Is there a recent deploy on A? (No = A probably didn't introduce the bug)
+        2. What does A's thread dump show? (All threads blocked in the same outbound call?)
+        3. Is the blocked service (B) actually slow? (Check B's own metrics)
+        4. If B is fast but A's threads are blocked on B: the timeout on A's B-client is too high
+
+        **Fix:** Reduce the timeout on A's outbound client for B. Emergency deploy.
+        Do NOT: scale A, restart A, investigate B for being broken (it isn't).
+
+        ## Thread Pool Queuing Theory
+
+        For a service with:
+        - R = request rate (RPS)
+        - T = per-request hold time (= outbound timeout if timeout is the bottleneck)
+        - N = max thread pool size
+
+        The service saturates when: R × T > N
+
+        Example: 450 RPS × 10s = 4,500 concurrent threads needed. Pool size = 1,200.
+        Saturation is inevitable. Time to saturation ≈ N / (R × T - N) × T seconds.
+        At these values: saturation in ~27 seconds.
+
+cicd:
+  pipelines:
+    - id: pipeline-profile
+      name: "user-profile-service"
+      service: user-profile-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v3.8.1
+          previous_version: v3.8.0
+          status: succeeded
+          deployed_at_sec: -259200 # 3 days ago — NOT the cause
+          commit_message: "feat: add profile picture compression for mobile uploads"
+          author: marco-rossi
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v3.8.1
+          previous_version: v3.8.0
+          status: succeeded
+          deployed_at_sec: -259200
+          commit_message: "feat: add profile picture compression for mobile uploads"
+          author: marco-rossi
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Smoke tests"
+              status: passed
+          promotion_events:
+            - version: v3.8.1
+              sim_time: -259200
+              status: succeeded
+              note: "AutoPromote: all checks passed"
+
+    - id: pipeline-auth
+      name: "auth-token-service"
+      service: auth-token-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v2.1.4
+          previous_version: v2.1.3
+          status: succeeded
+          deployed_at_sec: -604800 # 7 days ago
+          commit_message: "docs: standardise timeout config comments (PR #4421)"
+          author: kevin-okafor
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+            - name: "Static analysis"
+              status: passed
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v2.1.4
+          previous_version: v2.1.3
+          status: succeeded
+          deployed_at_sec: -604800
+          commit_message: "docs: standardise timeout config comments (PR #4421)"
+          author: kevin-okafor
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Smoke tests"
+              status: passed
+          promotion_events:
+            - version: v2.1.4
+              sim_time: -604800
+              status: succeeded
+              note: "AutoPromote: all checks passed — no test failures, no metric degradation"
+            - version: v2.1.3
+              sim_time: -1209600
+              status: succeeded
+              note: "AutoPromote: all checks passed"
+
+  deployments:
+    - service: user-profile-service
+      version: v3.8.1
+      deployed_at_sec: -259200
+      status: active
+      commit_message: "feat: add profile picture compression for mobile uploads"
+      author: marco-rossi
+    - service: user-profile-service
+      version: v3.8.0
+      deployed_at_sec: -604800
+      status: previous
+      commit_message: "fix: handle concurrent profile update race condition"
+      author: marco-rossi
+    - service: auth-token-service
+      version: v2.1.4
+      deployed_at_sec: -604800
+      status: active
+      commit_message: "docs: standardise timeout config comments (PR #4421)"
+      author: kevin-okafor
+    - service: auth-token-service
+      version: v2.1.3
+      deployed_at_sec: -1209600
+      status: previous
+      commit_message: "perf: cache token validation results for 30s (reduces downstream DB load)"
+      author: kevin-okafor
+
+host_groups:
+  - id: user-profile-us-east-1
+    label: "user-profile-service (us-east-1)"
+    service: user-profile-service
+    instance_count: 6
+    description: "6 Fargate tasks, 200 threads each = 1,200 total threads across all tasks"
+
+remediation_actions:
+  - id: emergency_deploy_timeout_fix
+    type: emergency_deploy
+    service: auth-token-service
+    is_correct_fix: true
+    target_version: v2.1.5
+    target_stage: prod
+    label: "Deploy v2.1.5: fix AUTH_SERVICE_TIMEOUT_MS = 500"
+    side_effect: >
+      v2.1.5 deployed with AUTH_SERVICE_TIMEOUT_MS=500. Within 90 seconds, user-profile
+      thread pool starts draining — threads complete in 500ms instead of 10 seconds.
+      p99 drops from 12s to 140ms within 3 minutes. Error rate returns to baseline.
+      No data loss, no customer impact beyond the incident window.
+
+  - id: rollback_auth_v2_1_3
+    type: rollback
+    service: auth-token-service
+    is_correct_fix: true
+    target_version: v2.1.3
+    label: "Rollback auth-token-service to v2.1.3"
+    side_effect: >
+      Rolled back to v2.1.3 (AUTH_SERVICE_TIMEOUT_MS=500). Equivalent result to the
+      emergency deploy. Thread pool drains within 90 seconds. Recovery identical.
+      Slightly slower to execute than deploying a targeted config fix.
+
+  - id: restart_user_profile
+    type: restart_service
+    service: user-profile-service
+    is_correct_fix: false
+    label: "Restart user-profile-service ECS tasks"
+    side_effect: >
+      All 6 ECS tasks restart. Thread pool clears temporarily. Within 27 seconds of
+      startup, the thread pool saturates again — the timeout config is still 10000ms
+      and the math is unchanged. p99 briefly drops to 140ms then climbs back to 12s.
+      Requests during the restart window receive 503 errors.
+
+  - id: scale_user_profile
+    type: scale_cluster
+    service: user-profile-service
+    is_correct_fix: false
+    label: "Scale user-profile-service to 12 tasks"
+    side_effect: >
+      12 ECS tasks now running, 2,400 total threads. Thread pool saturation is briefly
+      relieved. However: 450 RPS × 10s timeout still requires 4,500 concurrent threads.
+      The expanded pool saturates within 90 seconds. p99 drops from 12s to 11.2s for
+      2 minutes, then returns to 12s. You've doubled infrastructure cost for negligible gain.
+
+  - id: throttle_mobile_api
+    type: throttle_traffic
+    service: user-profile-service
+    is_correct_fix: false
+    label: "Throttle mobile API gateway to 50% traffic"
+    side_effect: >
+      Incoming RPS drops from 450 to 225. Thread pool saturation is delayed —
+      225 RPS × 10s = 2,250 threads needed vs 1,200 available. Service partially
+      recovers for ~4 minutes, then saturates again. Error rate drops from 8% to 3%
+      but users are still experiencing degraded service. Buys time but not a fix.
+    throttle_targets:
+      - id: all-profile-traffic
+        scope: global
+        label: "All profile traffic"
+        description: "Rate limit all incoming requests to user-profile-service"
+        llm_hint: "Reducing RPS below 120 (= 1200 threads / 10s timeout) would theoretically prevent saturation, but at 120 RPS you're serving 27% of normal capacity. Does not fix the root cause."
+        unit: rps
+        baseline_rate: 450
+
+evaluation:
+  root_cause: >
+    PR #4421 "docs: standardise timeout config comments" (merged 7 days ago, authored by
+    Kevin Okafor) accidentally changed AUTH_SERVICE_TIMEOUT_MS in auth-token-service's
+    config from 500ms to 10000ms. Because auth-token-service responds in ~180ms, every
+    thread in user-profile-service completes the auth call in 180ms but then holds the
+    thread for the remaining 9,820ms waiting for a timeout that will never fire. With
+    450 RPS and only 1,200 threads, saturation is mathematically inevitable. The paged
+    service (user-profile) is a victim — the cause is in a downstream service that is
+    within its own SLO and generates no alerts. The fix is a one-line config change.
+
+  relevant_actions:
+    - action: search_logs
+      why: >
+        Logs reveal AUTH_SERVICE_TIMEOUT_MS=10000 in the config dump (log at T+60s),
+        the 'thread held for 9819ms' warning, and critically: 'Git config history:
+        AUTH_SERVICE_TIMEOUT_MS: 500 → 10000 (PR #4421)'. This is the smoking gun.
+    - action: view_deployment_history
+      why: >
+        Shows user-profile has no recent deploy (3 days ago, unrelated feature).
+        Shows auth-token-service deployed 7 days ago — 'docs: standardise timeout config
+        comments'. The mislabeled PR is the critical clue.
+    - action: direct_message_persona
+      why: >
+        Contacting Marco Rossi surfaces the thread dump (1193 threads blocked in
+        AuthTokenClient.validateToken). Contacting Kevin Okafor confirms the accidental
+        config change. Contacting Beth Nakamura provides the diagnosis framework if stuck.
+    - action: read_wiki_page
+      why: >
+        'Cascading Failure Patterns' wiki page describes this exact failure mode and
+        includes the thread pool saturation math. 'user-profile-service Runbook' documents
+        the correct timeout values.
+    - action: view_pipeline
+      why: >
+        Checking the auth-token-service pipeline reveals the 'docs: standardise timeout
+        config comments' deploy from 7 days ago — corroborates the git history in logs.
+    - action: trigger_rollback
+      why: "Rolling back auth-token-service to v2.1.3 restores the 500ms timeout and resolves saturation within 90 seconds."
+      service: auth-token-service
+      remediation_action_id: rollback_auth_v2_1_3
+    - action: mark_resolved
+      why: "Confirms resolution once p99 returns to baseline."
+
+  red_herrings:
+    - action: restart_service
+      why: "Restarting user-profile-service clears the thread pool for 27 seconds, then it saturates again with the same math."
+    - action: scale_cluster
+      why: "Doubling tasks doubles the thread pool but the timeout math still drives to saturation — just takes 90 seconds longer."
+    - action: throttle_traffic
+      why: "Throttling reduces load but requires dropping to 27% of normal capacity to prevent saturation. Treats the symptom, not the cause."
+    - action: investigate_alert
+      why: "Investigating auth-token-service's own alarms is a dead end — it has no alarms firing. The healthy service generates no signal."
+
+  debrief_context: |
+    This scenario specifically tests the ability to diagnose a victim service — where the
+    paged service is not the cause of its own degradation. This is one of the most
+    disorienting failure modes in distributed systems: every instinct says "fix the broken
+    service" but the broken service is innocent.
+
+    The diagnostic chain:
+    1. No recent deploy on user-profile → it didn't introduce the bug
+    2. Thread dump shows all threads blocked in AuthTokenClient → outbound call is the bottleneck
+    3. auth-token-service metrics show p99=180ms → it's NOT slow
+    4. If auth is fast but threads are blocking for 10s → the timeout is configured wrong
+    5. Logs show AUTH_SERVICE_TIMEOUT_MS=10000 and git history shows PR #4421 changed it
+    6. Fix: change to 500ms, emergency deploy or rollback
+
+    Common mistakes:
+    - Restarting user-profile (buys 27 seconds, then fails again)
+    - Scaling user-profile (doubles the delay to saturation, not a fix)
+    - Focusing on auth-token-service being the problem (it's working perfectly)
+    - Missing that the CI/CD pipeline commit message "docs: standardise timeout config
+      comments" is misleading — it wasn't a docs change
+
+    Post-incident: PR review process should require explicit human approval for any change
+    to timeout configuration values, even if labeled as documentation.

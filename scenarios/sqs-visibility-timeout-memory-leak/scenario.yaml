@@ -1,0 +1,984 @@
+schema_version: 1
+id: sqs-visibility-timeout-memory-leak
+title: "Notification Service: Two Overlapping Incidents, One Partial Fix"
+description: >
+  notification-service is degrading and the DLQ is filling. You fix the memory
+  leak and declare victory. Then the DLQ starts growing again. Something else
+  is wrong — and it was wrong the whole time.
+difficulty: hard
+tags:
+  [sqs, visibility-timeout, memory-leak, dlq, dual-root-cause, notifications]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 25
+  pre_incident_seconds: 43200
+
+engine:
+  default_tab: logs
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 3
+
+topology:
+  focal_service:
+    name: notification-service
+    description: >
+      Python/Celery notification service — consumes SQS messages and dispatches
+      email, push, and SMS notifications. Long-polling SQS consumer with 4 workers
+      per ECS task. Processes ~800 messages/minute at baseline.
+    owner: diana-walsh
+    typical_rps: 1 # queue-based service — RPS not applicable
+    traffic_profile: always_on_api
+    health: degraded
+    components:
+      - id: sqs_notifications
+        type: sqs_queue
+        label: "notifications-queue (standard)"
+        inputs: []
+      - id: ecs_workers
+        type: ecs_cluster
+        label: "notification-workers ECS (Fargate)"
+        instance_count: 4
+        utilization: 0.88
+        inputs: [sqs_notifications]
+      - id: sqs_dlq
+        type: sqs_queue
+        label: "notifications-dlq (dead letter queue)"
+        inputs: [sqs_notifications]
+    incidents:
+      - id: memory_leak_oom
+        affected_component: ecs_workers
+        description: >
+          v3.1.0 introduced a memory leak in the email template renderer — each rendered
+          template retains a reference to the Jinja2 environment, preventing GC. Workers
+          run normally for 8-12 minutes then OOM-kill and restart. Restart takes ~45s.
+          During restart: no consumers on the queue → messages accumulate. After restart:
+          consumers resume but start leaking again immediately.
+        onset_overlay: gradual_degradation
+        onset_second: -10800
+        magnitude: 3.2
+        propagation_direction: upstream
+      - id: visibility_timeout_duplicate_delivery
+        affected_component: sqs_notifications
+        description: >
+          Separate from the memory leak: SQS visibility timeout was changed from 300s
+          to 30s in an infrastructure config PR 3 weeks ago ("reduce visibility timeout
+          for faster DLQ promotion"). Notification processing takes 45-180 seconds for
+          SMS/email with retries. When a worker takes >30s to process a message, SQS
+          makes the message visible again — a second worker picks it up. Both workers
+          complete processing (duplicate notification sent), both try to delete the
+          message. One succeeds. But: if the OOM-kill happens mid-processing, the
+          message becomes visible at T+30s (not T+300s). This dramatically accelerates
+          DLQ fill and causes the DLQ count to grow even after the memory leak is fixed.
+        onset_overlay: spike_and_sustain
+        onset_second: -10800 # has been broken for 3 weeks, just now causing observable DLQ fill
+        magnitude: 4.8
+        propagation_direction: upstream
+
+  upstream:
+    - name: event-bus-service
+      description: >
+        The notification event producer — publishes notification_requested events to SQS
+        when users trigger emails, SMS, or push notifications. Sending ~800 messages/min.
+        Completely healthy.
+      correlation: independent
+    - name: api-service
+      description: "Main API — triggers notification events for user actions. Healthy."
+      correlation: independent
+
+  downstream:
+    - name: sendgrid-smtp
+      description: "SendGrid SMTP relay for email delivery. External. Healthy, 200ms p99."
+      correlation: independent
+    - name: twilio-sms
+      description: "Twilio SMS API. External. 45-180s for delivery confirmation. Healthy."
+      correlation: independent
+    - name: firebase-push
+      description: "Firebase Cloud Messaging for push notifications. External. 800ms p99."
+      correlation: independent
+
+personas:
+  - id: diana-walsh
+    display_name: "Diana Walsh"
+    job_title: "Senior Software Engineer"
+    team: "Notifications"
+    avatar_color: "#7C3AED"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Diana Walsh, Senior SWE on the Notifications team. You own notification-service.
+      You're being paged for the DLQ filling and workers OOM-killing.
+
+      You know about the memory leak — v3.1.0 introduced it in the email template renderer.
+      You were planning to fix it this week but didn't think it was urgent.
+
+      You do NOT know about the visibility timeout misconfiguration until the trainee
+      surfaces it or you think about it.
+
+      If the trainee asks about the DLQ filling after the rollback:
+      "Wait... the DLQ is still growing even after rolling back? That shouldn't happen.
+      After rollback the workers are stable — they're not restarting anymore. Something
+      else must be causing messages to get requeued."
+
+      If pushed further: "The only reason a message would get requeued is... wait.
+      If the visibility timeout is shorter than our processing time, SQS would make the
+      message visible again before we finish. Let me check what we have the timeout set to."
+      Then: "Oh no. It's 30 seconds. Our SMS messages take up to 3 minutes to process
+      with retries. This has been wrong for 3 weeks. Every SMS notification has been
+      sending twice for 3 weeks."
+
+      If asked about fixing the visibility timeout: "We need to set it to at least 300 seconds —
+      probably 600 to be safe with Twilio retries. It's an infra config change, not a code change."
+
+      Keep responses 2-4 sentences. Stressed but focused tone.
+
+  - id: raj-patel
+    display_name: "Raj Patel"
+    job_title: "Infrastructure Engineer"
+    team: "Platform"
+    avatar_color: "#059669"
+    initiates_contact: false
+    cooldown_seconds: 120
+    silent_until_contacted: true
+    system_prompt: |
+      You are Raj Patel, Infrastructure Engineer on Platform. You manage SQS configurations.
+
+      You made the visibility timeout change 3 weeks ago in IaC PR #7834 "sqs: reduce
+      visibility timeout for faster DLQ promotion". Your reasoning was: "If a message fails,
+      you want it in the DLQ quickly so you can inspect it. 30 seconds seemed reasonable."
+
+      You did not know that notification processing can take up to 3 minutes.
+
+      If contacted about the visibility timeout:
+      "I changed it from 300s to 30s three weeks ago in IaC PR #7834. The thinking was
+      faster DLQ promotion. I didn't check the actual processing time for different
+      notification types — I assumed they were all fast like email (< 5s)."
+
+      If asked about the fix: "Change it back to 300s minimum. If SMS messages can take
+      180s with retries, I'd go to 600s. It's a Terraform variable, I can apply the
+      change in 2 minutes."
+
+      Keep responses concise. Slightly defensive at first, cooperative once confronted.
+
+  - id: ops-monitor-bot
+    display_name: "NotificationOpsBot"
+    job_title: "Automation"
+    team: "Operations"
+    avatar_color: "#EF4444"
+    initiates_contact: true
+    cooldown_seconds: 120
+    silent_until_contacted: false
+    system_prompt: |
+      You are NotificationOpsBot, an automated monitoring bot. Post periodic queue metrics.
+      At T+0: "notifications-queue depth: 4,847. DLQ depth: 312 (+47 in last 5min). Worker
+      restarts (last hour): 6. Duplicate delivery rate (last hour): 23%."
+      At T+300: "notifications-queue depth: 7,243. DLQ depth: 891 (+116 in last 5min). Worker
+      restarts (last hour): 8. Duplicate delivery rate (last hour): 31%."
+      At T+600: "POST-ROLLBACK: notifications-queue depth: 3,102 (decreasing ✓). DLQ depth:
+      1,247 (+71 in last 5min — still growing ⚠). Worker restarts (last hour): 1 (improving ✓).
+      Duplicate delivery rate (last hour): 28% (unchanged ⚠)."
+      At T+900: "POST-ROLLBACK: notifications-queue depth: 1,891 (decreasing ✓). DLQ depth:
+      1,489 (+81 in last 5min — STILL GROWING ⚠⚠). Duplicate notifications customer complaints: 14."
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-notif-incident
+    from: diana-walsh
+    to: trainee
+    subject: "[SEV2] notification-service: DLQ filling, workers OOM-killing — dual issue"
+    body: |
+      Hey,
+
+      notification-service is having a bad time:
+
+      1. Workers are OOM-killing every ~10 minutes — memory leak in v3.1.0's email
+         template renderer. Worker restarts: 6 in the last hour.
+
+      2. DLQ is filling fast — 312 messages currently, growing at ~47/5min
+
+      3. Duplicate notification rate is 23% — customers are getting duplicate emails/SMS
+
+      I think the OOM kills are causing the DLQ fill (messages in-flight when workers die
+      become undeliverable). If we rollback to v3.0.8, the OOM kills should stop and the
+      DLQ should stabilize.
+
+      Opened NOTIF-4421. Executing rollback now unless you want to investigate first.
+
+      — Diana
+
+  - id: email-002
+    at_second: 600
+    thread_id: thread-notif-incident
+    from: diana-walsh
+    to: trainee
+    subject: "[SEV2] notification-service: DLQ filling, workers OOM-killing — dual issue"
+    body: |
+      Update: Rolled back to v3.0.8. Workers are stable — no OOM kills in the last 8 minutes.
+      Queue depth is decreasing (good!).
+
+      BUT: DLQ is STILL growing. 1,247 messages now, was 891 at rollback time.
+
+      I thought the DLQ fill was caused by the OOM kills. But workers are healthy now and
+      the DLQ is still climbing at +71/5min. That doesn't make sense to me.
+
+      I need help figuring out why messages are still going to the DLQ after the rollback.
+      And the duplicate notification rate is unchanged at 28% — customers are still getting
+      double-notified.
+
+      — Diana
+
+  - id: email-003
+    at_second: 900
+    thread_id: thread-notif-incident
+    from: diana-walsh
+    to: trainee
+    subject: "[SEV2] notification-service: DLQ filling, workers OOM-killing — dual issue"
+    body: |
+      Getting customer escalations. 14 customers have complained about duplicate SMS messages.
+
+      The queue is draining (main queue improving) but DLQ is now at 1,489 and still growing.
+
+      I've been looking at the SQS metrics and something weird: messages are being received
+      by multiple workers. The 'ApproximateNumberOfMessagesNotVisible' count is very high
+      even when worker count is stable. That would only happen if... messages are becoming
+      visible again while being processed?
+
+      What's our SQS visibility timeout set to?
+
+      — Diana
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: notifications-eng
+      name: "#notifications-eng"
+    - id: platform-infra
+      name: "#platform-infra"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: diana-walsh
+      text: "notification-service SEV2 — DLQ filling (312 msgs), workers OOM-killing (6 restarts/hour), 23% duplicate delivery. Opening NOTIF-4421. Root cause: memory leak in v3.1.0."
+    - id: chat-002
+      at_second: 0
+      channel: "#incidents"
+      persona: ops-monitor-bot
+      text: "notifications-queue depth: 4,847. DLQ depth: 312 (+47 in last 5min). Worker restarts (last hour): 6. Duplicate delivery rate (last hour): 23%."
+    - id: chat-003
+      at_second: 60
+      channel: "#notifications-eng"
+      persona: diana-walsh
+      text: "Memory leak confirmed in v3.1.0 — Jinja2 environment references not being released. Planning rollback to v3.0.8."
+    - id: chat-004
+      at_second: 300
+      channel: "#incidents"
+      persona: ops-monitor-bot
+      text: "notifications-queue depth: 7,243. DLQ depth: 891 (+116 in last 5min). Worker restarts (last hour): 8. Duplicate delivery rate (last hour): 31%."
+    - id: chat-005
+      at_second: 480
+      channel: "#incidents"
+      persona: diana-walsh
+      text: "Rollback to v3.0.8 complete. Workers are stable. Queue depth decreasing ✓"
+    - id: chat-006
+      at_second: 600
+      channel: "#incidents"
+      persona: ops-monitor-bot
+      text: "POST-ROLLBACK: notifications-queue depth: 3,102 (decreasing ✓). DLQ depth: 1,247 (+71 in last 5min — still growing ⚠). Worker restarts (last hour): 1 (improving ✓). Duplicate delivery rate: 28% (unchanged ⚠)."
+    - id: chat-007
+      at_second: 615
+      channel: "#notifications-eng"
+      persona: diana-walsh
+      text: "Workers are stable after rollback. But DLQ is STILL growing and duplicate rate is unchanged. Something else is wrong. This wasn't just the memory leak."
+    - id: chat-008
+      at_second: 720
+      channel: "#platform-infra"
+      persona: diana-walsh
+      text: "Hey @raj-patel — what's the SQS visibility timeout set to for notifications-queue? I'm seeing messages becoming visible while still being processed."
+    - id: chat-009
+      at_second: 780
+      channel: "#platform-infra"
+      persona: raj-patel
+      text: "30 seconds. I changed it from 300s to 30s in IaC PR #7834 three weeks ago — 'faster DLQ promotion'. Is that causing a problem?"
+    - id: chat-010
+      at_second: 795
+      channel: "#platform-infra"
+      persona: diana-walsh
+      text: "SMS messages take up to 3 minutes with Twilio retries. A 30s visibility timeout means EVERY SMS message is being processed twice. We've been double-sending for 3 weeks."
+    - id: chat-011
+      at_second: 810
+      channel: "#platform-infra"
+      persona: raj-patel
+      text: "Oh. I didn't check the processing time. I assumed notifications were all < 5s. I can revert the Terraform change right now — sets it back to 300s. Apply takes 2 minutes."
+    - id: chat-012
+      at_second: 900
+      channel: "#incidents"
+      persona: ops-monitor-bot
+      text: "POST-ROLLBACK: notifications-queue depth: 1,891 (decreasing ✓). DLQ depth: 1,489 (+81 in last 5min — STILL GROWING ⚠⚠). Duplicate notifications customer complaints: 14."
+
+ticketing:
+  - id: NOTIF-4421
+    title: "notification-service: DLQ filling + worker OOM kills — active SEV2"
+    severity: SEV2
+    status: open
+    description: |
+      ## Summary
+
+      notification-service is experiencing two simultaneous issues causing DLQ backpressure
+      and duplicate notification delivery.
+
+      ## Issue 1: Worker OOM-Kill (Memory Leak — v3.1.0)
+
+      Workers are dying every ~10 minutes due to a memory leak in the Jinja2 email template
+      renderer. Each rendered template retains a reference to the Jinja2 environment object,
+      preventing garbage collection. RSS memory grows until OOM-kill.
+
+      - Worker restarts: 6 in last hour
+      - Memory growth rate: ~180MB/minute per worker
+      - Expected recovery: rollback to v3.0.8
+
+      ## Issue 2: DLQ Fill (visibility timeout + processing time mismatch)
+
+      **Initially attributed to Issue 1. May have a separate root cause.**
+
+      SQS visibility timeout: **30 seconds**
+      Average processing time (email): **4 seconds**
+      Average processing time (SMS with retries): **45-180 seconds**
+      Average processing time (push): **1-3 seconds**
+
+      If visibility timeout < processing time → SQS makes message visible again →
+      second worker picks up the same message → duplicate delivery → potential DLQ fill
+      if processing fails after first delivery.
+
+      ## Metrics
+
+      - Queue depth: 4,847 messages (growing)
+      - DLQ depth: 312 messages (+47/5min, growing)
+      - Duplicate delivery rate: 23%
+
+    created_by: diana-walsh
+    assignee: trainee
+    at_second: -60
+
+  - id: NOTIF-4422
+    title: "Customer complaints: duplicate SMS notifications — 14 reports"
+    severity: SEV3
+    status: open
+    description: |
+      14 customers have filed support tickets reporting duplicate SMS messages:
+      - Order confirmation SMS sent twice
+      - Password reset SMS sent twice (security concern)
+      - 2FA codes sent twice (only the first is valid — second causes confusion)
+
+      Pattern: all duplicates have timestamps ~30-60 seconds apart.
+      This aligns with SQS visibility timeout (30s) causing re-delivery while
+      original message is still being processed.
+
+      Started approximately 3 weeks ago (correlates with IaC PR #7834).
+
+    created_by: ops-monitor-bot
+    assignee: trainee
+    at_second: 900
+
+alarms:
+  - id: alarm-dlq-depth
+    service: notification-service
+    metric_id: queue_depth
+    condition: "DLQ depth > 100"
+    severity: SEV2
+    auto_fire: true
+    auto_page: true
+    onset_second: -10800
+    page_message: "notifications-dlq has >100 messages. Check for worker failures or processing errors."
+  - id: alarm-queue-age
+    service: notification-service
+    metric_id: queue_age_ms
+    condition: "queue_age_p99 > 300000ms (5 minutes)"
+    severity: SEV2
+    auto_fire: true
+    auto_page: false
+    onset_second: -10680
+  - id: alarm-worker-memory
+    service: notification-service
+    metric_id: memory_jvm
+    condition: "worker RSS memory > 1.8GB"
+    severity: SEV3
+    auto_fire: true
+    auto_page: false
+    onset_second: -10800
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: notification-service
+    message: "Worker-1 OOM killed — RSS: 2.1GB. Restarting... (restart #6 this hour)"
+  - id: log-002
+    at_second: 3
+    level: WARN
+    service: notification-service
+    message: "SQS: 47 in-flight messages lost during worker restart. Messages will become visible after visibility timeout expires."
+  - id: log-003
+    at_second: 5
+    level: INFO
+    service: notification-service
+    message: "Worker-1 starting up... loading Jinja2 templates (12 templates)."
+  - id: log-004
+    at_second: 15
+    level: INFO
+    service: notification-service
+    message: "Worker-1 ready. Polling notifications-queue. Visibility timeout: 30s"
+  - id: log-005
+    at_second: 20
+    level: WARN
+    service: notification-service
+    message: "Duplicate message detected: msg_id=notif-88471 already processed by Worker-3 at 2024-01-16T09:14:22Z. Processing again (SQS at-least-once delivery)."
+  - id: log-006
+    at_second: 25
+    level: INFO
+    service: notification-service
+    message: "Processing SMS notification: msg_id=notif-88503 type=order_confirmation to=+1415555XXXX via=twilio. Estimated duration: 45-180s"
+  - id: log-007
+    at_second: 35
+    level: WARN
+    service: notification-service
+    message: "SQS: message notif-88503 visibility timeout expired (30s). Message requeued by SQS. Another worker may pick it up. Current worker continuing processing."
+  - id: log-008
+    at_second: 37
+    level: INFO
+    service: notification-service
+    message: "Worker-2 received: msg_id=notif-88503 (DUPLICATE — already being processed by Worker-1 since T+25s)"
+  - id: log-009
+    at_second: 45
+    level: DEBUG
+    service: notification-service
+    message: "Memory usage: Worker-1=412MB Worker-2=387MB Worker-3=1,247MB Worker-4=891MB. GC pressure high on Worker-3."
+  - id: log-010
+    at_second: 60
+    level: INFO
+    service: notification-service
+    message: "Jinja2 template rendered: email/order_confirmation.html (instance=<jinja2.Environment object at 0x7f3a88b47d50> — NOT released)"
+  - id: log-011
+    at_second: 75
+    level: WARN
+    service: notification-service
+    message: "Worker-3 memory: 1,589MB / 2,048MB limit (77%). GC running... no effect on template references."
+  - id: log-012
+    at_second: 90
+    level: INFO
+    service: notification-service
+    message: "SMS delivery confirmed: notif-88503 sent successfully via Twilio (89s total). Attempting SQS delete..."
+  - id: log-013
+    at_second: 91
+    level: WARN
+    service: notification-service
+    message: "Worker-2 also delivered: notif-88503 SMS sent (duplicate). SQS delete succeeded — message removed."
+  - id: log-014
+    at_second: 92
+    level: ERROR
+    service: notification-service
+    message: "Worker-1 SQS delete failed for notif-88503: MessageNotInflight. Message was already deleted by another consumer. DUPLICATE DELIVERY OCCURRED."
+  - id: log-015
+    at_second: 120
+    level: INFO
+    service: notification-service
+    message: "Config: SQS_QUEUE_URL=notifications-queue SQS_VISIBILITY_TIMEOUT=30 MAX_RECEIVE_COUNT=3 DLQ_ARN=notifications-dlq WORKER_COUNT=4 MEMORY_LIMIT_MB=2048"
+  - id: log-016
+    at_second: 180
+    level: WARN
+    service: notification-service
+    message: "Worker-3 memory: 1,891MB / 2,048MB limit (92%). OOM kill imminent. Current in-flight messages: 12"
+  - id: log-017
+    at_second: 195
+    level: ERROR
+    service: notification-service
+    message: "Worker-3 OOM killed — RSS: 2.048GB. Restarting... (restart #7 this hour). 12 in-flight messages released back to queue."
+  - id: log-018
+    at_second: 240
+    level: DEBUG
+    service: notification-service
+    message: "DLQ stats: ApproximateNumberOfMessages=789 (was 312 at T+0). Receive count distribution: count=1: 43%, count=2: 38%, count=3: 19%"
+  - id: log-019
+    at_second: 300
+    level: INFO
+    service: notification-service
+    message: "Twilio rate limit approaching: 847 SMS/hour sent (limit: 1000/hour). Duplicate deliveries accounting for ~28% of SMS volume."
+  - id: log-020
+    at_second: 360
+    level: ERROR
+    service: notification-service
+    message: "Message notif-89102 reached maxReceiveCount=3. Moving to DLQ. Last error: processing time (142s) exceeded visibility timeout (30s) causing 3 requeue cycles."
+
+log_patterns:
+  - id: worker-oom-kill
+    level: ERROR
+    service: notification-service
+    message: "Worker-{n} OOM killed — RSS: {n}GB. Restarting... In-flight messages released back to queue."
+    interval_seconds: 600
+    from_second: 0
+    to_second: 480 # stops after rollback
+    jitter_seconds: 60
+
+  - id: memory-growth-warn
+    level: WARN
+    service: notification-service
+    message: "Worker memory growing: Worker-1={n}MB Worker-2={n}MB Worker-3={n}MB Worker-4={n}MB. Jinja2 environment references not released."
+    interval_seconds: 45
+    from_second: 0
+    to_second: 480
+    jitter_seconds: 10
+
+  - id: jinja-env-leak
+    level: DEBUG
+    service: notification-service
+    message: "Jinja2 template rendered: email/{n}.html (instance=<jinja2.Environment object at 0x7f{n}> — NOT released after render)"
+    interval_seconds: 8
+    from_second: 0
+    to_second: 480
+    jitter_seconds: 2
+
+  - id: gc-pressure
+    level: WARN
+    service: notification-service
+    message: "GC pressure: {n}ms pause (gen2 collection). Memory not freed — live references prevent collection of template objects."
+    interval_seconds: 30
+    from_second: 0
+    to_second: 480
+    jitter_seconds: 8
+
+  - id: visibility-timeout-expire
+    level: WARN
+    service: notification-service
+    message: "SQS visibility timeout expired (30s) for msg_id=notif-{n} type={n}. Message requeued by SQS. Another worker may pick it up."
+    interval_seconds: 30
+    from_second: 5
+    to_second: 1500
+    jitter_seconds: 8
+
+  - id: duplicate-receive
+    level: WARN
+    service: notification-service
+    message: "Duplicate message received: msg_id=notif-{n} already delivered by Worker-{n}. Processing again due to SQS at-least-once delivery."
+    interval_seconds: 25
+    from_second: 20
+    to_second: 1500
+    jitter_seconds: 7
+
+  - id: duplicate-delivery-error
+    level: ERROR
+    service: notification-service
+    message: "SQS delete failed for notif-{n}: MessageNotInflight. Message was already deleted by another consumer. DUPLICATE DELIVERY CONFIRMED."
+    interval_seconds: 40
+    from_second: 90
+    to_second: 1500
+    jitter_seconds: 12
+
+  - id: sms-long-processing
+    level: INFO
+    service: notification-service
+    message: "Processing SMS notification: msg_id=notif-{n} type=order_confirmation via=twilio estimated_duration=45-180s (visibility_timeout=30s — MISMATCH)"
+    interval_seconds: 15
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 5
+
+  - id: dlq-message-moved
+    level: ERROR
+    service: notification-service
+    message: "Message notif-{n} reached maxReceiveCount=3. Moving to DLQ. Last error: processing exceeded visibility timeout (30s) causing {n} requeue cycles."
+    interval_seconds: 60
+    from_second: 120
+    to_second: 1500
+    jitter_seconds: 15
+
+  - id: inflight-lost-on-restart
+    level: WARN
+    service: notification-service
+    message: "Worker restart: {n} in-flight messages released. Will become visible again in {n}s (visibility_timeout=30s)."
+    interval_seconds: 600
+    from_second: 3
+    to_second: 480
+    jitter_seconds: 30
+
+  # Post-rollback: memory leak gone, but visibility timeout issue continues
+  - id: post-rollback-stable-memory
+    level: INFO
+    service: notification-service
+    message: "POST-ROLLBACK v3.0.8: Worker memory stable. Worker-1=247MB Worker-2=251MB Worker-3=244MB Worker-4=249MB. No GC pressure."
+    interval_seconds: 60
+    from_second: 500
+    to_second: 1500
+    jitter_seconds: 10
+
+  - id: post-rollback-dlq-still-growing
+    level: WARN
+    service: notification-service
+    message: "DLQ still growing post-rollback: {n} messages. Visibility timeout (30s) still causing SMS message requeuing."
+    interval_seconds: 90
+    from_second: 540
+    to_second: 1500
+    jitter_seconds: 15
+
+  - id: twilio-retry-timeout-mismatch
+    level: WARN
+    service: notification-service
+    message: "Twilio delivery pending: msg_id=notif-{n} elapsed={n}s > visibility_timeout=30s. SQS will requeue this message before Twilio confirms delivery."
+    interval_seconds: 35
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 8
+
+  - id: sqs-inflight-high
+    level: WARN
+    service: notification-service
+    message: "SQS ApproximateNumberOfMessagesNotVisible={n} (messages currently being processed or waiting for visibility timeout). High value indicates requeuing loop."
+    interval_seconds: 60
+    from_second: 30
+    to_second: 1500
+    jitter_seconds: 10
+
+  - id: receive-count-warn
+    level: WARN
+    service: notification-service
+    message: "High receive count for msg_id=notif-{n}: received {n} times (maxReceiveCount=3). Likely cause: visibility timeout shorter than processing time."
+    interval_seconds: 45
+    from_second: 60
+    to_second: 1500
+    jitter_seconds: 12
+
+background_logs:
+  - profile: python_worker
+    service: notification-service
+    from_second: -300
+    to_second: 1500
+    density: high
+  - profile: sidecar_proxy
+    service: notification-service
+    from_second: -300
+    to_second: 1500
+    density: medium
+
+wiki:
+  pages:
+    - title: "notification-service Runbook"
+      content: |
+        # notification-service Runbook
+
+        ## Overview
+
+        notification-service is an SQS consumer that dispatches email (SendGrid),
+        SMS (Twilio), and push (Firebase) notifications.
+
+        **Queue:** `notifications-queue` (standard SQS queue)
+        **DLQ:** `notifications-dlq` (maxReceiveCount=3)
+        **Workers:** 4 Celery workers per ECS task, 4 ECS tasks
+
+        ## Critical Config Values
+
+        | Variable | Value | Notes |
+        |---|---|---|
+        | `SQS_VISIBILITY_TIMEOUT` | **Must be ≥ max processing time** | See processing times below |
+        | `WORKER_COUNT` | 4 | Workers per ECS task |
+        | `MEMORY_LIMIT_MB` | 2048 | ECS task memory limit |
+        | `MAX_RECEIVE_COUNT` | 3 | DLQ promotion after 3 failures |
+
+        ## Processing Times by Notification Type
+
+        | Type | Typical | P99 | With retries |
+        |---|---|---|---|
+        | Email (SendGrid) | 200ms | 4s | 15s |
+        | Push (Firebase) | 800ms | 3s | 10s |
+        | SMS (Twilio) | 2s | 45s | **180s** |
+
+        ⚠️ **Visibility timeout must be ≥ 180s to handle Twilio retries.**
+        Current recommended value: **300 seconds minimum, 600 seconds preferred.**
+
+        ## DLQ Investigation
+
+        If the DLQ is filling:
+        1. Check message receive count distribution — high counts indicate requeuing
+        2. Check SQS `ApproximateNumberOfMessagesNotVisible` — high value with stable
+           worker count = messages becoming visible before processing completes
+        3. Compare visibility timeout vs actual processing time in logs
+        4. Check for worker OOM kills — restarting workers release in-flight messages
+
+        ## Memory Leak (v3.1.0)
+
+        v3.1.0 introduced a memory leak in the Jinja2 template renderer.
+        **Status: fixed in v3.1.1 (pending) or rollback to v3.0.8.**
+
+        Symptoms: worker RSS grows at ~180MB/minute, OOM kill every 8-12 minutes.
+
+    - title: "SQS Visibility Timeout Guide"
+      content: |
+        # SQS Visibility Timeout: What It Is and Why It Matters
+
+        ## Definition
+
+        When a consumer receives an SQS message, SQS hides it from other consumers
+        for the **visibility timeout** duration. If the message is not deleted before
+        the timeout expires, SQS makes it visible again — allowing another consumer
+        (or the same one) to receive it again.
+
+        ## Consequences of Wrong Visibility Timeout
+
+        ### Too Short (< max processing time)
+
+        - Message becomes visible before original consumer finishes
+        - Second consumer picks it up → **duplicate processing**
+        - If both consumers delete at the end → race condition, one fails
+        - If processing is idempotent: annoying but harmless
+        - If processing is NOT idempotent (sending SMS): **duplicate notifications**
+        - Increases receive count → eventually hits maxReceiveCount → **DLQ promotion**
+
+        ### Too Long
+
+        - Failed messages take longer to appear in DLQ for inspection
+        - Slows down recovery after a consumer crash
+
+        ## Recommended Setting
+
+        `visibility_timeout = max_processing_time × 6`
+
+        For notification-service (Twilio SMS p99=180s):
+        → `visibility_timeout = 180s × 6 = 1080s` (18 minutes)
+        → Conservative safe value: **300-600 seconds**
+
+        ## Diagnosing Visibility Timeout Issues
+
+        Look for these log patterns:
+        - `"visibility timeout expired"` appearing before `"processing complete"`
+        - `"MessageNotInflight"` errors on SQS delete
+        - `"Duplicate message received"` at the start of processing
+        - High `ApproximateNumberOfMessagesNotVisible` with stable consumer count
+
+cicd:
+  pipelines:
+    - id: pipeline-notification
+      name: "notification-service"
+      service: notification-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v3.1.0
+          previous_version: v3.0.8
+          status: succeeded
+          deployed_at_sec: -14400
+          commit_message: "feat: redesign email template renderer for better performance (NOTIF-4401)"
+          author: diana-walsh
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+            - name: "Memory leak test"
+              status: passed # NOTE: memory leak test only ran 60s, leak takes 8+ min to manifest
+        - id: staging
+          name: "Staging"
+          type: deploy
+          current_version: v3.1.0
+          previous_version: v3.0.8
+          status: succeeded
+          deployed_at_sec: -14200
+          commit_message: "feat: redesign email template renderer for better performance (NOTIF-4401)"
+          author: diana-walsh
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Integration tests (5 min)"
+              status: passed # NOTE: 5 min staging test missed 8-12 min OOM cycle
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v3.1.0
+          previous_version: v3.0.8
+          status: succeeded
+          deployed_at_sec: -14400
+          commit_message: "feat: redesign email template renderer for better performance (NOTIF-4401)"
+          author: diana-walsh
+          blockers: []
+          alarm_watches: [alarm-worker-memory]
+          tests:
+            - name: "Smoke tests"
+              status: passed
+          promotion_events:
+            - version: v3.1.0
+              sim_time: -14400
+              status: succeeded
+              note: "AutoPromote: smoke tests passed"
+            - version: v3.0.8
+              sim_time: -1036800
+              status: succeeded
+              note: "AutoPromote: all checks passed"
+
+  deployments:
+    - service: notification-service
+      version: v3.1.0
+      deployed_at_sec: -14400
+      status: active
+      commit_message: "feat: redesign email template renderer for better performance (NOTIF-4401)"
+      author: diana-walsh
+    - service: notification-service
+      version: v3.0.8
+      deployed_at_sec: -1036800
+      status: previous
+      commit_message: "fix: add retry backoff for Twilio rate limit errors"
+      author: diana-walsh
+
+host_groups:
+  - id: notification-workers-us-east-1
+    label: "notification-workers (us-east-1)"
+    service: notification-service
+    instance_count: 4
+    description: "4 ECS tasks × 4 Celery workers = 16 total workers. 2GB memory limit per task."
+
+remediation_actions:
+  - id: rollback_v3_0_8
+    type: rollback
+    service: notification-service
+    is_correct_fix: true
+    target_version: v3.0.8
+    label: "Rollback notification-service to v3.0.8"
+    side_effect: >
+      Memory leak fixed — workers stabilize, no more OOM kills. Queue depth begins
+      decreasing as workers process backlog. BUT: DLQ continues growing at +71/5min.
+      Duplicate delivery rate remains at 28%. The visibility timeout issue is
+      independent and was pre-existing. This is only HALF the fix.
+
+  - id: fix_visibility_timeout
+    type: emergency_deploy
+    service: notification-service
+    is_correct_fix: true
+    label: "Fix SQS visibility timeout: 30s → 600s (Terraform apply)"
+    side_effect: >
+      Visibility timeout changed to 600s. Messages are no longer requeued mid-processing.
+      Duplicate delivery stops immediately. DLQ growth halts within 2 minutes.
+      Existing DLQ messages still need to be manually reprocessed (they are not
+      automatically retried once in DLQ). Customer duplicate SMS issue resolved.
+
+  - id: scale_workers
+    type: scale_cluster
+    service: notification-service
+    is_correct_fix: false
+    label: "Scale notification workers to 8 ECS tasks"
+    side_effect: >
+      16 more workers added (8 tasks × 4 workers = 32 total). Queue depth decreases
+      faster. But: more workers hit the same SQS message simultaneously (more consumers
+      on the same queue with 30s visibility timeout). Duplicate delivery rate INCREASES
+      from 28% to 41%. DLQ growth rate increases. Scaling made the visibility timeout
+      problem significantly worse.
+
+  - id: purge_dlq
+    type: emergency_deploy
+    service: notification-service
+    is_correct_fix: false
+    label: "Purge the DLQ"
+    side_effect: >
+      DLQ purged — 1,489 messages deleted. DLQ depth drops to 0. However: these were
+      real notification messages that failed. Affected users will never receive their
+      notifications. And DLQ starts filling again within 5 minutes (visibility timeout
+      still wrong). You've lost real user data and the underlying problem is unchanged.
+
+  - id: increase_max_receive_count
+    type: emergency_deploy
+    service: notification-service
+    is_correct_fix: false
+    label: "Increase maxReceiveCount from 3 to 10"
+    side_effect: >
+      Messages now go to DLQ after 10 receive attempts instead of 3. DLQ growth rate
+      slows by ~60% (messages take longer to be promoted). But: each message is now
+      potentially processed and delivered up to 10 times before DLQ promotion.
+      Customer duplicate complaints will significantly increase. Does not fix the
+      underlying visibility timeout problem.
+
+evaluation:
+  root_cause: >
+    Two independent failures with overlapping symptoms: (1) notification-service v3.1.0
+    introduced a Jinja2 template memory leak causing worker OOM-kills every 8-12 minutes.
+    This caused in-flight messages to be released back to the queue. (2) Separately, an
+    infrastructure change 3 weeks ago (IaC PR #7834) set the SQS visibility timeout from
+    300s to 30s. Since Twilio SMS processing takes up to 180 seconds, every SMS message
+    was being requeued mid-processing, causing duplicate deliveries and DLQ accumulation
+    that was independent of and predated the memory leak. Both issues needed to be fixed
+    independently: rollback v3.1.0 (or fix the memory leak), AND restore the visibility
+    timeout to ≥300s. Fixing only the memory leak produces a deceptive partial recovery.
+
+  relevant_actions:
+    - action: search_logs
+      why: >
+        Logs reveal both root causes: Jinja2 environment leak ('instance=<jinja2.Environment
+        object> — NOT released'), worker OOM kills, visibility timeout expiry warnings
+        ('visibility timeout expired (30s) for msg_id=notif-{n}'), and the critical config
+        line 'SQS_VISIBILITY_TIMEOUT=30'. The processing time mismatch is explicit in
+        'estimated_duration=45-180s (visibility_timeout=30s — MISMATCH)'.
+    - action: read_wiki_page
+      why: >
+        'SQS Visibility Timeout Guide' explains why short timeouts cause duplicate delivery
+        and DLQ fill. 'notification-service Runbook' documents the memory leak and the
+        critical note that visibility timeout must be ≥180s for Twilio SMS retries.
+    - action: view_deployment_history
+      why: >
+        Shows v3.1.0 deployed 4h ago with 'redesign email template renderer'. Also shows
+        infra config pipeline for SQS — but only if the trainee looks at infrastructure
+        deployments, not just service deployments.
+    - action: direct_message_persona
+      why: >
+        Contacting Diana Walsh after partial recovery surfaces her realization about the
+        visibility timeout. Contacting Raj Patel confirms the IaC PR #7834 change and
+        enables the Terraform apply fix.
+    - action: trigger_rollback
+      why: "Rollback to v3.0.8 fixes the memory leak (first root cause). Necessary but not sufficient."
+      service: notification-service
+      remediation_action_id: rollback_v3_0_8
+    - action: emergency_deploy
+      why: "Terraform apply to set visibility timeout to 600s fixes the second root cause."
+      service: notification-service
+      remediation_action_id: fix_visibility_timeout
+    - action: mark_resolved
+      why: "Only valid after BOTH fixes are applied — rollback + visibility timeout fix."
+
+  red_herrings:
+    - action: scale_cluster
+      why: "More workers increases duplicate delivery rate — more consumers competing for the same SQS message with a 30s visibility window."
+    - action: emergency_deploy
+      why: "Purging the DLQ destroys real notification data. DLQ fills again within 5 minutes."
+      remediation_action_id: purge_dlq
+    - action: emergency_deploy
+      why: "Increasing maxReceiveCount delays DLQ fill but dramatically increases duplicate delivery rate."
+      remediation_action_id: increase_max_receive_count
+    - action: mark_resolved
+      why: "Declaring resolved after only the rollback is a critical mistake — the DLQ will continue to grow and duplicates continue."
+
+  debrief_context: |
+    This scenario tests the ability to maintain investigation focus after a partial fix
+    produces misleading positive signals. The rollback "works" — workers stabilize, queue
+    depth decreases — which creates enormous psychological pressure to declare victory.
+
+    The trap: the DLQ was already filling before the memory leak manifested significantly.
+    The visibility timeout misconfiguration was the silent primary driver of the DLQ fill
+    for 3 weeks. The memory leak made it dramatically worse but was not the sole cause.
+
+    Key diagnostic signals that should have prompted suspicion:
+    1. Duplicate delivery rate was 23% at T+0 (not a normal value for healthy queue processing)
+    2. Post-rollback, DLQ continued growing despite worker stability
+    3. Logs showed 'visibility timeout expired (30s)' for messages that clearly take >30s
+    4. 'SQS_VISIBILITY_TIMEOUT=30' in config dump is the smoking gun
+
+    The partial fix trap: engineers naturally anchor on the first identified root cause
+    (memory leak) and stop investigating when it's fixed. Real incidents often have
+    multiple contributing factors. If the metrics don't fully recover after a fix,
+    the investigation is not complete.
+
+    Post-incident:
+    - Memory leak: add long-running memory tests to CI (>15 minutes)
+    - Visibility timeout: add validation that SQS_VISIBILITY_TIMEOUT ≥ max processing time
+    - IaC changes to queue config should require review from the owning team

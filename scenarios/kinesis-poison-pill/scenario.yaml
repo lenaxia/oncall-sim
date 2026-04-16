@@ -1,0 +1,1107 @@
+schema_version: 1
+id: kinesis-poison-pill
+title: "Event Pipeline: One Bad Record Freezes a Shard"
+description: >
+  Iterator age is climbing on shard 2. Lambda errors are spiking. The other
+  4 shards are healthy. A single malformed event from a client SDK bug has
+  frozen your entire shard — and every fix you try makes it worse.
+difficulty: hard
+tags: [kinesis, poison-pill, lambda, event-streaming, iterator, shard]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 25
+  pre_incident_seconds: 28800
+
+engine:
+  default_tab: logs
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 3
+
+topology:
+  focal_service:
+    name: event-pipeline-service
+    description: >
+      Go Lambda consumer reading from a 5-shard Kinesis stream. Processes user
+      behavioural events (page_views, cart_adds, purchases) and writes to an
+      analytics DynamoDB table. ~12,000 events/minute across all shards at baseline.
+      Shard routing: partition key = user_id (hashed). Shard 2 processes
+      ~2,400 events/minute for the 'B-D' hash range.
+    owner: felix-huang
+    typical_rps: 1 # queue-based service — RPS not applicable
+    traffic_profile: always_on_api
+    health: degraded
+    components:
+      - id: kinesis_events
+        type: kinesis_stream
+        label: "user-events-stream (5 shards)"
+        shard_count: 5
+        inputs: []
+      - id: lambda_consumer
+        type: lambda
+        label: "event-processor Lambda"
+        reserved_concurrency: 50
+        lambda_utilization: 0.22 # 4/5 shards healthy, utilization looks normal
+        inputs: [kinesis_events]
+      - id: dynamo_analytics
+        type: dynamodb
+        label: "analytics-events table (on-demand)"
+        write_capacity: 1 # on-demand sentinel
+        read_capacity: 1 # on-demand sentinel
+        write_utilization: 0.31
+        read_utilization: 0.08
+        inputs: [lambda_consumer]
+    incidents:
+      - id: shard2_frozen
+        affected_component: kinesis_events
+        description: >
+          Shard 2 iterator frozen. Sequence number 49647821234567890123456789012345
+          (a purchase event from user_id=null — null user_id caused by a client SDK bug
+          in mobile-sdk v2.8.3 that omits user_id on first-launch anonymous sessions)
+          throws NullPointerException in the event enrichment step. Lambda retries
+          the same record 10,000 times (Iterator Age climbs). The shard cannot
+          advance past this record because Kinesis guarantees ordering within a shard.
+          Shards 0, 1, 3, 4 continue processing normally.
+        onset_overlay: spike_and_sustain
+        onset_second: -10800
+        magnitude: 0.2 # only 1/5 shards affected — queue_depth metric shows partial impact
+        propagation_direction: upstream
+      - id: lambda_error_spike
+        affected_component: lambda_consumer
+        description: >
+          Lambda invocations for shard 2 are all failing with the same error.
+          Lambda retries synchronously within the batch, exhausting retries, then
+          re-reads from the same position. Error rate metric shows 20% error rate
+          overall (1/5 shards failing = 20% of invocations).
+        onset_overlay: spike_and_sustain
+        onset_second: -10800
+        magnitude: 5.8
+        propagation_direction: upstream
+
+  upstream:
+    - name: mobile-sdk-service
+      description: >
+        iOS/Android mobile SDK that emits user_events to the Kinesis stream via the
+        Kinesis Data Firehose ingestion layer. SDK v2.8.3 has a bug: anonymous users
+        (first launch, no account yet) emit events with user_id=null instead of a
+        generated anonymous_id. ~0.3% of events are affected. The mobile team owns this.
+      correlation: independent # the mobile SDK is healthy — it just has a bug
+    - name: web-sdk-service
+      description: "Web SDK event emitter — no bugs. All events have valid user_id or anonymous_id. Unaffected."
+      correlation: independent
+
+  downstream:
+    - name: analytics-warehouse
+      description: >
+        Redshift data warehouse — receives events from event-pipeline via S3 export
+        every 15 minutes. Missing shard 2 events since T-3h. 2,400 events/minute gap.
+        Data team is complaining about missing data in dashboards.
+      correlation: upstream_impact
+      lag_seconds: 900
+      impact_factor: 0.2
+    - name: recommendation-engine
+      description: "Reads from analytics-events DynamoDB table. Shard 2 events missing. Recommendation quality degraded slightly."
+      correlation: upstream_impact
+      lag_seconds: 1800
+      impact_factor: 0.1
+
+personas:
+  - id: felix-huang
+    display_name: "Felix Huang"
+    job_title: "Senior Data Engineer"
+    team: "Data Platform"
+    avatar_color: "#F59E0B"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Felix Huang, Senior Data Engineer on Data Platform. You own event-pipeline-service.
+      You've been paged because iterator age on shard 2 is climbing and Lambda errors are spiking.
+
+      Your initial read: "Lambda is crashing on shard 2. Must be a code bug in the latest deploy."
+      You do NOT suspect a poison pill initially — you've never hit one before.
+
+      What you know:
+      - v1.4.2 was deployed yesterday (added a new enrichment step)
+      - Shard 2 is frozen, shards 0/1/3/4 are fine
+      - Lambda is retrying the same invocation over and over
+      - You're starting to wonder if it's the same record being retried
+
+      If the trainee asks "is it the same record every time?": "Let me check... yes. Sequence
+      number 49647821234567890123456789012345. The same record. Every. Single. Time. Lambda
+      retries 10 attempts, fails, backs off 1 minute, then tries again. We've been retrying
+      this record for 3 hours."
+
+      If asked what the record contains: "It's a purchase event. But user_id is... null.
+      Our enrichment step calls getUser(event.user_id) which throws NullPointerException
+      if user_id is null. We don't have a null check there. That's the bug."
+
+      If asked about the fix: "We can either: (1) deploy a null-check fix to Lambda
+      (let the consumer skip the bad record gracefully), or (2) advance the Kinesis shard
+      iterator past that sequence number using the API (but that loses the event permanently).
+      Option 1 is safer — we fix the consumer, it handles the bad record, and we can
+      replay from S3 Firehose backup later for the lost events."
+
+      Do NOT mention the mobile SDK bug unless directly asked "where did the null user_id
+      come from?" Then: "Good question. We don't emit null user_ids from our own code.
+      Must be from a client SDK. Mobile team uses Kinesis Firehose — let me check which SDK
+      version is in prod. Oh — mobile-sdk v2.8.3. That was released 3.5 hours ago."
+
+      Keep responses 2-4 sentences. Focused and technical tone.
+
+  - id: ryan-chen
+    display_name: "Ryan Chen"
+    job_title: "Mobile SDK Engineer"
+    team: "Mobile Platform"
+    avatar_color: "#DC2626"
+    initiates_contact: false
+    cooldown_seconds: 150
+    silent_until_contacted: true
+    system_prompt: |
+      You are Ryan Chen, Mobile SDK Engineer on Mobile Platform. You authored
+      mobile-sdk v2.8.3 which was released 3.5 hours ago.
+
+      The bug: anonymous users (first app launch, no account) now emit events with
+      user_id=null instead of generating an anonymous_id. This was introduced when
+      you refactored the user context initialization — the anonymous_id generator was
+      accidentally removed from the anonymous user code path.
+
+      If contacted: "I just checked. In v2.8.3 I refactored the UserContext initialization
+      and accidentally removed the anonymous_id generation for the pre-auth flow. So
+      new users who haven't logged in yet emit user_id=null on their first session events.
+      About 0.3% of events are affected — only first-time anonymous users."
+
+      If asked how to fix on the mobile side: "I can push v2.8.4 with the fix but it needs
+      App Store / Play Store review — that's 24-48 hours minimum. We can force-update but
+      only users who open the app will get it. A server-side fix (null check in Lambda) is
+      much faster."
+
+      Keep responses concise. Apologetic and technical.
+
+  - id: priya-data
+    display_name: "Priya Agarwal"
+    job_title: "Analytics Engineer"
+    team: "Data"
+    avatar_color: "#059669"
+    initiates_contact: true
+    cooldown_seconds: 300
+    silent_until_contacted: false
+    system_prompt: |
+      You are Priya Agarwal, Analytics Engineer on the Data team. You noticed that
+      shard 2 events are missing from the analytics warehouse dashboards.
+
+      At T+0, send a message complaining about missing data.
+      If contacted, explain: "Our Redshift pipeline shows ~2,400 events/minute missing
+      since about 3 hours ago. It's only the B-D hash range — that's shard 2. The rest
+      of the event pipeline looks fine. Our purchase funnel metrics are understated because
+      shard 2 handles the B and C surname range — about 20% of our user base."
+
+      If asked about urgency: "The longer shard 2 is frozen, the bigger the gap in our
+      analytics. But more importantly — the events will be lost permanently unless you
+      recover them from the Firehose S3 backup. Every minute you wait is more events
+      that are stuck behind the poison record."
+
+      Keep responses focused on data impact. Escalatory but not panicked.
+
+  - id: ops-kinesis-bot
+    display_name: "KinesisMonitorBot"
+    job_title: "Automation"
+    team: "Operations"
+    avatar_color: "#6B7280"
+    initiates_contact: true
+    cooldown_seconds: 180
+    silent_until_contacted: false
+    system_prompt: |
+      You are KinesisMonitorBot. Post periodic shard health updates.
+      At T+0: "user-events-stream shard health: shard-0=OK shard-1=OK shard-2=DEGRADED
+      (iterator_age=10847s, error_rate=100%) shard-3=OK shard-4=OK. Lambda errors
+      past hour: 1,247 (all shard-2)."
+      At T+300: "user-events-stream shard health: shard-0=OK shard-1=OK shard-2=CRITICAL
+      (iterator_age=12089s ⬆, SAME_RECORD_RETRIED=4,891 times) shard-3=OK shard-4=OK."
+      At T+900: "user-events-stream: shard-2 iterator_age=13847s. Events behind: ~43,200.
+      Affected sequence: 49647821234567890123456789012345 (NullPointerException). All other
+      shards processing normally."
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-kinesis-incident
+    from: felix-huang
+    to: trainee
+    subject: "[SEV2] event-pipeline-service: shard 2 iterator age climbing, Lambda errors"
+    body: |
+      Hey,
+
+      Shard 2 is in bad shape. Iterator age is at 10,847 seconds (~3 hours of backlog)
+      and climbing. Lambda error rate is 100% on shard 2 invocations.
+
+      The weird part: shards 0, 1, 3, 4 are all fine. Only shard 2.
+
+      I think it's a bug in v1.4.2 (deployed yesterday) — we added a new enrichment step
+      and I suspect it's crashing on certain event shapes. But I'm not sure why only
+      shard 2 would be affected.
+
+      Opened PIPE-3317. Looking at Lambda logs now.
+
+      — Felix
+
+  - id: email-002
+    at_second: 300
+    thread_id: thread-kinesis-incident
+    from: felix-huang
+    to: trainee
+    subject: "[SEV2] event-pipeline-service: shard 2 iterator age climbing, Lambda errors"
+    body: |
+      Update: Lambda logs show it's the same record being retried. Over and over.
+
+      Sequence: 49647821234567890123456789012345
+      Error: NullPointerException at enrichment.go:84 (getUser called with null user_id)
+      Retry count: 4,891 times in the last 3 hours.
+
+      Kinesis guarantees ordering — Lambda can't skip this record. The entire shard is
+      behind this one event.
+
+      Three options I'm looking at:
+      1. Deploy a null-check fix — consumer handles the bad record gracefully, iterator advances
+      2. Advance the shard iterator manually past this sequence number (loses the event)
+      3. Enable bisect-on-error (splits the batch to isolate the bad record) — but we're
+         already at batch size 1, so this won't help
+
+      Option 1 is cleanest but takes 10-15 minutes to deploy. Worth it?
+
+      — Felix
+
+  - id: email-003
+    at_second: 900
+    thread_id: thread-kinesis-incident
+    from: priya-data
+    to: trainee
+    subject: "RE: [SEV2] event-pipeline-service: shard 2 iterator age climbing, Lambda errors"
+    body: |
+      Hi,
+
+      Looping in from the analytics side. Shard 2 has been frozen for 3 hours — we're
+      missing ~43,200 events in the analytics warehouse. Purchase funnel metrics are
+      understated by ~20% for the B-D user surname range.
+
+      We can recover events from the Kinesis Data Firehose S3 backup (events are written
+      to S3 regardless of Lambda processing status) but only if the Lambda consumer
+      resumes processing. The longer we wait, the more backlog to replay.
+
+      The iterator age is 13,847 seconds. At 2,400 events/minute processing rate, that's
+      18 minutes of catchup once the shard is unblocked. Recoverable, but urgently needed.
+
+      — Priya (Analytics)
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: data-platform
+      name: "#data-platform"
+    - id: analytics-alerts
+      name: "#analytics-alerts"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: felix-huang
+      text: "event-pipeline shard 2 is degraded — iterator age 10,847s, 100% error rate on shard-2 Lambda invocations. Shards 0/1/3/4 healthy. Opening PIPE-3317."
+    - id: chat-002
+      at_second: 0
+      channel: "#incidents"
+      persona: ops-kinesis-bot
+      text: "user-events-stream shard health: shard-0=OK shard-1=OK shard-2=DEGRADED (iterator_age=10847s, error_rate=100%) shard-3=OK shard-4=OK. Lambda errors past hour: 1,247 (all shard-2)."
+    - id: chat-003
+      at_second: 30
+      channel: "#analytics-alerts"
+      persona: priya-data
+      text: "Shard 2 missing from analytics pipeline. ~2,400 events/min gap for 3 hours. Purchase funnel metrics are wrong. @felix-huang is this related to the Lambda errors?"
+    - id: chat-004
+      at_second: 120
+      channel: "#data-platform"
+      persona: felix-huang
+      text: "Lambda logs: same record retried 4,891 times. Seq 49647821234567890123456789012345 — NullPointerException on getUser(null). Kinesis ordering guarantee means we can't skip it without manual iterator advance."
+    - id: chat-005
+      at_second: 180
+      channel: "#incidents"
+      persona: felix-huang
+      text: "Important: scaling Lambda concurrency will NOT help here. More workers all attempt the same shard-2 record and all fail. We need to fix the consumer or advance the iterator."
+    - id: chat-006
+      at_second: 300
+      channel: "#incidents"
+      persona: ops-kinesis-bot
+      text: "user-events-stream shard health: shard-0=OK shard-1=OK shard-2=CRITICAL (iterator_age=12089s ⬆, SAME_RECORD_RETRIED=4,891 times) shard-3=OK shard-4=OK."
+    - id: chat-007
+      at_second: 420
+      channel: "#data-platform"
+      persona: felix-huang
+      text: "Found it — user_id is null on the bad event. It's a purchase event from an anonymous user. We don't generate null user_ids ourselves. Must be from a client SDK."
+    - id: chat-008
+      at_second: 480
+      channel: "#data-platform"
+      persona: ryan-chen
+      text: "Just saw this. mobile-sdk v2.8.3 has a bug — anonymous users (first launch) emit user_id=null. Released 3.5h ago. ~0.3% of events affected. This will keep happening for any first-launch anonymous session until v2.8.4 is out."
+    - id: chat-009
+      at_second: 540
+      channel: "#incidents"
+      persona: felix-huang
+      text: "Two fixes needed: (1) deploy Lambda null-check to unblock shard 2 now, (2) mobile-sdk v2.8.4 to prevent future poison records. Option 1 takes 10-15min. Option 2 takes 24-48h (app store review)."
+    - id: chat-010
+      at_second: 900
+      channel: "#incidents"
+      persona: ops-kinesis-bot
+      text: "user-events-stream: shard-2 iterator_age=13847s. Events behind: ~43,200. Affected sequence: 49647821234567890123456789012345 (NullPointerException). All other shards processing normally."
+
+ticketing:
+  - id: PIPE-3317
+    title: "event-pipeline-service: Kinesis shard 2 frozen — poison pill record blocking iterator"
+    severity: SEV2
+    status: open
+    description: |
+      ## Summary
+
+      Shard 2 of `user-events-stream` is frozen. A single malformed event is blocking
+      the shard iterator. Lambda retries the same record indefinitely. All 5 other shards
+      are healthy.
+
+      ## The Poison Record
+
+      - **Sequence number:** 49647821234567890123456789012345
+      - **Event type:** purchase_completed
+      - **user_id:** `null` (invalid — all events must have a valid user_id or anonymous_id)
+      - **Error:** `NullPointerException: getUser called with null user_id at enrichment.go:84`
+      - **Retry count:** 4,891+ (Lambda retries 10x, waits 1min, retries again indefinitely)
+
+      ## Root Cause
+
+      mobile-sdk v2.8.3 (released 3.5h ago) introduced a bug where anonymous users
+      (first app launch, pre-auth) emit events with `user_id=null` instead of an
+      `anonymous_id`. ~0.3% of events are affected.
+
+      ## Why Kinesis Ordering Guarantees Make This Catastrophic
+
+      Within a shard, Kinesis guarantees ordering. Lambda cannot advance the iterator past
+      a failed record — it must process records in sequence. One bad record = entire shard frozen.
+
+      ## Impact
+
+      - Shard 2 iterator age: 13,847s (3.8 hours of backlog)
+      - Events behind: ~43,200
+      - Analytics pipeline: ~20% of purchase events missing
+      - Other shards: unaffected
+
+      ## Resolution Options
+
+      1. **Deploy Lambda null-check** (v1.4.3) — consumer handles null user_id gracefully,
+         iterator advances, shard recovers. **Recommended.**
+      2. **Advance shard iterator manually** — fast but loses the poison record permanently
+         (recoverable from Firehose S3 backup, but requires manual replay)
+      3. **Deploy mobile-sdk v2.8.4** — fixes the producer but won't unblock the current shard
+
+    created_by: felix-huang
+    assignee: trainee
+    at_second: -60
+
+  - id: PIPE-3318
+    title: "analytics-warehouse: 3.8h gap in shard-2 event data — purchase funnel understated 20%"
+    severity: SEV3
+    status: open
+    description: |
+      ## Impact
+
+      Shard 2 events missing from analytics warehouse since 3.8h ago.
+      - Missing events: ~43,200
+      - Affected: all user_ids in B-D hash range (~20% of user base)
+      - Purchase funnel conversion metrics: understated by ~20%
+      - Data recovery: possible via Kinesis Firehose S3 backup once Lambda resumes
+
+    created_by: priya-data
+    assignee: trainee
+    at_second: 300
+
+alarms:
+  - id: alarm-iterator-age
+    service: event-pipeline-service
+    metric_id: queue_depth
+    condition: "queue_depth > 10000 events behind on any shard (iterator age proxy)"
+    severity: SEV2
+    auto_fire: true
+    auto_page: true
+    onset_second: -10800
+    page_message: "event-pipeline Kinesis iterator age > 5 minutes on shard 2. Consumer may be stuck."
+  - id: alarm-lambda-errors
+    service: event-pipeline-service
+    metric_id: error_rate
+    condition: "Lambda error rate > 15%"
+    severity: SEV2
+    auto_fire: true
+    auto_page: false
+    onset_second: -10800
+  - id: alarm-dlq-poison
+    service: event-pipeline-service
+    metric_id: queue_depth
+    condition: "queue_depth > 10000 events behind on any shard"
+    severity: SEV3
+    auto_fire: true
+    auto_page: false
+    onset_second: -10500
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: event-pipeline-service
+    message: "Lambda invocation FAILED: shard=shard-2 batch_size=1 attempt=4891/10 error=NullPointerException seq=49647821234567890123456789012345"
+  - id: log-002
+    at_second: 0
+    level: ERROR
+    service: event-pipeline-service
+    message: "goroutine 47 [running]: event-pipeline/enrichment.getUser(0x0, 0x0) enrichment.go:84 +0x1c — user_id is nil"
+  - id: log-003
+    at_second: 0
+    level: WARN
+    service: event-pipeline-service
+    message: "Shard shard-2: iterator age 10847s (3.01h). Consumer is stuck at seq=49647821234567890123456789012345. 4891 retry attempts."
+  - id: log-004
+    at_second: 5
+    level: INFO
+    service: event-pipeline-service
+    message: "Shard health summary: shard-0=lag:0.2s shard-1=lag:0.3s shard-2=lag:10847s(STUCK) shard-3=lag:0.1s shard-4=lag:0.2s"
+  - id: log-005
+    at_second: 10
+    level: DEBUG
+    service: event-pipeline-service
+    message: "Processing shard-2 batch: [{seq=49647821234567890123456789012345 type=purchase_completed user_id=<nil> product_id=HOODIE-L-BLACK amount=49.99 timestamp=2024-01-16T07:31:42Z}]"
+  - id: log-006
+    at_second: 10
+    level: ERROR
+    service: event-pipeline-service
+    message: "enrichment.go:84: getUser(user_id=<nil>) — user_id must not be nil. Panic: runtime error: invalid memory address or nil pointer dereference"
+  - id: log-007
+    at_second: 10
+    level: WARN
+    service: event-pipeline-service
+    message: "Lambda retry policy: attempt 4892/10. Next retry in 0s (synchronous). After 10 attempts: 60s backoff, then resume from same sequence."
+  - id: log-008
+    at_second: 30
+    level: INFO
+    service: event-pipeline-service
+    message: "Shard shard-0: processed 1247 events in last 30s. Avg latency: 4.2ms/event. All healthy."
+  - id: log-009
+    at_second: 30
+    level: INFO
+    service: event-pipeline-service
+    message: "Shard shard-3: processed 1189 events in last 30s. Avg latency: 3.8ms/event. All healthy."
+  - id: log-010
+    at_second: 60
+    level: DEBUG
+    service: event-pipeline-service
+    message: "Lambda config: KINESIS_STREAM=user-events-stream SHARD_COUNT=5 BATCH_SIZE=1 BISECT_ON_ERROR=false MAX_RETRY_ATTEMPTS=10 RETRY_BACKOFF_SECONDS=60 DESTINATION_TABLE=analytics-events"
+  - id: log-011
+    at_second: 75
+    level: WARN
+    service: event-pipeline-service
+    message: "Shard shard-2: same record retried 4921 times. event_type=purchase_completed user_id=null. Suggest: add null check for user_id in enrichment.go:84"
+  - id: log-012
+    at_second: 90
+    level: INFO
+    service: event-pipeline-service
+    message: "Lambda concurrency: active=4 (one invocation per healthy shard). reserved_concurrency=50. Scaling Lambda concurrency will not help — shard-2 is blocked on a single record."
+  - id: log-013
+    at_second: 120
+    level: ERROR
+    service: event-pipeline-service
+    message: "POISON PILL DETECTED: seq=49647821234567890123456789012345 has caused 4950 consecutive failures. Shard shard-2 cannot advance until this record is processed or the iterator is advanced manually."
+  - id: log-014
+    at_second: 150
+    level: DEBUG
+    service: event-pipeline-service
+    message: 'Raw event payload: {"event_type":"purchase_completed","user_id":null,"anonymous_id":null,"session_id":"sess_8af7d3","product_id":"HOODIE-L-BLACK","amount":49.99,"currency":"USD","sdk_version":"mobile-sdk/2.8.3"}'
+  - id: log-015
+    at_second: 180
+    level: WARN
+    service: event-pipeline-service
+    message: "sdk_version=mobile-sdk/2.8.3 detected in poison event. Check mobile-sdk changelog for null user_id regression in anonymous user flow."
+  - id: log-016
+    at_second: 240
+    level: INFO
+    service: event-pipeline-service
+    message: "Shard shard-2 approximate_events_behind=43200 (3h backlog). Firehose backup available in s3://event-pipeline-backup/2024/01/16/shard-2/ for replay."
+  - id: log-017
+    at_second: 300
+    level: DEBUG
+    service: event-pipeline-service
+    message: "enrichment.go:84 context: func enrichUser(event *Event) (*EnrichedEvent, error) { user, err := getUser(event.UserID) // UserID is nil — no null check"
+  - id: log-018
+    at_second: 360
+    level: WARN
+    service: event-pipeline-service
+    message: "Lambda memory: 512MB allocated, 91MB used. CPU: 3%. Lambda itself is healthy. The issue is the poison record in Kinesis, not Lambda resource exhaustion."
+  - id: log-019
+    at_second: 420
+    level: ERROR
+    service: event-pipeline-service
+    message: "Consecutive failures for shard-2: 5147. Record has now been retried for 3h 42m. Manual iterator advance or consumer fix required."
+  - id: log-020
+    at_second: 480
+    level: INFO
+    service: event-pipeline-service
+    message: "Kinesis GetRecords: shard-2 MillisBehindLatest=13847000ms. Records available after poison: 43,200 events waiting to be processed."
+
+log_patterns:
+  - id: poison-record-fail
+    level: ERROR
+    service: event-pipeline-service
+    message: "Lambda invocation FAILED: shard=shard-2 batch_size=1 attempt={n}/10 error=NullPointerException seq=49647821234567890123456789012345 user_id=null"
+    interval_seconds: 2
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 0
+
+  - id: nil-pointer-panic
+    level: ERROR
+    service: event-pipeline-service
+    message: "goroutine {n} [running]: enrichment.getUser(0x0, 0x0) enrichment.go:84 +0x1c — nil pointer dereference"
+    interval_seconds: 2
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 1
+
+  - id: retry-warn
+    level: WARN
+    service: event-pipeline-service
+    message: "shard-2 retry attempt {n} for seq=49647821234567890123456789012345. Iterator cannot advance past poison record."
+    interval_seconds: 3
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 1
+
+  - id: iterator-age-escalation
+    level: WARN
+    service: event-pipeline-service
+    message: "Shard shard-2: iterator age {n}s and growing. events_behind={n}. Poison record blocking progress."
+    interval_seconds: 60
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 5
+
+  - id: shard-health-summary
+    level: INFO
+    service: event-pipeline-service
+    message: "Shard health: shard-0=lag:0.2s shard-1=lag:0.3s shard-2=lag:{n}s(STUCK@seq=49647821234567890123456789012345) shard-3=lag:0.1s shard-4=lag:0.2s"
+    interval_seconds: 30
+    from_second: 5
+    to_second: 1500
+    jitter_seconds: 3
+
+  - id: healthy-shards-processing
+    level: INFO
+    service: event-pipeline-service
+    message: "Shard shard-{n}: processed {n} events in last 30s. Avg latency: {n}ms/event. Healthy."
+    interval_seconds: 30
+    from_second: 30
+    to_second: 1500
+    jitter_seconds: 5
+
+  - id: poison-detection-warn
+    level: WARN
+    service: event-pipeline-service
+    message: "POISON PILL: seq=49647821234567890123456789012345 has caused {n} consecutive failures. sdk_version=mobile-sdk/2.8.3 user_id=null anonymous_id=null"
+    interval_seconds: 120
+    from_second: 120
+    to_second: 1500
+    jitter_seconds: 15
+
+  - id: raw-event-debug
+    level: DEBUG
+    service: event-pipeline-service
+    message: '{"event_type":"purchase_completed","user_id":null,"anonymous_id":null,"sdk_version":"mobile-sdk/2.8.3","seq":"49647821234567890123456789012345"}'
+    interval_seconds: 60
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 10
+
+  - id: enrichment-source-context
+    level: DEBUG
+    service: event-pipeline-service
+    message: "enrichment.go:84: getUser(event.UserID) called with UserID=<nil>. Missing null guard. Fix: if event.UserID == nil { return enrichAnonymous(event) }"
+    interval_seconds: 90
+    from_second: 60
+    to_second: 1500
+    jitter_seconds: 20
+
+  - id: lambda-concurrency-note
+    level: INFO
+    service: event-pipeline-service
+    message: "Lambda concurrency: active={n}/50. NOTE: increasing reserved_concurrency will not help — shard-2 is blocked on one record, not resource-constrained."
+    interval_seconds: 120
+    from_second: 90
+    to_second: 1500
+    jitter_seconds: 15
+
+  - id: firehose-backup-available
+    level: INFO
+    service: event-pipeline-service
+    message: "Firehose S3 backup: s3://event-pipeline-backup/2024/01/16/shard-2/ contains {n} events since T-3h. Available for replay after consumer unblocks."
+    interval_seconds: 300
+    from_second: 240
+    to_second: 1500
+    jitter_seconds: 30
+
+  - id: events-behind-escalation
+    level: WARN
+    service: event-pipeline-service
+    message: "shard-2 events behind: {n} (growing at 2400/min). Analytics gap growing. Unblock required."
+    interval_seconds: 120
+    from_second: 0
+    to_second: 1500
+    jitter_seconds: 20
+
+  - id: backoff-after-retries
+    level: INFO
+    service: event-pipeline-service
+    message: "shard-2: max retries (10) exhausted for seq=49647821234567890123456789012345. Backing off 60s before retrying from same position. Iterator NOT advanced."
+    interval_seconds: 70
+    from_second: 10
+    to_second: 1500
+    jitter_seconds: 5
+
+background_logs:
+  - profile: python_worker
+    service: event-pipeline-service
+    from_second: -300
+    to_second: 1500
+    density: high
+  - profile: nodejs_api
+    service: mobile-sdk-service
+    from_second: -300
+    to_second: 1500
+    density: low
+
+wiki:
+  pages:
+    - title: "event-pipeline-service Runbook"
+      content: |
+        # event-pipeline-service Runbook
+
+        ## Overview
+
+        event-pipeline-service is a Lambda function that reads from `user-events-stream`
+        (5 shards, Kinesis standard) and writes enriched events to `analytics-events` DynamoDB.
+
+        **Stream:** `user-events-stream` (5 shards, 7-day retention)
+        **Lambda:** `event-processor` (512MB, Go 1.21)
+        **Batch size:** 1 (each Lambda invocation processes exactly 1 record)
+        **Bisect on error:** disabled (batch size is already 1)
+
+        ## Kinesis Ordering and Poison Pills
+
+        ⚠️ **CRITICAL:** Kinesis guarantees strict ordering within a shard. Lambda processes
+        records sequentially within a shard. If a record causes an unhandled error:
+
+        1. Lambda retries the same record up to MAX_RETRY_ATTEMPTS (10)
+        2. After max retries, backs off RETRY_BACKOFF_SECONDS (60), then retries again
+        3. **The iterator NEVER advances past a failed record** — all subsequent records
+           in the shard are blocked indefinitely
+
+        This is called a "poison pill" — a single bad record that freezes an entire shard.
+
+        ## Diagnosing a Frozen Shard
+
+        **Symptoms:**
+        - IteratorAge climbing on one shard, others normal
+        - Lambda error rate = 20% (1/5 shards failing)
+        - Same error, same sequence number, in every Lambda invocation log
+
+        **Diagnosis steps:**
+        1. Check CloudWatch Lambda logs — look for repeated errors on same sequence number
+        2. Identify the partition key / user_id of the bad record
+        3. Determine why the consumer is failing on this specific record
+        4. Decide: fix consumer (preferred) or advance iterator (fast but loses event)
+
+        ## Recovery Options
+
+        ### Option 1: Fix the Consumer (Recommended)
+
+        Deploy a null-check / defensive handler for the bad event type. Lambda processes
+        the poison record gracefully (logs it, skips enrichment), deletes from stream,
+        iterator advances, shard unblocks.
+
+        **Time to recovery:** 10-15 minutes (Lambda deploy + shard catchup)
+        **Data loss:** None — bad event is logged and forwarded without enrichment
+
+        ### Option 2: Advance the Iterator Manually
+
+        Use the Kinesis API to move the shard iterator past the bad sequence number:
+
+        ```bash
+        aws kinesis get-shard-iterator \
+          --stream-name user-events-stream \
+          --shard-id shardId-000000000002 \
+          --shard-iterator-type AFTER_SEQUENCE_NUMBER \
+          --starting-sequence-number 49647821234567890123456789012345
+        ```
+
+        Then update the Lambda event source mapping to start from the new iterator.
+
+        **Time to recovery:** 2-5 minutes
+        **Data loss:** The poison event is permanently lost. Recoverable from Firehose
+        S3 backup: `s3://event-pipeline-backup/YYYY/MM/DD/shard-2/`
+
+        ## What Does NOT Fix a Frozen Shard
+
+        - **Scaling Lambda concurrency** — more workers all hit the same poison record
+        - **Restarting Lambda** — resumes from the same stuck position
+        - **Rollback** — the poison record is already in the stream; consumer version is irrelevant
+          unless the rollback removes the crashing code path
+
+    - title: "Kinesis Poison Pill Recovery Procedure"
+      content: |
+        # Kinesis Poison Pill Recovery Procedure
+
+        ## Quick Identification
+
+        ```bash
+        # Check iterator age per shard
+        aws cloudwatch get-metric-statistics \
+          --namespace AWS/Kinesis \
+          --metric-name GetRecords.IteratorAgeMilliseconds \
+          --dimensions Name=StreamName,Value=user-events-stream \
+          --statistics Maximum --period 60
+
+        # Find the poison sequence number in Lambda logs
+        aws logs filter-log-events \
+          --log-group-name /aws/lambda/event-processor \
+          --filter-pattern "NullPointerException" \
+          --start-time $(date -d '1 hour ago' +%s000)
+        ```
+
+        ## Recovery Path A: Deploy Consumer Fix (Preferred)
+
+        1. Add null check in `enrichment.go:84`:
+           ```go
+           if event.UserID == nil {
+               return enrichAnonymous(event) // use session_id as anonymous identifier
+           }
+           ```
+        2. Deploy v1.4.3 to Lambda
+        3. Verify shard-2 iterator age starts decreasing
+        4. Monitor catchup progress (2,400 events/min = ~18 min to drain 43,200 backlog)
+
+        ## Recovery Path B: Manual Iterator Advance (Emergency)
+
+        Use only if you cannot deploy a fix quickly.
+
+        1. Get the poison sequence number from logs
+        2. Create a new shard iterator starting AFTER the bad record:
+           ```bash
+           ITERATOR=$(aws kinesis get-shard-iterator \
+             --stream-name user-events-stream \
+             --shard-id shardId-000000000002 \
+             --shard-iterator-type AFTER_SEQUENCE_NUMBER \
+             --starting-sequence-number <POISON_SEQ> \
+             --query 'ShardIterator' --output text)
+           ```
+        3. Trigger Lambda with the new iterator position
+        4. The poison event is now lost — schedule replay from Firehose S3 backup
+
+    - title: "mobile-sdk Event Schema Requirements"
+      content: |
+        # mobile-sdk Event Schema Requirements
+
+        ## Required Fields (all events)
+
+        Every event MUST have exactly one of:
+        - `user_id` (string, non-null) — for authenticated users
+        - `anonymous_id` (string, UUID v4) — for unauthenticated/anonymous users
+
+        **NEVER send `user_id: null` or `anonymous_id: null`.**
+
+        ## Anonymous User Flow
+
+        For users who have not yet authenticated (e.g. first app launch):
+        1. Generate a UUID v4 `anonymous_id` on first launch
+        2. Store in device keychain
+        3. Use `anonymous_id` for all events until user logs in
+        4. After login: link `anonymous_id` to `user_id` via identity resolution
+
+        ## SDK Version History
+
+        | Version | Status | Notes |
+        |---|---|---|
+        | v2.8.3 | **CRITICAL BUG** | Anonymous users emit user_id=null. Fix in v2.8.4. |
+        | v2.8.2 | Stable | Stable |
+        | v2.8.1 | Stable | Stable |
+
+        ## Consumer Defensive Handling
+
+        Consumers (Lambda, Firehose processors) MUST handle null user_id gracefully.
+        Do not panic — log the invalid event, emit a metric, use session_id as fallback
+        identifier. See `enrichment.go` for the reference implementation.
+
+cicd:
+  pipelines:
+    - id: pipeline-event-processor
+      name: "event-pipeline-service"
+      service: event-pipeline-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v1.4.2
+          previous_version: v1.4.1
+          status: succeeded
+          deployed_at_sec: -86400
+          commit_message: "feat: add user enrichment step — lookup user profile on every event (PIPE-3290)"
+          author: felix-huang
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+            - name: "Integration tests"
+              status: passed
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v1.4.2
+          previous_version: v1.4.1
+          status: succeeded
+          deployed_at_sec: -86400
+          commit_message: "feat: add user enrichment step — lookup user profile on every event (PIPE-3290)"
+          author: felix-huang
+          blockers: []
+          alarm_watches: [alarm-iterator-age, alarm-lambda-errors]
+          tests:
+            - name: "Canary (1% traffic, 5min)"
+              status: passed # Canary passed — bad event hadn't arrived yet
+          promotion_events:
+            - version: v1.4.2
+              sim_time: -86400
+              status: succeeded
+              note: "AutoPromote: canary healthy for 5 minutes"
+            - version: v1.4.1
+              sim_time: -604800
+              status: succeeded
+              note: "AutoPromote: canary healthy"
+
+    - id: pipeline-mobile-sdk
+      name: "mobile-sdk"
+      service: mobile-sdk-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v2.8.3
+          previous_version: v2.8.2
+          status: succeeded
+          deployed_at_sec: -12600
+          commit_message: "refactor: simplify UserContext initialization for anonymous flow (MOB-1821)"
+          author: ryan-chen
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+            - name: "Anonymous user flow tests"
+              status: passed # Tests didn't cover null user_id emission
+        - id: prod
+          name: "App Store / Play Store"
+          type: deploy
+          current_version: v2.8.3
+          previous_version: v2.8.2
+          status: succeeded
+          deployed_at_sec: -12600
+          commit_message: "refactor: simplify UserContext initialization for anonymous flow (MOB-1821)"
+          author: ryan-chen
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Beta testing (1h)"
+              status: passed
+          promotion_events:
+            - version: v2.8.3
+              sim_time: -12600
+              status: succeeded
+              note: "App Store review passed. Released to 100% of users."
+
+  deployments:
+    - service: event-pipeline-service
+      version: v1.4.2
+      deployed_at_sec: -86400
+      status: active
+      commit_message: "feat: add user enrichment step — lookup user profile on every event (PIPE-3290)"
+      author: felix-huang
+    - service: event-pipeline-service
+      version: v1.4.1
+      deployed_at_sec: -604800
+      status: previous
+      commit_message: "perf: switch from JSON to Avro serialization for 40% throughput improvement"
+      author: felix-huang
+    - service: mobile-sdk-service
+      version: v2.8.3
+      deployed_at_sec: -12600
+      status: active
+      commit_message: "refactor: simplify UserContext initialization for anonymous flow (MOB-1821)"
+      author: ryan-chen
+    - service: mobile-sdk-service
+      version: v2.8.2
+      deployed_at_sec: -604800
+      status: previous
+      commit_message: "fix: improve session tracking across app restarts"
+      author: ryan-chen
+
+host_groups:
+  - id: event-pipeline-lambda
+    label: "event-processor Lambda (us-east-1)"
+    service: event-pipeline-service
+    instance_count: 5
+    description: "1 Lambda invocation per shard × 5 shards. reserved_concurrency=50. Currently: 4 healthy invocations, 1 frozen on shard-2."
+
+remediation_actions:
+  - id: deploy_null_check_fix
+    type: emergency_deploy
+    service: event-pipeline-service
+    is_correct_fix: true
+    target_version: v1.4.3
+    target_stage: prod
+    label: "Deploy v1.4.3: null check in enrichment.go:84"
+    side_effect: >
+      v1.4.3 deployed with null-check in enrichment.go:84. Lambda processes the poison
+      record gracefully (logs warning, uses session_id as anonymous identifier, forwards
+      to DynamoDB without enriched user profile). SQS iterator advances past the bad
+      record. Shard-2 begins processing backlog at 2,400 events/min. Full catchup in
+      ~18 minutes. No events lost. Mobile-sdk v2.8.4 still needed to prevent future occurrences.
+
+  - id: advance_iterator_manually
+    type: emergency_deploy
+    service: event-pipeline-service
+    is_correct_fix: true
+    label: "Manually advance shard-2 iterator past poison record"
+    side_effect: >
+      Shard-2 iterator advanced past seq=49647821234567890123456789012345. Shard immediately
+      resumes processing. Catchup begins. The poison event is permanently skipped — not
+      written to analytics-events. Recoverable from Firehose S3 backup at
+      s3://event-pipeline-backup/ for manual replay. Faster than deploying a fix but
+      requires manual Kinesis API operations and S3 replay planning.
+
+  - id: scale_lambda_concurrency
+    type: scale_cluster
+    service: event-pipeline-service
+    is_correct_fix: false
+    label: "Increase Lambda reserved concurrency from 50 to 200"
+    side_effect: >
+      More Lambda workers are now allocated. However: Kinesis shard mapping is 1:1 —
+      each shard has exactly one active Lambda invocation. Additional concurrency creates
+      no new consumers for shard-2. The shard-2 invocation still hits the same poison
+      record. Iterator age continues climbing. Error rate unchanged at 20%. You've
+      increased cost with zero impact on the incident.
+
+  - id: rollback_v1_4_1
+    type: rollback
+    service: event-pipeline-service
+    is_correct_fix: false
+    target_version: v1.4.1
+    label: "Rollback event-pipeline to v1.4.1"
+    side_effect: >
+      Rolled back to v1.4.1 (no enrichment step). Lambda no longer calls getUser().
+      However: v1.4.1 ALSO doesn't have a null check for user_id — it just doesn't
+      call getUser(). v1.4.1 may still fail on the poison record for a different reason
+      (missing required field validation). Even if it doesn't fail, the poison record
+      was introduced by the PRODUCER (mobile-sdk), not the consumer version. The record
+      is still in the stream. Shard-2 behavior is unpredictable with v1.4.1.
+
+  - id: restart_lambda
+    type: restart_service
+    service: event-pipeline-service
+    is_correct_fix: false
+    label: "Force Lambda restart / redeploy (no code change)"
+    side_effect: >
+      Lambda cold starts. After warmup, resumes from the same Kinesis checkpoint —
+      the same poison record. NullPointerException fires again within 2 seconds.
+      Shard-2 remains frozen. You've added a 30-second cold start delay with no benefit.
+
+evaluation:
+  root_cause: >
+    mobile-sdk v2.8.3 (released 3.5h before incident) introduced a bug in the anonymous
+    user flow — first-time users emit events with user_id=null and anonymous_id=null.
+    ~0.3% of events are affected. One such event (a purchase_completed event, sequence
+    49647821234567890123456789012345) landed on Kinesis shard 2. The Lambda consumer
+    (v1.4.2) introduced a user enrichment step that calls getUser(event.UserID) without
+    a null check. The nil pointer dereference caused Lambda to fail on every attempt.
+    Due to Kinesis ordering guarantees, the iterator cannot advance past the failed
+    record — shard 2 has been frozen for 3.8 hours with 43,200 events queued behind it.
+    Fix: deploy a null check to the Lambda consumer (v1.4.3) so it handles null user_id
+    gracefully, allowing the iterator to advance and the shard to recover.
+
+  relevant_actions:
+    - action: search_logs
+      why: >
+        Logs are the primary diagnostic tool. They show: (1) same sequence number
+        49647821234567890123456789012345 in every error, (2) NullPointerException at
+        enrichment.go:84, (3) user_id=null in raw event payload, (4) sdk_version=mobile-sdk/2.8.3,
+        (5) explicit note that 'increasing concurrency will not help', (6) Firehose backup location.
+        All root cause information is in the logs.
+    - action: read_wiki_page
+      why: >
+        'Kinesis Poison Pill Recovery Procedure' documents exactly this scenario, including
+        both recovery options and the Kinesis API commands for manual iterator advance.
+        'mobile-sdk Event Schema Requirements' documents the user_id requirement and
+        mobile-sdk v2.8.3 as a CRITICAL BUG.
+    - action: view_deployment_history
+      why: >
+        Shows v1.4.2 deployed yesterday (added enrichment step — the code that crashes),
+        and mobile-sdk v2.8.3 deployed 3.5h ago (the producer bug). Both deployments
+        are necessary to understand the full causal chain.
+    - action: direct_message_persona
+      why: >
+        Contacting Felix Huang surfaces the exact retry count and confirms the poison pill
+        diagnosis. Contacting Ryan Chen confirms the mobile-sdk bug and its scope (0.3% of events).
+    - action: emergency_deploy
+      why: "Deploying v1.4.3 with null check in enrichment.go:84 unblocks shard 2 and allows full recovery."
+      service: event-pipeline-service
+      remediation_action_id: deploy_null_check_fix
+    - action: mark_resolved
+      why: "After v1.4.3 deploys and shard-2 iterator age starts decreasing."
+
+  red_herrings:
+    - action: scale_cluster
+      why: "Kinesis is 1:1 shard-to-Lambda. More concurrency creates no new shard-2 consumers. Zero impact."
+    - action: trigger_rollback
+      why: "The bug is in the PRODUCER (mobile-sdk), not the consumer version. Rollback doesn't remove the bad record from the stream. v1.4.1 has different behavior but the poison record is still there."
+    - action: restart_service
+      why: "Lambda restarts and immediately hits the same poison record. Cold start delay, no improvement."
+
+  debrief_context: |
+    This scenario tests understanding of Kinesis ordering semantics — a fundamental but
+    often misunderstood property that makes poison pills catastrophically impactful.
+
+    The conceptual trap: engineers who know SQS expect bad messages to go to a DLQ
+    and processing to continue. Kinesis is different — there is no automatic DLQ for
+    a Kinesis stream's Lambda consumer (unless explicitly configured), and the ordering
+    guarantee means a stuck record blocks everything behind it in the same shard.
+
+    Key misconceptions this scenario exploits:
+    1. "Scale Lambda concurrency" — intuitive but wrong; shard-to-invocation is 1:1
+    2. "Rollback the consumer" — wrong patient; the bug is in the producer, not the consumer
+    3. "Restart Lambda" — same checkpoint, same record, same crash
+    4. "Only shard 2 is affected so it's minor" — 20% of events, 43,200 in backlog, growing
+
+    The diagnosis path is log-heavy by design:
+    - Logs show the exact same sequence number in every error
+    - Logs show user_id=null and sdk_version=mobile-sdk/2.8.3
+    - Logs explicitly note that concurrency scaling won't help
+    - The enrichment.go:84 source context in the logs hints at the exact fix needed
+
+    Post-incident:
+    - Add null check for all required event fields in the enrichment step
+    - Consider enabling Kinesis Enhanced Fan-Out + OnFailure destination (DLQ)
+    - Add consumer validation that rejects events missing both user_id and anonymous_id
+    - mobile-sdk CI should test anonymous user event schema validation
+    - Consider enabling Kinesis BISECT_ON_BATCH_FUNCTION_ERROR (though batch_size=1 already)

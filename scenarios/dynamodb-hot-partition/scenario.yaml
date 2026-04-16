@@ -1,0 +1,1039 @@
+schema_version: 1
+id: dynamodb-hot-partition
+title: "Product Catalog: DynamoDB Hot Partition During Flash Sale"
+description: >
+  The product catalog service is throwing ProvisionedThroughputExceededExceptions
+  during a flash sale. But the table is on on-demand billing — it shouldn't be
+  able to throttle. Something else is wrong.
+difficulty: hard
+tags: [dynamodb, hot-partition, write-sharding, flash-sale, on-demand]
+
+timeline:
+  default_speed: 2
+  duration_minutes: 20
+  pre_incident_seconds: 43200
+
+topology:
+  focal_service:
+    name: product-catalog-service
+    description: "Node.js product catalog API — serves product detail pages and handles inventory writes. DynamoDB on-demand table as primary store."
+    owner: priya-mehta
+    typical_rps: 800
+    traffic_profile: always_on_api
+    health: healthy
+    components:
+      - id: alb
+        type: load_balancer
+        label: "Application Load Balancer"
+        inputs: []
+      - id: ecs
+        type: ecs_cluster
+        label: "product-catalog ECS (Fargate)"
+        instance_count: 8
+        utilization: 0.68
+        inputs: [alb]
+      - id: dynamo_products
+        type: dynamodb
+        label: "products-table (on-demand)"
+        write_capacity: 1 # on-demand — no provisioned capacity (1 = sentinel for on-demand)
+        read_capacity: 1 # on-demand sentinel
+        write_utilization: 0.12 # baseline: 12% of burst capacity
+        read_utilization: 0.08
+        inputs: [ecs]
+    incidents:
+      - id: hot_partition_writes
+        affected_component: dynamo_products
+        description: >
+          Flash sale + 'trending' badge deploy caused 96% of all writes to land on
+          partition key 'product#FLASH-SALE-2024-HOODIE'. DynamoDB on-demand can
+          scale total throughput but cannot redistribute a hot partition — a single
+          partition is capped at 1000 WCU/s regardless of table-level capacity.
+          ProvisionedThroughputExceededException errors are now 23% of all writes.
+        onset_overlay: spike_and_sustain
+        onset_second: -10800
+        magnitude: 8.5 # 8.5x normal write_throttles
+        propagation_direction: upstream
+      - id: ecs_error_rate_spike
+        affected_component: ecs
+        description: >
+          ECS error rate climbing as DynamoDB write exceptions bubble up through the
+          application layer. Retry storms amplify the problem — the SDK is retrying
+          with exponential backoff but the hot partition isn't recovering.
+        onset_overlay: gradual_degradation
+        onset_second: -10680 # 2 min after write throttling begins
+        magnitude: 4.2
+        propagation_direction: upstream
+
+  upstream:
+    - name: storefront-service
+      description: "React SSR storefront — renders product pages, calls catalog API for product data."
+      typical_rps: 600
+      correlation: upstream_impact
+      lag_seconds: 120
+      impact_factor: 0.7
+    - name: search-service
+      description: "Elasticsearch-backed product search. Reads from catalog, no writes. Unaffected."
+      correlation: exonerated
+
+  downstream:
+    - name: inventory-service
+      description: "Inventory reservation system. Reads product catalog on every checkout. Starting to see read timeouts as catalog ECS is under load."
+      correlation: upstream_impact
+      lag_seconds: 300
+      impact_factor: 0.3
+    - name: cdn-edge
+      description: "CloudFront CDN — cache hit rate is 94% for product pages. CDN is completely healthy and masking most of the problem from end users."
+      correlation: independent
+
+engine:
+  default_tab: logs
+  llm_event_tools:
+    - tool: select_metric_reaction
+      enabled: true
+    - tool: inject_log_entry
+      enabled: true
+    - tool: fire_alarm
+      max_calls: 3
+
+personas:
+  - id: priya-mehta
+    display_name: "Priya Mehta"
+    job_title: "Senior Software Engineer"
+    team: "Catalog"
+    avatar_color: "#0EA5E9"
+    initiates_contact: true
+    cooldown_seconds: 90
+    silent_until_contacted: false
+    system_prompt: |
+      You are Priya Mehta, Senior SWE on the Catalog team. You own product-catalog-service.
+      You got paged and are actively investigating. You know the flash sale started 3h ago and
+      there was a "trending badge" feature deploy (v4.2.0) 4h ago — but you're confused because
+      the table is on on-demand billing.
+
+      Your strong prior belief: "On-demand tables can't throttle. This must be something else —
+      maybe a bug in the retry logic or an SDK version mismatch."
+
+      You will NOT volunteer information about the hot partition key unless the trainee:
+      - Asks you to look at specific partition key distribution in logs/CloudWatch
+      - Asks "what product is driving the writes"
+      - Asks "which partition is hot"
+      In that case, say: "Oh. FLASH-SALE-2024-HOODIE. That product got the trending badge in
+      v4.2.0. It's been on the homepage since the flash sale started. Every inventory update,
+      price update, and view counter write goes to the same partition key. I didn't think this
+      was possible on on-demand..."
+
+      If asked about the on-demand billing mode: "Yeah, we switched to on-demand specifically
+      to avoid capacity planning. The ADR says capacity alarms are not needed for on-demand
+      tables because AWS auto-scales. That's why we disabled all the DynamoDB capacity alarms."
+
+      If asked about the correct fix: Only discuss DAX (caching layer) or write sharding
+      (prefix the partition key with a random 0-9 prefix and scatter writes). Do NOT suggest
+      increasing capacity — that's the red herring.
+
+      Keep responses concise (2-4 sentences). Slack-style casual tone.
+
+  - id: tom-bradley
+    display_name: "Tom Bradley"
+    job_title: "Infrastructure Engineer"
+    team: "Platform"
+    avatar_color: "#F59E0B"
+    initiates_contact: false
+    cooldown_seconds: 120
+    silent_until_contacted: true
+    system_prompt: |
+      You are Tom Bradley, Infrastructure Engineer on Platform. You manage DynamoDB
+      table configurations across the org.
+
+      If contacted about the DynamoDB issue, you know:
+      - The products-table was migrated to on-demand 6 months ago
+      - The ADR explicitly says "capacity alarms disabled — on-demand auto-scales"
+      - You know that on-demand has a per-partition hard cap of 1000 WCU/s that
+        cannot be scaled around — this is a DynamoDB fundamental, not a config problem
+
+      If asked about increasing table capacity: "That won't help. On-demand scales
+      the table but it can't fix a hot partition — single partitions are hard-capped
+      at 1000 WCU/s regardless of table-level throughput. You'd need DAX or
+      write sharding to distribute the load."
+
+      If asked about DAX: "DAX would help for reads but not writes — it's a read-through
+      cache. For writes, you need to distribute the partition key. The standard approach
+      is a random prefix (0-9) prepended to the sort key. Or short-term: throttle the
+      write path until the sale ends."
+
+      Keep responses concise. Be direct and technical.
+
+  - id: anya-kozlov
+    display_name: "Anya Kozlov"
+    job_title: "Principal Engineer"
+    team: "Architecture"
+    avatar_color: "#8B5CF6"
+    initiates_contact: false
+    cooldown_seconds: 180
+    silent_until_contacted: true
+    system_prompt: |
+      You are Anya Kozlov, Principal Engineer on the Architecture team. You authored
+      the ADR that approved disabling DynamoDB capacity alarms for on-demand tables.
+
+      If paged or contacted about this incident:
+      - You will initially defend the ADR: "The ADR was correct — on-demand handles
+        capacity scaling. This isn't a capacity problem, so the ADR isn't the issue."
+      - If the trainee explains it's a hot partition: "Okay, fair — the ADR didn't
+        account for hot partition scenarios. That's a gap. But the fix isn't to re-enable
+        capacity alarms, those still won't fire on a hot partition issue."
+      - You know the correct fix architecturally: write sharding or DAX for reads
+      - You will NOT approve a capacity increase as a fix: "Increasing capacity doesn't
+        solve hot partitions. That's like adding more lanes to a highway where all cars
+        are exiting at the same ramp."
+
+      Keep responses to 3-5 sentences. Senior/authoritative tone.
+
+  - id: flash-sale-bot
+    display_name: "FlashSaleBot"
+    job_title: "Automation"
+    team: "Marketing"
+    avatar_color: "#EF4444"
+    initiates_contact: true
+    cooldown_seconds: 300
+    silent_until_contacted: false
+    system_prompt: |
+      You are FlashSaleBot, an automated Slack notification bot for the marketing team's
+      flash sale system. You post automated updates about the SUMMER-FLASH-SALE campaign.
+      At T+0, post: "🎉 FLASH-SALE-2024-HOODIE is trending! 847 units sold in the last hour.
+      Current inventory: 153 units. Write throughput: elevated."
+      At T+300, post: "⚠️ Inventory update failures detected for FLASH-SALE-2024-HOODIE.
+      Some purchases may not be reflected in real-time inventory. Marketing team notified."
+      Keep messages brief and automated-sounding.
+
+email:
+  - id: email-001
+    at_second: 0
+    thread_id: thread-catalog-alert
+    from: priya-mehta
+    to: trainee
+    subject: "[SEV2] product-catalog-service: DynamoDB write errors — on-demand table throttling?"
+    body: |
+      Hey,
+
+      Getting paged on product-catalog-service. We're seeing ProvisionedThroughputExceededException
+      errors from DynamoDB — about 23% of writes are failing. This is weird because we're on
+      on-demand billing. On-demand tables aren't supposed to throttle.
+
+      Flash sale has been running for 3h, no problems until now. We deployed the "trending badge"
+      feature (v4.2.0) about 4h ago but I thought that was unrelated.
+
+      My heuristic: on-demand can't run out of capacity, so this must be a bug somewhere.
+      Opened PROD-8847. Taking a look but could use help — this one is strange.
+
+      — Priya
+
+  - id: email-002
+    at_second: 180
+    thread_id: thread-catalog-alert
+    from: priya-mehta
+    to: trainee
+    subject: "[SEV2] product-catalog-service: DynamoDB write errors — on-demand table throttling?"
+    body: |
+      Update: checked the DynamoDB console. Table-level write throughput looks fine —
+      we're at about 4,200 WCU/s and the table can handle way more than that on on-demand.
+
+      But the exceptions keep coming. CloudWatch Metrics shows write throttles on... one specific
+      partition? That doesn't make sense to me. Looping in @tom-bradley.
+
+      — Priya
+
+  - id: email-003
+    at_second: 480
+    thread_id: thread-catalog-alert
+    from: tom-bradley
+    to: trainee
+    subject: "RE: [SEV2] product-catalog-service: DynamoDB write errors — on-demand table throttling?"
+    body: |
+      Adding context from the infra side.
+
+      Priya's right that table-level capacity is fine. But I'm seeing the hot partition metric
+      in CloudWatch — it's partition key 'product#FLASH-SALE-2024-HOODIE'. That item is absorbing
+      96% of all write traffic.
+
+      DynamoDB on-demand scales the table, not individual partitions. Each partition has a hard cap
+      of 1000 WCU/s regardless of table-level mode. You've hit that cap.
+
+      The options are: (1) write sharding — prefix partition keys to spread load, (2) DAX
+      for read caching to reduce read pressure, (3) short-term: throttle the write path.
+
+      Capacity increase is not a valid fix here. The partition cap is a DynamoDB fundamental.
+
+      — Tom
+
+chat:
+  channels:
+    - id: incidents
+      name: "#incidents"
+    - id: catalog-eng
+      name: "#catalog-eng"
+    - id: flash-sale-ops
+      name: "#flash-sale-ops"
+  messages:
+    - id: chat-001
+      at_second: 0
+      channel: "#incidents"
+      persona: priya-mehta
+      text: "product-catalog-service is throwing ProvisionedThroughputExceededException. On on-demand billing. This shouldn't be possible."
+    - id: chat-002
+      at_second: 15
+      channel: "#incidents"
+      persona: priya-mehta
+      text: "Write error rate is 23% and climbing. Table-level throughput looks fine in the console. Opening SEV2."
+    - id: chat-003
+      at_second: 120
+      channel: "#catalog-eng"
+      persona: priya-mehta
+      text: "Anyone know if the trending badge (v4.2.0) could cause concentrated writes to a single product? @tom-bradley could use your eyes on this"
+    - id: chat-004
+      at_second: 300
+      channel: "#flash-sale-ops"
+      persona: flash-sale-bot
+      text: "⚠️ Inventory update failures detected for FLASH-SALE-2024-HOODIE. Some purchases may not be reflected in real-time inventory. 847 units sold, 153 remaining (may be stale)."
+    - id: chat-005
+      at_second: 360
+      channel: "#catalog-eng"
+      persona: tom-bradley
+      text: "Confirmed hot partition. products-table partition 'product#FLASH-SALE-2024-HOODIE' is at ~1000 WCU/s — the per-partition hard cap. This is a write distribution problem, not a capacity problem."
+    - id: chat-006
+      at_second: 420
+      channel: "#catalog-eng"
+      persona: tom-bradley
+      text: "Capacity increase will NOT help here. The partition cap is enforced by DynamoDB regardless of table-level mode. Need write sharding or DAX."
+    - id: chat-007
+      at_second: 600
+      channel: "#incidents"
+      persona: anya-kozlov
+      text: "Aware of the issue. The ADR that disabled DynamoDB capacity alarms didn't account for hot partition scenarios — that's a gap we'll need to address post-incident. But the alarm change isn't what caused this."
+
+ticketing:
+  - id: PROD-8847
+    title: "product-catalog-service: DynamoDB ProvisionedThroughputExceededException on on-demand table"
+    severity: SEV2
+    status: open
+    description: |
+      ## Summary
+
+      product-catalog-service is experiencing DynamoDB write errors (ProvisionedThroughputExceededException)
+      despite the products-table being configured for on-demand billing mode.
+
+      ## Symptoms
+
+      - DynamoDB write error rate: **23%** (baseline: <0.1%)
+      - ECS error rate: **18%** (baseline: <0.5%)
+      - Affected: all inventory write operations (price updates, stock updates, view counters)
+      - Table-level WCU: ~4,200/s — well within on-demand capacity
+      - **One partition is absorbing ~96% of all writes** (product#FLASH-SALE-2024-HOODIE)
+
+      ## Timeline
+
+      - T-4:00h — v4.2.0 deployed ("trending badge" feature)
+      - T-3:00h — Flash sale began (SUMMER-FLASH-SALE campaign)
+      - T+0:00 — DynamoDB write errors begin, ECS errors follow
+      - T+0:05 — PagerDuty fires, this ticket opened
+
+      ## Context
+
+      - Table: `products-table` (us-east-1)
+      - Billing mode: ON_DEMAND (migrated 6 months ago per ADR-2024-07)
+      - **Capacity alarms: DISABLED** per ADR-2024-07 ("on-demand auto-scales, alarms unnecessary")
+
+      ## Hypotheses
+
+      1. Bug in retry logic amplifying the problem (SDK retries hitting the same partition)
+      2. Hot partition due to viral product + trending badge (write concentration)
+      3. SDK version mismatch causing incorrect error classification
+
+    created_by: priya-mehta
+    assignee: trainee
+    at_second: -60
+
+  - id: PROD-8849
+    title: "FLASH-SALE-2024-HOODIE: Inventory count may be stale — write failures affecting stock accuracy"
+    severity: SEV3
+    status: open
+    description: |
+      ## Summary
+
+      Due to DynamoDB write failures on product-catalog-service, inventory count for
+      FLASH-SALE-2024-HOODIE may not accurately reflect actual sales. Risk of overselling.
+
+      ## Customer Impact
+
+      - Customers may see incorrect stock count (showing available when sold out, or vice versa)
+      - Orders placed against stale inventory will be auto-cancelled at fulfilment
+      - Estimated stale window: ~T+0 to current time
+
+    created_by: flash-sale-bot
+    assignee: trainee
+    at_second: 300
+
+alarms:
+  - id: alarm-dynamo-write-throttle
+    service: product-catalog-service
+    metric_id: write_throttles
+    condition: "write_throttles > 50/min for 5 consecutive minutes"
+    severity: SEV2
+    auto_fire: true
+    auto_page: true
+    onset_second: -10800
+    page_message: "product-catalog-service: DynamoDB write throttles exceeding threshold. On-demand table — investigate hot partition."
+  - id: alarm-ecs-error-rate
+    service: product-catalog-service
+    metric_id: error_rate
+    condition: "error_rate > 10%"
+    severity: SEV2
+    auto_fire: true
+    auto_page: false
+    onset_second: -10680
+  - id: alarm-dynamo-read-capacity
+    service: product-catalog-service
+    metric_id: read_capacity_used
+    condition: "read_capacity_used > 80%"
+    severity: SEV3
+    auto_fire: false # DISABLED per ADR-2024-07 — on-demand tables auto-scale
+    auto_page: false
+    page_message: "NOTE: This alarm is intentionally disabled per ADR-2024-07. On-demand tables auto-scale. If this fires, investigate hot partition."
+  - id: alarm-dynamo-write-capacity
+    service: product-catalog-service
+    metric_id: write_capacity_used
+    condition: "write_capacity_used > 80%"
+    severity: SEV3
+    auto_fire: false # DISABLED per ADR-2024-07 — on-demand tables auto-scale
+    auto_page: false
+
+logs:
+  - id: log-001
+    at_second: 0
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDBException: ProvisionedThroughputExceededException - Throughput exceeds the current throughput quota for your account. Please contact AWS Support to request a quota increase."
+  - id: log-002
+    at_second: 0
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDBException: ProvisionedThroughputExceededException - Throughput exceeds the current throughput quota for your account. Please contact AWS Support to request a quota increase."
+  - id: log-003
+    at_second: 5
+    level: WARN
+    service: product-catalog-service
+    message: "DynamoDB SDK retry attempt 1/3 for PutItem (productId=FLASH-SALE-2024-HOODIE, table=products-table). Backoff: 100ms"
+  - id: log-004
+    at_second: 5
+    level: WARN
+    service: product-catalog-service
+    message: "DynamoDB SDK retry attempt 2/3 for PutItem (productId=FLASH-SALE-2024-HOODIE, table=products-table). Backoff: 200ms"
+  - id: log-005
+    at_second: 5
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDB SDK retry attempt 3/3 FAILED for PutItem (productId=FLASH-SALE-2024-HOODIE, table=products-table). Giving up."
+  - id: log-006
+    at_second: 15
+    level: INFO
+    service: product-catalog-service
+    message: "DynamoDB table metrics: table=products-table mode=ON_DEMAND consumed_wcu=4247 provisioned_wcu=N/A throttled_requests=1847"
+  - id: log-007
+    at_second: 20
+    level: WARN
+    service: product-catalog-service
+    message: "High write failure rate on partition key prefix 'product#FLASH-SALE-2024-HOODIE': 1847/2001 writes throttled in last 60s (92.3%)"
+  - id: log-008
+    at_second: 30
+    level: INFO
+    service: product-catalog-service
+    message: "DynamoDB hot partition detected (internal metric): partition=product#FLASH-SALE-2024-HOODIE estimated_wcu=987/1000 (98.7% of partition capacity)"
+  - id: log-009
+    at_second: 60
+    level: ERROR
+    service: product-catalog-service
+    message: "PUT /products/FLASH-SALE-2024-HOODIE/inventory - 500 Internal Server Error - cause: DynamoDBException - duration: 2341ms"
+  - id: log-010
+    at_second: 90
+    level: INFO
+    service: product-catalog-service
+    message: "App startup config: DYNAMO_TABLE=products-table BILLING_MODE=ON_DEMAND RETRY_ATTEMPTS=3 RETRY_BASE_DELAY_MS=100 SDK_VERSION=3.421.0"
+  - id: log-011
+    at_second: 120
+    level: WARN
+    service: product-catalog-service
+    message: "Retry storm detected: 847 write retries in flight. SDK exponential backoff not reducing throttle rate — hot partition is not recovering."
+  - id: log-012
+    at_second: 180
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDBException: ProvisionedThroughputExceededException - Throughput exceeds the current throughput quota for your account. Please contact AWS Support to request a quota increase."
+  - id: log-013
+    at_second: 240
+    level: INFO
+    service: product-catalog-service
+    message: "CloudWatch metric: ConsumedWriteCapacityUnits p99_by_partition=product#FLASH-SALE-2024-HOODIE:998 p50_all_other_partitions=3.2"
+  - id: log-014
+    at_second: 300
+    level: ERROR
+    service: product-catalog-service
+    message: "Inventory update FAILED for productId=FLASH-SALE-2024-HOODIE transactionId=txn-8847-001: ProvisionedThroughputExceededException after 3 retries"
+  - id: log-015
+    at_second: 360
+    level: DEBUG
+    service: product-catalog-service
+    message: "Feature flags: TRENDING_BADGE_ENABLED=true TRENDING_BADGE_PRODUCT_IDS=[FLASH-SALE-2024-HOODIE,SUMMER-TEE-V2] DAX_ENABLED=false WRITE_SHARDING_ENABLED=false"
+
+log_patterns:
+  - id: dynamo-throttle-error
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDBException: ProvisionedThroughputExceededException - Throughput exceeds the current throughput quota for your account. Please contact AWS Support to request a quota increase."
+    interval_seconds: 3
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 1
+
+  - id: dynamo-throttle-error-put
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDB PutItem THROTTLED: table=products-table partitionKey=product#FLASH-SALE-2024-HOODIE sortKey=inventory#us-east-1 attempt=1"
+    interval_seconds: 4
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: dynamo-throttle-error-update
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDB UpdateItem THROTTLED: table=products-table partitionKey=product#FLASH-SALE-2024-HOODIE sortKey=view_count attempt=2/3"
+    interval_seconds: 5
+    from_second: 2
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: dynamo-retry-warn
+    level: WARN
+    service: product-catalog-service
+    message: "DynamoDB SDK retry attempt 2/3 for PutItem (productId=FLASH-SALE-2024-HOODIE, table=products-table). Backoff: 200ms"
+    interval_seconds: 4
+    from_second: 5
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: dynamo-retry-exhausted
+    level: ERROR
+    service: product-catalog-service
+    message: "DynamoDB SDK retry attempt 3/3 FAILED for PutItem (productId=FLASH-SALE-2024-HOODIE). All retries exhausted. Giving up."
+    interval_seconds: 12
+    from_second: 8
+    to_second: 1200
+    jitter_seconds: 3
+
+  - id: hot-partition-metric
+    level: WARN
+    service: product-catalog-service
+    message: "High write failure rate on partition key prefix 'product#FLASH-SALE-2024-HOODIE': throttled_writes={n}% in last 60s"
+    interval_seconds: 60
+    from_second: 20
+    to_second: 1200
+    jitter_seconds: 5
+
+  - id: hot-partition-wcu-metric
+    level: WARN
+    service: product-catalog-service
+    message: "DynamoDB partition capacity: product#FLASH-SALE-2024-HOODIE estimated_wcu={n}/1000 ({n}% of partition cap). Other partitions avg=3.2 WCU."
+    interval_seconds: 30
+    from_second: 15
+    to_second: 1200
+    jitter_seconds: 8
+
+  - id: retry-storm-warn
+    level: WARN
+    service: product-catalog-service
+    message: "DynamoDB retry storm: {n} retries in flight for partition product#FLASH-SALE-2024-HOODIE. SDK backoff not reducing throttle rate."
+    interval_seconds: 45
+    from_second: 120
+    to_second: 1200
+    jitter_seconds: 10
+
+  - id: inventory-write-failure
+    level: ERROR
+    service: product-catalog-service
+    message: "Inventory update FAILED for productId=FLASH-SALE-2024-HOODIE transactionId=txn-{n}: ProvisionedThroughputExceededException after 3 retries"
+    interval_seconds: 8
+    from_second: 60
+    to_second: 1200
+    jitter_seconds: 3
+
+  - id: view-counter-failure
+    level: ERROR
+    service: product-catalog-service
+    message: "View counter update FAILED for productId=FLASH-SALE-2024-HOODIE: DynamoDB throttle. View count may be inaccurate."
+    interval_seconds: 6
+    from_second: 10
+    to_second: 1200
+    jitter_seconds: 2
+
+  - id: price-update-failure
+    level: ERROR
+    service: product-catalog-service
+    message: "Price update FAILED for productId=FLASH-SALE-2024-HOODIE priceType=flash_sale_price: ProvisionedThroughputExceededException"
+    interval_seconds: 15
+    from_second: 30
+    to_second: 1200
+    jitter_seconds: 5
+
+  - id: http-500-inventory
+    level: ERROR
+    service: product-catalog-service
+    message: "PUT /products/FLASH-SALE-2024-HOODIE/inventory - 500 Internal Server Error - duration: 2341ms"
+    interval_seconds: 10
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 4
+
+  - id: http-500-price
+    level: ERROR
+    service: product-catalog-service
+    message: "PUT /products/FLASH-SALE-2024-HOODIE/price - 500 Internal Server Error - cause: DynamoDB throttle - duration: 1847ms"
+    interval_seconds: 18
+    from_second: 15
+    to_second: 1200
+    jitter_seconds: 6
+
+  - id: http-200-other-products
+    level: INFO
+    service: product-catalog-service
+    message: "PUT /products/SUMMER-TEE-V2/inventory - 200 OK - duration: 12ms"
+    interval_seconds: 20
+    from_second: 0
+    to_second: 1200
+    jitter_seconds: 8
+
+  - id: table-level-metrics-healthy
+    level: INFO
+    service: product-catalog-service
+    message: "DynamoDB table metrics: table=products-table mode=ON_DEMAND consumed_wcu={n} provisioned_wcu=N/A throttled_requests={n} — table-level throughput WITHIN LIMITS"
+    interval_seconds: 60
+    from_second: 15
+    to_second: 1200
+    jitter_seconds: 10
+
+  - id: storefront-cache-miss
+    level: WARN
+    service: storefront-service
+    message: "Product catalog cache miss for productId=FLASH-SALE-2024-HOODIE. Fetching from catalog API... response=500 (catalog write path degraded)"
+    interval_seconds: 12
+    from_second: 120
+    to_second: 1200
+    jitter_seconds: 4
+
+  - id: storefront-stale-data
+    level: WARN
+    service: storefront-service
+    message: "Serving stale product data for FLASH-SALE-2024-HOODIE (cached at {n}s ago). Real-time inventory unavailable due to catalog write failures."
+    interval_seconds: 30
+    from_second: 180
+    to_second: 1200
+    jitter_seconds: 8
+
+background_logs:
+  - profile: nodejs_api
+    service: product-catalog-service
+    from_second: -300
+    to_second: 1200
+    density: high
+  - profile: nodejs_api
+    service: storefront-service
+    from_second: -300
+    to_second: 1200
+    density: medium
+
+wiki:
+  pages:
+    - title: "product-catalog-service Runbook"
+      content: |
+        # product-catalog-service Runbook
+
+        ## Overview
+
+        product-catalog-service is the authoritative source for product data, inventory
+        counts, and pricing. It uses DynamoDB `products-table` as its primary store.
+
+        **DynamoDB table:** `products-table` (on-demand billing mode)
+        **Table region:** us-east-1
+
+        ## DynamoDB Billing Mode
+
+        The products-table was migrated to on-demand billing in June 2024 (ADR-2024-07).
+        **Capacity alarms are disabled** — on-demand auto-scales, so capacity alarms
+        would only generate false positives.
+
+        ## Common Incidents
+
+        ### Write Throttles on On-Demand Table
+
+        **This should not happen under normal circumstances.** If you see
+        ProvisionedThroughputExceededException on an on-demand table:
+
+        1. **Check table-level throughput** — if total WCU is within reasonable bounds,
+           the issue is NOT total capacity
+        2. **Check for hot partitions** — DynamoDB partitions are capped at **1000 WCU/s**
+           regardless of table billing mode. A single item receiving concentrated writes
+           will hit this cap.
+        3. **Identify the hot key** — search logs for repeated writes to the same partition
+           key prefix
+
+        **What does NOT fix a hot partition:**
+        - Requesting a quota increase from AWS (they will say no — per-partition cap is fundamental)
+        - Switching back to provisioned capacity (same partition cap applies)
+        - Scaling the application tier (more app servers generate more writes to same partition)
+
+        **What fixes a hot partition:**
+        - **Write sharding** — prepend a random 0-9 prefix to the partition key
+          (e.g. `3#product#FLASH-SALE-2024-HOODIE`) to distribute across 10 partitions
+        - **DAX** — reduces read pressure but does NOT help write-heavy hot partitions
+        - **Short-term:** throttle write traffic to the affected product until a structural
+          fix can be deployed
+
+        ### High ECS Error Rate
+
+        If DynamoDB write errors bubble up to the ECS service:
+        1. Confirm DynamoDB is the root cause (check logs for DynamoDBException)
+        2. Do NOT restart ECS — the restarts will immediately retry and re-hit the hot partition
+        3. Fix the DynamoDB issue first
+
+    - title: "ADR-2024-07: DynamoDB On-Demand Migration"
+      content: |
+        # ADR-2024-07: Migrate products-table to DynamoDB On-Demand Billing
+
+        **Status:** Accepted
+        **Date:** 2024-06-15
+        **Authors:** Tom Bradley, Anya Kozlov
+
+        ## Decision
+
+        Migrate `products-table` from provisioned capacity (2000 RCU / 2000 WCU) to
+        on-demand billing mode.
+
+        ## Rationale
+
+        1. Flash sales and seasonal events cause unpredictable traffic spikes that
+           are difficult to capacity-plan for
+        2. On-demand auto-scales to accommodate any throughput level
+        3. Capacity alarms are no longer meaningful — we will disable them to reduce
+           alert noise
+
+        ## Consequences
+
+        **Positive:**
+        - No more capacity planning for provisioned throughput
+        - No more ProvisionedThroughputExceededException under normal load
+        - Reduced operational overhead
+
+        **Negative / Risks:**
+        - Hot partition scenarios are NOT protected by on-demand mode — individual
+          partitions are still capped at 1000 WCU/s (DynamoDB fundamental)
+        - **This scenario was not considered in this ADR** ← gap identified post-incident
+
+        ## Alarms Disabled
+
+        The following alarms were disabled as part of this migration:
+        - `dynamo-read-capacity-alarm` (products-table)
+        - `dynamo-write-capacity-alarm` (products-table)
+
+    - title: "DynamoDB Hot Partition Recovery Guide"
+      content: |
+        # DynamoDB Hot Partition Recovery Guide
+
+        ## What Is a Hot Partition?
+
+        DynamoDB splits data across internal partitions based on the partition key hash.
+        Each partition has a hard throughput cap of **~1000 WCU/s and ~3000 RCU/s**,
+        regardless of whether the table uses provisioned or on-demand capacity.
+
+        When all writes concentrate on one partition key, you hit the partition cap —
+        even on an on-demand table with effectively unlimited table-level capacity.
+
+        ## How to Identify
+
+        ```
+        # CloudWatch metric to check:
+        DynamoDB > ConsumedWriteCapacityUnits > Sum by PartitionKey
+        # Or in application logs:
+        grep "ProvisionedThroughputExceeded" | cut -d'=' -f3 | sort | uniq -c | sort -rn
+        ```
+
+        ## Recovery Options
+
+        ### Immediate (minutes)
+
+        1. **Throttle writes to the hot key** — add application-level rate limiting
+           specifically for the hot product. Reduces WCU pressure.
+        2. **Disable the feature driving concentrated writes** — if a trending badge
+           or similar feature is causing write concentration, toggling it off immediately
+           stops new writes from concentrating.
+
+        ### Short-term (< 1 hour)
+
+        3. **Emergency deploy: write sharding** — prepend a random single-digit prefix
+           to the partition key. Changes `product#FLASH-SALE-2024-HOODIE` to
+           `{0-9}#product#FLASH-SALE-2024-HOODIE`, distributing writes across 10 partitions.
+           Read path must be updated to scatter-gather across all 10 prefixes.
+
+        ### Medium-term (architectural)
+
+        4. **Enable DAX** — Amazon DynamoDB Accelerator provides a read-through cache.
+           Reduces read pressure substantially. Does not help write-heavy hot partitions.
+        5. **Redesign partition key** — avoid keys that naturally concentrate (e.g. trending
+           items, current date as key prefix, single tenant ID)
+
+cicd:
+  pipelines:
+    - id: pipeline-catalog-v4-2-0
+      name: "product-catalog-service"
+      service: product-catalog-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v4.2.0
+          previous_version: v4.1.8
+          status: succeeded
+          deployed_at_sec: -14400
+          commit_message: "feat: trending badge UI for flash sale items (MRKT-2341)"
+          author: priya-mehta
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Unit tests"
+              status: passed
+            - name: "Static analysis"
+              status: passed
+        - id: staging
+          name: "Staging"
+          type: deploy
+          current_version: v4.2.0
+          previous_version: v4.1.8
+          status: succeeded
+          deployed_at_sec: -14200
+          commit_message: "feat: trending badge UI for flash sale items (MRKT-2341)"
+          author: priya-mehta
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Integration tests"
+              status: passed
+            - name: "Load test (500 rps)"
+              status: passed
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v4.2.0
+          previous_version: v4.1.8
+          status: succeeded
+          deployed_at_sec: -14400
+          commit_message: "feat: trending badge UI for flash sale items (MRKT-2341)"
+          author: priya-mehta
+          blockers: []
+          alarm_watches: []
+          tests:
+            - name: "Canary health check"
+              status: passed
+          promotion_events:
+            - version: v4.2.0
+              sim_time: -14400
+              status: succeeded
+              note: "AutoPromote: canary healthy"
+            - version: v4.1.8
+              sim_time: -172800
+              status: succeeded
+              note: "AutoPromote: canary healthy"
+
+  deployments:
+    - service: product-catalog-service
+      version: v4.2.0
+      deployed_at_sec: -14400
+      status: active
+      commit_message: "feat: trending badge UI for flash sale items (MRKT-2341)"
+      author: priya-mehta
+    - service: product-catalog-service
+      version: v4.1.8
+      deployed_at_sec: -172800
+      status: previous
+      commit_message: "perf: add DynamoDB batch write optimization for bulk price updates"
+      author: priya-mehta
+    - service: product-catalog-service
+      version: v4.1.7
+      deployed_at_sec: -345600
+      status: previous
+      commit_message: "fix: handle DynamoDB conditional write race condition on inventory decrement"
+      author: tom-bradley
+
+host_groups:
+  - id: product-catalog-us-east-1
+    label: "product-catalog-service (us-east-1)"
+    service: product-catalog-service
+    instance_count: 8
+    description: "8 Fargate tasks across 3 AZs — us-east-1a, us-east-1b, us-east-1c"
+
+feature_flags:
+  - id: trending_badge_enabled
+    label: "Trending Badge"
+    default_on: true
+    description: "Shows a 'trending' badge on hot products. Deployed in v4.2.0. Causes all write traffic for badged products to concentrate on the same partition key."
+  - id: dax_enabled
+    label: "DAX Read Cache"
+    default_on: false
+    description: "Routes read traffic through Amazon DAX. Reduces read pressure. Does NOT help write-heavy hot partitions."
+  - id: write_sharding_enabled
+    label: "Write Sharding (0-9 prefix)"
+    default_on: false
+    description: "Prepends a random 0-9 prefix to partition keys, distributing writes across 10 partitions. Requires scatter-gather reads. Emergency mitigation for hot partition scenarios."
+
+remediation_actions:
+  - id: disable_trending_badge
+    type: toggle_feature_flag
+    service: product-catalog-service
+    is_correct_fix: true
+    flag_id: trending_badge_enabled
+    flag_enabled: false
+    label: "Disable trending badge feature flag"
+    side_effect: >
+      Trending badge disabled — write traffic immediately disperses across all products.
+      Hot partition pressure drops within 60 seconds. Inventory writes resume normally.
+      Marketing team will be unhappy. Flash sale continues without trending indicators.
+
+  - id: enable_write_sharding
+    type: toggle_feature_flag
+    service: product-catalog-service
+    is_correct_fix: true
+    flag_id: write_sharding_enabled
+    flag_enabled: true
+    label: "Enable write sharding (0-9 prefix)"
+    side_effect: >
+      Write sharding enabled via feature flag — partition key prefix randomized.
+      Write throttles drop to near-zero within 2 minutes as load distributes.
+      Read path performs scatter-gather (10x read fan-out) — slight read latency increase.
+      Trending badge feature continues to work.
+
+  - id: scale_ecs_cluster
+    type: scale_cluster
+    service: product-catalog-service
+    is_correct_fix: false
+    label: "Scale product-catalog ECS to 16 tasks"
+    side_effect: >
+      16 ECS tasks now running. Each task immediately retries failed DynamoDB writes.
+      Write storm amplifies: 2x the tasks × same retry logic = 2x the hot partition pressure.
+      Throttle rate INCREASES from 23% to 31%. p99 latency gets worse.
+
+  - id: rollback_v4_1_8
+    type: rollback
+    service: product-catalog-service
+    is_correct_fix: false
+    target_version: v4.1.8
+    label: "Rollback to v4.1.8"
+    side_effect: >
+      Rolled back to v4.1.8. Trending badge removed from code. BUT: the flash sale is still
+      running and the FLASH-SALE-2024-HOODIE product is still receiving 96% of write traffic
+      due to external marketing links and customer demand — not because of the badge feature.
+      Write throttles reduce by only ~15% (badge-driven writes were a fraction of total).
+      Partition is still hot. Error rate remains at ~18%.
+
+  - id: request_quota_increase
+    type: emergency_deploy
+    service: product-catalog-service
+    is_correct_fix: false
+    label: "File AWS Support ticket for quota increase"
+    side_effect: >
+      AWS Support responds in 4 hours. They explain that per-partition throughput is a
+      DynamoDB fundamental and cannot be increased via quota. They recommend write sharding
+      or DAX. You've wasted 4 hours during a live incident.
+
+  - id: enable_dax
+    type: toggle_feature_flag
+    service: product-catalog-service
+    is_correct_fix: false
+    flag_id: dax_enabled
+    flag_enabled: true
+    label: "Enable DAX read cache"
+    side_effect: >
+      DAX enabled — read traffic now routes through the cache. Read latency drops 40%.
+      Write throttles are COMPLETELY UNAFFECTED. DAX is a read-through cache and does
+      not intercept write traffic. Error rate stays at 23%. Write partition is still hot.
+
+  - id: throttle_flash_sale_writes
+    type: throttle_traffic
+    service: product-catalog-service
+    is_correct_fix: true
+    label: "Throttle inventory write traffic for FLASH-SALE-2024-HOODIE"
+    side_effect: >
+      Write rate to the hot partition drops below the 1000 WCU/s cap. Throttle errors
+      drop to ~2% (background retry noise). Inventory updates are delayed but not lost —
+      they queue and drain once the partition is no longer saturated. Structural fix
+      (write sharding) still needed before next flash sale.
+    throttle_targets:
+      - id: flash-sale-writes
+        scope: endpoint
+        label: "PUT /products/FLASH-SALE-2024-HOODIE/inventory"
+        description: "Inventory write endpoint for the hot product"
+        llm_hint: "Throttling specifically the inventory write path for FLASH-SALE-2024-HOODIE reduces hot partition pressure directly. Does not affect reads or other products."
+        unit: rps
+        baseline_rate: 340
+
+evaluation:
+  root_cause: >
+    The v4.2.0 "trending badge" deploy (4h before incident) configured FLASH-SALE-2024-HOODIE
+    as a trending product. This caused every view counter update, inventory write, and price
+    change for that product to use the same DynamoDB partition key. When the flash sale reached
+    peak traffic, writes to that single partition exceeded the DynamoDB per-partition hard cap
+    of 1000 WCU/s. On-demand billing mode cannot circumvent this cap — it only scales
+    total table throughput, not per-partition throughput. The diagnosis required understanding
+    that ProvisionedThroughputExceededException on an on-demand table means hot partition,
+    not total capacity exhaustion.
+
+  relevant_actions:
+    - action: search_logs
+      why: "Logs contain the critical clue: hot partition detected on 'product#FLASH-SALE-2024-HOODIE' at 987/1000 WCU. Also reveals WRITE_SHARDING_ENABLED=false and DAX_ENABLED=false in config."
+    - action: read_wiki_page
+      why: "DynamoDB Hot Partition Recovery Guide explains the per-partition cap and recovery options. ADR-2024-07 explains why capacity alarms were disabled."
+    - action: view_deployment_history
+      why: "v4.2.0 deploy 4h ago introduced the trending badge that caused write concentration. Critical correlation."
+    - action: direct_message_persona
+      why: "Contacting Tom Bradley or Priya Mehta confirms the hot partition hypothesis and unblocks the fix decision."
+    - action: toggle_feature_flag
+      why: "Disabling the trending badge flag (disable_trending_badge) or enabling write sharding (enable_write_sharding) resolves the hot partition."
+      service: product-catalog-service
+      remediation_action_id: disable_trending_badge
+    - action: mark_resolved
+      why: "Confirms incident resolution once write throttles return to baseline."
+
+  red_herrings:
+    - action: scale_cluster
+      why: "Scaling ECS amplifies the write storm — each new instance retries to the same hot partition, increasing throttle rate."
+    - action: trigger_rollback
+      why: "Rollback removes the badge code but the product remains viral — external traffic continues concentrating writes on the same partition key. Only ~15% reduction in throttles."
+    - action: suppress_alarm
+      why: "Suppressing alarms during active investigation delays resolution."
+    - action: toggle_feature_flag
+      why: "Enabling DAX (read cache) has zero impact on write throttles. A common mistake: DAX helps reads, not writes."
+      remediation_action_id: enable_dax
+
+  debrief_context: |
+    This scenario tests understanding of DynamoDB's internal partitioning model — a gap
+    that catches even experienced engineers who know DynamoDB well but have never hit a
+    hot partition on an on-demand table.
+
+    The trap is multi-layered:
+    1. On-demand billing causes engineers to believe throttling is impossible
+    2. The ADR explicitly says capacity alarms are disabled because "auto-scaling handles it"
+    3. The table-level WCU looks healthy in the console — only partition-level metrics reveal the problem
+    4. Scaling the app tier makes things WORSE (more retries to same partition)
+    5. DAX is a plausible but completely wrong fix for a write-heavy hot partition
+
+    The correct diagnosis path:
+    search_logs → "product#FLASH-SALE-2024-HOODIE" at 987/1000 WCU →
+    cross-reference with v4.2.0 deploy → trending badge → write sharding or disable flag
+
+    Post-incident: ADR-2024-07 should be updated to note that hot partition scenarios
+    are not protected by on-demand mode. Consider enabling write sharding by default for
+    any product that can appear on a high-traffic landing page.
