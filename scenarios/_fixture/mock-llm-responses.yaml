@@ -52,6 +52,7 @@ scenario_builder_responses:
       - tool: update_scenario
         params:
           patch:
+            schema_version: 1
             id: "fixture-builder-scenario"
             title: "Payment Service DB Pool Exhaustion"
             description: "The payment service connection pool is exhausted due to a misconfigured pool size."

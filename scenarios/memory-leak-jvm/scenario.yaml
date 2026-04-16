@@ -1,3 +1,4 @@
+schema_version: 1
 id: memory-leak-jvm
 title: "Catalog Service: JVM Memory Leak — Gradual Degradation"
 description: >

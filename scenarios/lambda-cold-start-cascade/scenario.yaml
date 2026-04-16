@@ -1,3 +1,4 @@
+schema_version: 1
 id: lambda-cold-start-cascade
 title: "Order Processor: Lambda Concurrency Limit Exhausted"
 description: >

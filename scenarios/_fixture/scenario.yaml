@@ -1,3 +1,4 @@
+schema_version: 1
 id: _fixture
 title: Fixture Scenario
 description: Minimal scenario used by all automated tests. Not a real training scenario.

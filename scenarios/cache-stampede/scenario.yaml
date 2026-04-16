@@ -1,3 +1,4 @@
+schema_version: 1
 id: cache-stampede
 title: "Recommendation Service: Cache Stampede After Cluster Restart"
 description: >

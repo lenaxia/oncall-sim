@@ -183,6 +183,7 @@ describe("ThrottleTarget schema validation", () => {
 describe("loader — throttle_targets transform", () => {
   async function loadWithThrottleTargets() {
     const base = yaml.load(`
+schema_version: 1
 id: test-scenario
 title: Test
 description: Test scenario

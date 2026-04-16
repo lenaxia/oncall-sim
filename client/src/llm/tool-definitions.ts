@@ -454,10 +454,11 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
       "The patch is validated before being applied. If validation fails, errors are returned and you must " +
       "fix them before the draft updates. Call this as often as you like — after each user answer, " +
       "after making an assumption, mid-conversation. " +
-      "IMPORTANT: you MUST always follow every update_scenario call with either a send_message or " +
-      "ask_question — never leave the conversation silent after committing data. Use send_message to " +
-      "explain what was just built and prompt for the next piece of information, or use ask_question " +
-      "to present specific choices. The user should always know what happens next.",
+      "MANDATORY: every update_scenario MUST be immediately followed by send_message or ask_question. " +
+      "In that follow-up: (1) briefly confirm what was just built, (2) check which required sections " +
+      "are still incomplete, (3) either proceed directly to the next section or — if multiple remain — " +
+      "name them, state which one you recommend tackling next and why given the scenario context, " +
+      "then ask the user to confirm. Never leave the conversation silent after committing data.",
     parameters: {
       type: "object",
       required: ["patch"],
@@ -491,10 +492,12 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
   {
     name: "send_message",
     description:
-      "Send a message to the user. Use this to: explain what you just built, " +
-      "tell the user what assumptions were made, or ask for the next piece of " +
-      "information you need to continue building the scenario. " +
-      "Call this after update_scenario to explain the patch and prompt the user. " +
+      "Send a message to the user. Every message after an update_scenario must do three things: " +
+      "(1) confirm what was just built in one sentence, " +
+      "(2) identify which required sections are still incomplete, " +
+      "(3) drive forward — either proceed directly into the next section, or name the remaining " +
+      "sections and give a concrete recommendation on which to do next with a brief reason, " +
+      "then ask the user to confirm or choose differently. " +
       "Do NOT put conversational text inside update_scenario or mark_complete parameters.",
     parameters: {
       type: "object",

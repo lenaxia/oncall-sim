@@ -24,6 +24,7 @@ function makeScenarioYaml(
   extra: Record<string, unknown> = {},
 ): string {
   const base: Record<string, unknown> = {
+    schema_version: 1,
     id: "test",
     title: "Test",
     description: "test",

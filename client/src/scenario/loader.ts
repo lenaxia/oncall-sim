@@ -4,7 +4,7 @@
 // Remote scenarios: resolveFile backed by fetch().
 
 import yaml from "js-yaml";
-import { ScenarioSchema } from "./schema";
+import { ScenarioSchema, SCENARIO_SCHEMA_VERSION } from "./schema";
 import { ScenarioValidator, type ValidationError } from "./validator";
 import { LOG_PROFILES, getDensityMultiplier, makeRng } from "./log-profiles";
 import { logger } from "../logger";
@@ -92,6 +92,37 @@ export async function loadScenarioFromText(
           scenarioId: "unknown",
           field: "scenario.yaml",
           message: `YAML parse error: ${msg}`,
+        },
+      ],
+    };
+  }
+
+  // Step 1b: schema_version check — explicit error before Zod parse so the
+  // message is actionable rather than "Expected literal value N".
+  const rawYaml = rawObject as Record<string, unknown>;
+  const declaredVersion = rawYaml["schema_version"];
+  if (declaredVersion === undefined || declaredVersion === null) {
+    const scenarioId = (rawYaml["id"] as string | undefined) ?? "unknown";
+    return {
+      scenarioId,
+      errors: [
+        {
+          scenarioId,
+          field: "schema_version",
+          message: `Missing required field schema_version. Add \`schema_version: ${SCENARIO_SCHEMA_VERSION}\` at the top of the YAML.`,
+        },
+      ],
+    };
+  }
+  if (declaredVersion !== SCENARIO_SCHEMA_VERSION) {
+    const scenarioId = (rawYaml["id"] as string | undefined) ?? "unknown";
+    return {
+      scenarioId,
+      errors: [
+        {
+          scenarioId,
+          field: "schema_version",
+          message: `schema_version mismatch: YAML declares version ${String(declaredVersion)}, engine expects version ${SCENARIO_SCHEMA_VERSION}. Update the YAML to the current schema.`,
         },
       ],
     };

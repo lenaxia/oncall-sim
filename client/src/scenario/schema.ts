@@ -1,6 +1,23 @@
 import { z } from "zod";
 import { LOG_PROFILES } from "./log-profiles";
 
+// ── Schema versioning ─────────────────────────────────────────────────────────
+//
+// Bump SCENARIO_SCHEMA_VERSION whenever a breaking change is made to the
+// scenario YAML format (field renamed, required field added, enum value
+// removed, etc.). Scenario YAMLs must declare `schema_version: N` at the
+// top level. The loader rejects any YAML whose version doesn't match.
+//
+// Non-breaking additions (new optional fields, new enum values) do NOT
+// require a version bump — existing YAMLs will continue to parse correctly.
+//
+// When bumping: update this constant, add a migration note below, and update
+// all bundled scenario YAMLs.
+//
+// Version history:
+//   1 — initial versioned schema (2026-04-16)
+export const SCENARIO_SCHEMA_VERSION = 1;
+
 export const PersonaSchema = z.object({
   id: z.string().min(1),
   display_name: z.string().min(1),
@@ -445,6 +462,7 @@ export const TimelineSchema = z.object({
 // ── Root scenario schema ──────────────────────────────────────────────────────
 
 export const ScenarioSchema = z.object({
+  schema_version: z.literal(SCENARIO_SCHEMA_VERSION),
   id: z.string().min(1),
   title: z.string().min(1),
   description: z.string(),
@@ -566,6 +584,7 @@ EXACT SCHEMA — use these field names and types precisely
 ═══════════════════════════════════════════════════════════════
 
 ── TOP-LEVEL FIELDS ──────────────────────────────────────────
+schema_version: ${SCENARIO_SCHEMA_VERSION}   ← REQUIRED, must be exactly this number
 id: string (slug, e.g. "order-api-cascade")
 title: string
 description: string

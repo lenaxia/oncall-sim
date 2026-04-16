@@ -22,6 +22,7 @@ import {
   HostGroupSchema,
   TopologySchema,
   TimelineSchema,
+  SCENARIO_SCHEMA_VERSION,
 } from "./schema";
 import { getValidArchetypes } from "../metrics/archetypes";
 import type { ActionType } from "@shared/types/events";
@@ -587,6 +588,7 @@ function section(
 // Builds a minimal RawConfig stub from a partial draft for cross-ref validation.
 function buildStubForCrossRef(draft: Partial<RawConfig>): RawConfig {
   return ScenarioSchema.parse({
+    schema_version: SCENARIO_SCHEMA_VERSION,
     id: draft.id ?? "_stub",
     title: draft.title ?? "stub",
     description: draft.description ?? "",

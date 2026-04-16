@@ -1,3 +1,4 @@
+schema_version: 1
 id: tls-cert-expiry
 title: "API Gateway: TLS Certificate Expired — Full Outage"
 description: >
