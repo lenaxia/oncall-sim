@@ -4,6 +4,7 @@
 
 import yaml from "js-yaml";
 import type { LLMClient, LLMRequest, LLMResponse } from "./llm-client";
+import { AGENT_TOOL_RESULT_PREFIX } from "./tool-definitions";
 
 // Fixture YAML imported at build time — works in Vitest (jsdom) and production builds.
 // In production it is tree-shaken out when VITE_MOCK_LLM is not set.
@@ -116,6 +117,14 @@ export class MockProvider implements LLMClient {
       .reverse()
       .find((m) => m.role === "user");
     const content = lastUserMsg?.content ?? "";
+
+    // Synthetic messages injected by the agentic loop all start with
+    // AGENT_TOOL_RESULT_PREFIX. When the last user message is synthetic,
+    // the loop is iterating — return empty so the loop terminates naturally
+    // (no-tool-call stop condition).
+    if (content.startsWith(AGENT_TOOL_RESULT_PREFIX)) {
+      return { toolCalls: [] };
+    }
 
     // "mark_complete" trigger fires when the user says they're done
     if (

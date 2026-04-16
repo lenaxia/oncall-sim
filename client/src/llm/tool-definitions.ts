@@ -445,20 +445,22 @@ export function validateToolCall(
 
 // ── Builder tools (scenario_builder role) ─────────────────────────────────────
 
+// Prefix on every synthetic tool-result message injected by the agentic loop.
+// Exported so the mock provider can detect loop-iteration messages without
+// coupling to the specific tool names or message formats used by the hook.
+export const AGENT_TOOL_RESULT_PREFIX = "[tool_result]";
+
 export const BUILDER_TOOLS: LLMToolDefinition[] = [
   {
     name: "update_scenario",
     description:
       "Commit new or changed scenario data. The patch is deep-merged into the current draft. " +
       "Arrays are replaced in full — always send the complete updated array for any array field you change. " +
-      "The patch is validated before being applied. If validation fails, errors are returned and you must " +
-      "fix them before the draft updates. Call this as often as you like — after each user answer, " +
-      "after making an assumption, mid-conversation. " +
-      "MANDATORY: every update_scenario MUST be immediately followed by send_message or ask_question. " +
-      "In that follow-up: (1) briefly confirm what was just built, (2) check which required sections " +
-      "are still incomplete, (3) either proceed directly to the next section or — if multiple remain — " +
-      "name them, state which one you recommend tackling next and why given the scenario context, " +
-      "then ask the user to confirm. Never leave the conversation silent after committing data.",
+      "The patch is validated before being applied. If validation fails, errors are returned in the next " +
+      "message and you must fix them before the draft updates. Call this as often as you like — after " +
+      "each user answer, after making an assumption, mid-conversation. " +
+      "After calling update_scenario, continue in the same turn: confirm what was built, check which " +
+      "required sections are still incomplete, and proceed to the next section or ask the user a question.",
     parameters: {
       type: "object",
       required: ["patch"],
@@ -483,7 +485,8 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
       "Signal that the scenario is ready for download. Triggers final full validation. " +
       "If validation fails, errors are returned — fix them with update_scenario then call mark_complete again. " +
       "After mark_complete succeeds, remain available for refinements. " +
-      "Each change should call update_scenario then mark_complete again.",
+      "Each change should call update_scenario then mark_complete again. " +
+      "mark_complete ends the turn.",
     parameters: {
       type: "object",
       properties: {},
@@ -492,12 +495,12 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
   {
     name: "send_message",
     description:
-      "Send a message to the user. Every message after an update_scenario must do three things: " +
+      "Send a message to the user. Does NOT end the turn — you may continue calling tools after send_message. " +
+      "Use for confirmations, summaries, and narration. " +
+      "After an update_scenario, send_message should: " +
       "(1) confirm what was just built in one sentence, " +
       "(2) identify which required sections are still incomplete, " +
-      "(3) drive forward — either proceed directly into the next section, or name the remaining " +
-      "sections and give a concrete recommendation on which to do next with a brief reason, " +
-      "then ask the user to confirm or choose differently. " +
+      "(3) drive forward — proceed to the next section or give a recommendation. " +
       "Do NOT put conversational text inside update_scenario or mark_complete parameters.",
     parameters: {
       type: "object",
@@ -514,7 +517,8 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
     name: "ask_question",
     description:
       "Ask the user a focused question with selectable options. " +
-      "Use when the user needs to choose between specific alternatives " +
+      "ENDS THE TURN — the user must reply before you continue. " +
+      "Use when you need the user to choose between specific alternatives " +
       "(e.g. difficulty level, incident type, number of personas). " +
       "Keep option labels short — 1 to 5 words each. " +
       "The user may ignore the options and type a free-form reply instead; " +

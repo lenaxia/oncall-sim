@@ -493,6 +493,43 @@ export const ScenarioSchema = z.object({
 
 export type RawScenarioConfig = z.infer<typeof ScenarioSchema>;
 
+// ── Valid action types for evaluation.relevant_actions ───────────────────────
+//
+// Mirrors ActionType from @shared/types/events. Kept here as a runtime constant
+// so buildSchemaReference() can include them in the LLM prompt without
+// importing from validator.ts (which imports from this file).
+export const VALID_ACTION_TYPES_LIST: readonly string[] = [
+  "ack_page",
+  "page_user",
+  "update_ticket",
+  "add_ticket_comment",
+  "mark_resolved",
+  "investigate_alert",
+  "post_chat_message",
+  "reply_email",
+  "direct_message_persona",
+  "open_tab",
+  "search_logs",
+  "view_metric",
+  "read_wiki_page",
+  "view_deployment_history",
+  "view_pipeline",
+  "trigger_rollback",
+  "trigger_roll_forward",
+  "trigger_deploy",
+  "override_blocker",
+  "approve_gate",
+  "block_promotion",
+  "restart_service",
+  "scale_cluster",
+  "scale_capacity",
+  "throttle_traffic",
+  "suppress_alarm",
+  "emergency_deploy",
+  "toggle_feature_flag",
+  "monitor_recovery",
+] as const;
+
 // ── Schema reference for LLM prompt generation ───────────────────────────────
 
 /**
@@ -687,10 +724,27 @@ ticketing is an ARRAY:
 ── EVALUATION ────────────────────────────────────────────────
 {
   root_cause: string (non-empty),
-  relevant_actions: [{ action: string, why: string, service?: string }],
+  relevant_actions: [{ action: ActionType, why: string, service?: string, remediation_action_id?: string }],
   red_herrings: [{ action: string, why: string }],
   debrief_context: string (non-empty)
 }
+
+CRITICAL: relevant_actions[].action MUST be one of these exact ActionType values:
+  ${VALID_ACTION_TYPES_LIST.join(", ")}
+
+Do NOT use free-form descriptions. Use the closest matching ActionType.
+Examples:
+  "Check the RDS connection metrics"  → "view_metric"
+  "Look at recent deployments"        → "view_deployment_history"
+  "Roll back the deployment"          → "trigger_rollback"
+  "Search the application logs"       → "search_logs"
+  "Check the alarms"                  → "investigate_alert"
+  "Page the on-call engineer"         → "page_user"
+  "Read the runbook"                  → "read_wiki_page"
+  "Restart the service"               → "restart_service"
+  "Scale up the cluster"              → "scale_cluster"
+
+red_herrings[].action may be a free-form description (e.g. "Scale up ECS to reduce CPU").
 
 ── ALARM ─────────────────────────────────────────────────────
 { id, service, metric_id, condition, severity: ${alarmSeverities.map((v) => `"${v}"`).join("|")},

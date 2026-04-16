@@ -1,8 +1,8 @@
 # On-Call Training Simulator — LLM Implementation Guide
 
-**Version:** 1.4
+**Version:** 1.5
 **Last Updated:** 2026-04-16
-**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.36), pipeline deployment progression complete, Phase 9 (debrief narrative) stub only, Phase 12 (scenario builder + upload, ScenarioValidator) complete (v1.0.38), builder schema/focus/CI fixes (v1.0.39–1.0.40), builder send_message + ask_question tools (v1.0.41)
+**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.36), pipeline deployment progression complete, Phase 9 (debrief narrative) stub only, Phase 12 (scenario builder + upload, ScenarioValidator) complete (v1.0.38), builder schema/focus/CI fixes (v1.0.39–1.0.40), builder send_message + ask_question tools (v1.0.41), builder agentic loop + ActionType cross-ref fix (v1.0.49)
 
 ---
 
@@ -835,6 +835,7 @@ my_service: {
 
 | Version | Date       | Changes                                                                                            |
 | ------- | ---------- | -------------------------------------------------------------------------------------------------- |
+| 1.5     | 2026-04-16 | Builder agentic loop; ActionType cross-ref fix; VALID_ACTION_TYPES_LIST single source of truth     |
 | 1.3     | 2026-04-11 | Client-side engine migration complete; repo structure, arch, stack, commands, branch table updated |
 | 1.2     | 2026-04-09 | Metric-aware personas; remediation controls (scale/bounce/deploy/flags)                            |
 | 1.1     | 2026-04-08 | Log volume: `log_patterns` and `background_logs`                                                   |

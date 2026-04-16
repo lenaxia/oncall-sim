@@ -5,7 +5,10 @@ import { useState, useRef, useCallback } from "react";
 import yaml from "js-yaml";
 import { createLLMClient } from "../llm/llm-client";
 import type { LLMClient, LLMMessage } from "../llm/llm-client";
-import { BUILDER_TOOLS } from "../llm/tool-definitions";
+import {
+  BUILDER_TOOLS,
+  AGENT_TOOL_RESULT_PREFIX,
+} from "../llm/tool-definitions";
 import { ScenarioValidator } from "../scenario/validator";
 import type { ScenarioValidationError } from "../scenario/lint";
 import type { RawScenarioConfig } from "../scenario/schema";
@@ -75,19 +78,34 @@ A section is COMPLETE when it has meaningful content (not just an empty array).
 Then apply MOMENTUM RULES (below) to decide what to say next.
 
 ═══════════════════════════════════════════════════════════════
+TURN MODEL — how calls work
+═══════════════════════════════════════════════════════════════
+
+You run in an agentic loop. Within a single user turn you may call tools
+multiple times. The loop ends when:
+  - You call ask_question (user must reply before you continue)
+  - You call mark_complete and it succeeds
+  - You produce no tool calls and no text (natural end)
+
+send_message does NOT end the turn. You may call send_message then
+immediately continue with more tool calls (e.g. update_scenario → send_message
+→ update_scenario → ask_question).
+
+═══════════════════════════════════════════════════════════════
 MOMENTUM RULES — what to do after every update
 ═══════════════════════════════════════════════════════════════
 
-RULE 1 — Never go silent.
-  Every update_scenario MUST be followed by send_message or ask_question.
-  The user must always know what was just built and what comes next.
+RULE 1 — Always follow update_scenario with output.
+  After every update_scenario call, either send_message (to narrate what was
+  built and what comes next) or proceed directly to another tool call.
+  Never produce update_scenario as your only action.
 
 RULE 2 — Always drive forward.
   Do not wait for the user to ask "what's next?". After each update,
   immediately proceed to the next incomplete section.
 
-RULE 3 — One thing at a time.
-  Address exactly one section per turn. Build it, confirm it, move on.
+RULE 3 — One section at a time.
+  Address exactly one section per update. Build it, narrate it, move on.
   Never ask a list of five questions at once.
 
 RULE 4 — If multiple sections are incomplete, recommend the best next one.
@@ -103,12 +121,12 @@ RULE 4 — If multiple sections are incomplete, recommend the best next one.
 RULE 5 — Assumption-driven sections don't need user input.
   For alarms, ticketing, chat, and wiki — you have enough context from the
   topology and incident to generate reasonable defaults. Generate them, then
-  use send_message to briefly describe what was added and what comes next.
-  Only ask if a choice is genuinely ambiguous.
+  send_message to briefly describe what was added and what comes next.
+  Only use ask_question if a choice is genuinely ambiguous.
 
 RULE 6 — Log generation is automatic, never prompted.
   Once topology + incident are complete, generate log_patterns and
-  background_logs without asking. Tell the user what was added.
+  background_logs without asking. Send a send_message to summarise.
 
 RULE 7 — When all sections are complete, offer completion.
   Summarise what was built, list any assumptions, and ask if the user is
@@ -180,9 +198,9 @@ CONVERSATION PRINCIPLES
 - After mark_complete succeeds, remain available for refinements.
 
 VALIDATION:
-- If update_scenario returns { ok: false, errors: [...] }, silently fix ALL
-  errors and call update_scenario again. Do not mention errors to the user
-  unless you cannot fix them after two attempts.
+- If update_scenario returns a validation failure message, silently fix ALL
+  errors and call update_scenario again in the same turn. Do not mention
+  errors to the user unless you cannot fix them.
 - If mark_complete fails, fix errors with update_scenario then retry.
 `;
 
@@ -225,6 +243,10 @@ let _msgCounter = 0;
 function newId(): string {
   return `msg-${++_msgCounter}-${Date.now()}`;
 }
+
+// Maximum LLM calls per user turn. Stops earlier when ask_question / mark_complete
+// fires or when the model returns nothing (natural stop).
+export const MAX_AGENT_ITERATIONS = 5;
 
 const SEED_MESSAGE: BuilderMessage = {
   id: newId(),
@@ -388,13 +410,19 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
     return { ok: true, yamlStr };
   }
 
-  // Maximum silent auto-retries when update_scenario validation fails.
-  const MAX_UPDATE_RETRIES = 2;
+  // Maximum LLM calls per user turn. The loop stops earlier when ask_question
+  // or mark_complete fires, or when the model returns nothing (natural stop).
 
   // ── sendMessage ───────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async (text: string): Promise<void> => {
     const userMsg: BuilderMessage = { id: newId(), role: "user", text };
+
+    // Capture current state BEFORE setState so we have the pre-update values.
+    const currentDraft = stateRef.current.draft;
+    const currentAssumptions = stateRef.current.assumptions;
+    const currentMessages = stateRef.current.messages;
+
     setState((prev) => ({
       ...prev,
       phase: prev.phase === "idle" ? "building" : prev.phase,
@@ -403,18 +431,11 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
       pendingQuestion: null,
     }));
 
-    const currentDraft = stateRef.current.draft;
-    const currentAssumptions = stateRef.current.assumptions;
-    const currentMessages = stateRef.current.messages;
-
     try {
       const client = await getClient();
 
-      // Build the full conversation history to send to the LLM.
-      // On retry this grows to include the injected error tool result.
-      let messages = buildMessages([...currentMessages, userMsg], currentDraft);
-
-      let newMessages: BuilderMessage[] = [];
+      // Accumulated outputs for this turn
+      const newMessages: BuilderMessage[] = [];
       let newDraft = currentDraft;
       let newAssumptions = currentAssumptions;
       let newPhase: BuilderPhase = "building";
@@ -422,29 +443,54 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
       let newErrors: ScenarioValidationError[] = [];
       let newPendingQuestion: PendingQuestion | null = null;
 
-      // We make at most 1 + MAX_UPDATE_RETRIES LLM calls total.
-      // On each loop we process the response; if update_scenario fails we
-      // inject the errors into the message list and loop again silently.
-      for (let attempt = 0; attempt <= MAX_UPDATE_RETRIES; attempt++) {
+      // Running message history threaded across iterations.
+      // Starts with the conversation up to and including the new user message.
+      // The system message is rebuilt on every iteration (see inside loop) so
+      // the model always sees the current draft YAML. Synthetic tool-result
+      // messages are appended after each iteration to give the model context
+      // without needing tool-role messages.
+      // Initialise with just the base history; the loop replaces the system
+      // message on the first iteration with the correct (possibly updated) draft.
+      let iterMessages = buildMessages(
+        [...currentMessages, userMsg],
+        currentDraft,
+      );
+
+      // ── Agentic loop ──────────────────────────────────────────────────────
+      // Each iteration: call LLM → process tool calls → decide whether to stop.
+      // Stop conditions (in priority order):
+      //   1. ask_question called → waiting for user input
+      //   2. mark_complete succeeded → scenario complete
+      //   3. No tool calls and no text → model naturally finished
+      //   4. MAX_AGENT_ITERATIONS reached → safety stop
+      for (let iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
+        // Rebuild system prompt with the latest draft on every iteration so the
+        // model always sees the current YAML state, not a stale snapshot.
+        const freshSystem = buildMessages(
+          [...currentMessages, userMsg],
+          newDraft,
+        )[0];
+        iterMessages = [freshSystem, ...iterMessages.slice(1)];
+
         const response = await client.call({
           role: "scenario_builder",
-          messages,
+          messages: iterMessages,
           tools: BUILDER_TOOLS,
           sessionId: "builder",
         });
 
-        // Reset per-attempt accumulators (we only keep the last successful pass)
-        const attemptMessages: BuilderMessage[] = [];
-        let updateFailed = false;
-        let failureErrors: ScenarioValidationError[] = [];
-
+        // Collect text first (some models emit text alongside tool calls)
         if (response.text) {
-          attemptMessages.push({
-            id: newId(),
-            role: "bot",
-            text: response.text,
-          });
+          newMessages.push({ id: newId(), role: "bot", text: response.text });
         }
+
+        // Natural stop — model returned nothing
+        if (response.toolCalls.length === 0 && !response.text) {
+          break;
+        }
+
+        let stopAfterIter = false;
+        const toolResultMessages: string[] = [];
 
         for (const tc of response.toolCalls) {
           if (tc.tool === "update_scenario") {
@@ -456,9 +502,16 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
             if (result.ok) {
               newDraft = result.draft;
               newAssumptions = result.assumptions;
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} update_scenario: applied successfully.`,
+              );
             } else {
-              updateFailed = true;
-              failureErrors = result.errors;
+              const errSummary = result.errors
+                .map((e) => `${e.path}: ${e.message}`)
+                .join("\n");
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} update_scenario: validation failed — fix all errors and call update_scenario again:\n${errSummary}`,
+              );
             }
           } else if (tc.tool === "mark_complete") {
             const result = handleMarkComplete(newDraft);
@@ -466,65 +519,66 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
               newPhase = "complete";
               newYaml = result.yamlStr;
               newPendingQuestion = null;
+              stopAfterIter = true;
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} mark_complete: succeeded.`,
+              );
             } else {
               newErrors = result.errors;
-              attemptMessages.push({
-                id: newId(),
-                role: "bot",
-                text:
-                  "The scenario has validation errors that need fixing:\n" +
-                  result.errors
-                    .map((e) => `- ${e.path}: ${e.message}`)
-                    .join("\n"),
-              });
+              const errText =
+                "The scenario has validation errors that need fixing:\n" +
+                result.errors
+                  .map((e) => `- ${e.path}: ${e.message}`)
+                  .join("\n");
+              newMessages.push({ id: newId(), role: "bot", text: errText });
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} mark_complete: failed — fix errors with update_scenario then call mark_complete again:\n${errText}`,
+              );
             }
           } else if (tc.tool === "send_message") {
             const msg = (tc.params["message"] as string | undefined) ?? "";
-            if (msg)
-              attemptMessages.push({ id: newId(), role: "bot", text: msg });
+            if (msg) {
+              newMessages.push({ id: newId(), role: "bot", text: msg });
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} send_message: delivered.`,
+              );
+            } else {
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} send_message: ignored — message was empty. Call send_message with a non-empty message.`,
+              );
+            }
+            // send_message does NOT stop the loop — model may send more
           } else if (tc.tool === "ask_question") {
             const q = (tc.params["question"] as string | undefined) ?? "";
             const opts = (tc.params["options"] as string[] | undefined) ?? [];
             if (q && opts.length >= 2) {
-              attemptMessages.push({ id: newId(), role: "bot", text: q });
+              newMessages.push({ id: newId(), role: "bot", text: q });
               newPendingQuestion = { question: q, options: opts };
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} ask_question: delivered. Waiting for user reply.`,
+              );
+              stopAfterIter = true; // ask_question always ends the turn
+            } else {
+              // Invalid ask_question — do not stop the turn, let model try again
+              toolResultMessages.push(
+                `${AGENT_TOOL_RESULT_PREFIX} ask_question: ignored — question must be non-empty and options must have at least 2 items.`,
+              );
             }
           }
         }
 
-        if (updateFailed && attempt < MAX_UPDATE_RETRIES) {
-          // Silent retry: inject errors as a user message and loop again.
-          // Discard any messages from this attempt — user never sees them.
-          messages = [
-            ...messages,
-            {
-              role: "user" as const,
-              content:
-                "update_scenario validation failed. Fix all errors and call update_scenario again:\n" +
-                JSON.stringify(failureErrors, null, 2),
-            },
+        // Append tool results as a synthetic user message so the model has
+        // context on the next iteration without needing tool-role messages.
+        // The AGENT_TOOL_RESULT_PREFIX on every line lets the mock provider
+        // and any future tooling detect loop-iteration messages reliably.
+        if (toolResultMessages.length > 0) {
+          iterMessages = [
+            ...iterMessages,
+            { role: "user", content: toolResultMessages.join("\n\n") },
           ];
-          continue;
         }
 
-        // Commit this attempt's messages (success, or final failed attempt)
-        newMessages = [...newMessages, ...attemptMessages];
-
-        if (updateFailed) {
-          // All retries exhausted — show a brief, friendly message
-          const fields = [
-            ...new Set(failureErrors.map((e) => e.path.split(".")[0])),
-          ];
-          newMessages.push({
-            id: newId(),
-            role: "bot",
-            text:
-              `I couldn't apply that change after ${MAX_UPDATE_RETRIES + 1} attempts ` +
-              `(fields: ${fields.join(", ")}). Try asking me to simplify that section.`,
-          });
-        }
-
-        break; // success or exhausted — stop looping
+        if (stopAfterIter) break;
       }
 
       setState((prev) => ({
