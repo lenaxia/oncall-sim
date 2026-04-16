@@ -6,6 +6,7 @@
  *
  * No external dependencies — styled to match the sim's dark theme.
  * Text wraps naturally via foreignObject HTML divs — no truncation.
+ * Card heights are computed from content length so long descriptions never overlap.
  */
 
 import { useRef, useState, useCallback } from "react";
@@ -39,22 +40,61 @@ const COMPONENT_META: Record<
 
 const COL_W = 260; // card width
 const COL_GAP = 90; // horizontal gap between columns
-const NODE_GAP = 16; // vertical gap between service cards
+const NODE_GAP = 20; // vertical gap between service cards
 
-// Estimated row heights for SVG geometry (arrows, centering).
-// Actual rendered heights may vary with text length — these are used only
-// for computing arrow attachment points and vertical centering.
-const SERVICE_H_EST = 110; // upstream/downstream card estimate
-const COMP_H_EST = 62; // component box estimate
+const COMP_H_EST = 62;
 const COMP_GAP = 10;
 const FOCAL_PAD = 14;
 const HEADER_H = 90;
 
-function focalHeightEst(compCount: number) {
+// Characters per line in a 260px card at 12px system-ui.
+// 260px card - 24px padding = 236px usable. At ~6.5px avg char width = ~36 chars.
+// We use 28 to be conservative — word boundaries mean lines rarely pack fully.
+const CHARS_PER_LINE = 28;
+const LINE_H = 18; // px per line at lineHeight 1.4 / font-size 12
+const CARD_PAD_V = 52; // role label + name + top/bottom padding + breathing room
+
+/** Estimate rendered height of a service card based on its description length.
+ *  Deliberately over-estimates to prevent foreignObject clipping. */
+function estimateCardHeight(node: ServiceNode): number {
+  const desc = node.description ?? "";
+  // Split on actual words to better approximate wrapping
+  const words = desc.split(/\s+/);
+  let lines = 1;
+  let lineLen = 0;
+  for (const word of words) {
+    if (lineLen + word.length + 1 > CHARS_PER_LINE) {
+      lines++;
+      lineLen = word.length;
+    } else {
+      lineLen += word.length + 1;
+    }
+  }
+  const descH = lines * LINE_H;
+  const rpsH = node.typicalRps !== undefined ? 20 : 0;
+  return CARD_PAD_V + descH + rpsH + 16; // 16px generous bottom buffer
+}
+
+function focalHeightEst(node: ServiceNode): number {
+  // Use same word-wrap estimator for consistency
+  const desc = node.description ?? "";
+  const words = desc.split(/\s+/);
+  let lines = 1;
+  let lineLen = 0;
+  for (const word of words) {
+    if (lineLen + word.length + 1 > CHARS_PER_LINE) {
+      lines++;
+      lineLen = word.length;
+    } else {
+      lineLen += word.length + 1;
+    }
+  }
+  const descH = Math.max(0, (lines - 2) * LINE_H); // first 2 lines fit in base HEADER_H
+  const headerH = Math.max(HEADER_H, HEADER_H + descH + 8);
   return (
-    HEADER_H +
+    headerH +
     FOCAL_PAD +
-    compCount * (COMP_H_EST + COMP_GAP) -
+    node.components.length * (COMP_H_EST + COMP_GAP) -
     COMP_GAP +
     FOCAL_PAD +
     24
@@ -68,17 +108,19 @@ function ServiceCard({
   x,
   y,
   role,
+  height,
 }: {
   node: ServiceNode;
   x: number;
   y: number;
   role: "upstream" | "downstream";
+  height: number;
 }) {
   const border = role === "upstream" ? "#38bdf8" : "#818cf8";
   const bg = role === "upstream" ? "#0f2233" : "#17172a";
 
   return (
-    <foreignObject x={x} y={y} width={COL_W} height={SERVICE_H_EST + 40}>
+    <foreignObject x={x} y={y} width={COL_W} height={height}>
       <div
         style={{
           background: bg,
@@ -243,11 +285,13 @@ function FocalServiceBox({
   x,
   y,
   focalH,
+  headerH,
 }: {
   node: ServiceNode;
   x: number;
   y: number;
   focalH: number;
+  headerH: number;
 }) {
   const compX = x + 10;
 
@@ -269,26 +313,20 @@ function FocalServiceBox({
         x={x}
         y={y}
         width={COL_W}
-        height={HEADER_H}
+        height={headerH}
         rx={8}
         fill="#0b1e30"
         stroke="none"
       />
-      <rect
-        x={x}
-        y={y + HEADER_H - 8}
-        width={COL_W}
-        height={8}
-        fill="#0b1e30"
-      />
+      <rect x={x} y={y + headerH - 8} width={COL_W} height={8} fill="#0b1e30" />
 
-      {/* Header text via foreignObject so it wraps too */}
-      <foreignObject x={x} y={y} width={COL_W} height={HEADER_H}>
+      {/* Header text via foreignObject so it wraps */}
+      <foreignObject x={x} y={y} width={COL_W} height={headerH}>
         <div
           style={{
             padding: "10px 12px",
             fontFamily: "monospace",
-            height: HEADER_H,
+            minHeight: headerH,
             boxSizing: "border-box",
             display: "flex",
             flexDirection: "column",
@@ -334,7 +372,7 @@ function FocalServiceBox({
 
       {/* Component stack */}
       {node.components.map((comp, i) => {
-        const cy = y + HEADER_H + FOCAL_PAD + i * (COMP_H_EST + COMP_GAP);
+        const cy = y + headerH + FOCAL_PAD + i * (COMP_H_EST + COMP_GAP);
         const midX = compX + (COL_W - 20) / 2;
         return (
           <g key={comp.id}>
@@ -380,10 +418,36 @@ function FocalServiceBox({
 export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
   const { focalService, upstream, downstream } = topology;
 
-  const focalH = focalHeightEst(focalService.components.length);
-  const upstreamH = upstream.length * (SERVICE_H_EST + NODE_GAP) - NODE_GAP;
-  const downH = downstream.length * (SERVICE_H_EST + NODE_GAP) - NODE_GAP;
-  const svgH = Math.max(focalH, upstreamH, downH) + 60;
+  // Compute per-card heights based on content
+  const upstreamHeights = upstream.map(estimateCardHeight);
+  const downstreamHeights = downstream.map(estimateCardHeight);
+
+  // Total column heights (sum of cards + gaps between them)
+  const upstreamColH =
+    upstreamHeights.reduce((a, b) => a + b, 0) +
+    Math.max(0, upstream.length - 1) * NODE_GAP;
+  const downstreamColH =
+    downstreamHeights.reduce((a, b) => a + b, 0) +
+    Math.max(0, downstream.length - 1) * NODE_GAP;
+
+  // Focal service — derive header height from word-wrap estimate
+  const focalH = focalHeightEst(focalService);
+  const focalDesc = focalService.description ?? "";
+  const focalWords = focalDesc.split(/\s+/);
+  let focalLines = 1;
+  let focalLineLen = 0;
+  for (const w of focalWords) {
+    if (focalLineLen + w.length + 1 > CHARS_PER_LINE) {
+      focalLines++;
+      focalLineLen = w.length;
+    } else {
+      focalLineLen += w.length + 1;
+    }
+  }
+  const focalDescH = Math.max(0, (focalLines - 2) * LINE_H);
+  const focalHeaderH = Math.max(HEADER_H, HEADER_H + focalDescH + 8);
+
+  const svgH = Math.max(focalH, upstreamColH, downstreamColH) + 60;
 
   const upstreamX = 20;
   const focalX = upstreamX + COL_W + COL_GAP;
@@ -392,6 +456,21 @@ export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
 
   const focalY = Math.round((svgH - focalH) / 2);
   const focalMidY = focalY + focalH / 2;
+
+  // Compute per-card Y positions (stacked, vertically centred as a group)
+  function stackedYPositions(heights: number[], colH: number): number[] {
+    const startY = Math.round((svgH - colH) / 2);
+    const ys: number[] = [];
+    let cursor = startY;
+    for (const h of heights) {
+      ys.push(cursor);
+      cursor += h + NODE_GAP;
+    }
+    return ys;
+  }
+
+  const upstreamYs = stackedYPositions(upstreamHeights, upstreamColH);
+  const downstreamYs = stackedYPositions(downstreamHeights, downstreamColH);
 
   // ── Pan ────────────────────────────────────────────────────────────────────
 
@@ -467,10 +546,9 @@ export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
           <ArrowDefs />
 
           {upstream.map((node, i) => {
-            const nodeY = Math.round(
-              (svgH - upstreamH) / 2 + i * (SERVICE_H_EST + NODE_GAP),
-            );
-            const nodeMidY = nodeY + SERVICE_H_EST / 2;
+            const nodeY = upstreamYs[i];
+            const nodeH = upstreamHeights[i];
+            const nodeMidY = nodeY + nodeH / 2;
             return (
               <g key={node.name}>
                 <ServiceCard
@@ -478,6 +556,7 @@ export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
                   x={upstreamX}
                   y={nodeY}
                   role="upstream"
+                  height={nodeH}
                 />
                 <Arrow
                   x1={upstreamX + COL_W}
@@ -495,13 +574,13 @@ export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
             x={focalX}
             y={focalY}
             focalH={focalH}
+            headerH={focalHeaderH}
           />
 
           {downstream.map((node, i) => {
-            const nodeY = Math.round(
-              (svgH - downH) / 2 + i * (SERVICE_H_EST + NODE_GAP),
-            );
-            const nodeMidY = nodeY + SERVICE_H_EST / 2;
+            const nodeY = downstreamYs[i];
+            const nodeH = downstreamHeights[i];
+            const nodeMidY = nodeY + nodeH / 2;
             return (
               <g key={node.name}>
                 <ServiceCard
@@ -509,6 +588,7 @@ export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
                   x={downstreamX}
                   y={nodeY}
                   role="downstream"
+                  height={nodeH}
                 />
                 <Arrow
                   x1={focalX + COL_W}
