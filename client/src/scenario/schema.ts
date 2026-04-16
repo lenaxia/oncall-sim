@@ -471,7 +471,7 @@ export const ScenarioSchema = z.object({
   timeline: TimelineSchema,
   topology: TopologySchema,
   engine: EngineSchema,
-  email: z.array(ScriptedEmailSchema),
+  email: z.array(ScriptedEmailSchema).optional().default([]),
   chat: ChatSchema,
   ticketing: z.array(TicketSchema),
   alarms: z.array(AlarmConfigSchema),
@@ -753,7 +753,7 @@ red_herrings[].action may be a free-form description (e.g. "Scale up ECS to redu
 
 metric_id must be a registered archetype ID (see METRIC IDs section below).
 
-── CICD (only if user explicitly asks) ──────────────────────
+── CICD — build automatically for deploy/rollback/config-change scenarios ───
 cicd: { pipelines: Pipeline[], deployments: Deployment[] }
 
 Pipeline: { id, name, service, stages: PipelineStage[] }
@@ -769,6 +769,73 @@ Deployment: {
   status: ${deploymentStatuses.map((v) => `"${v}"`).join("|")},
   commit_message, author
 }
+
+EXAMPLE — a config-change scenario where v2.4.1 introduced the bad config:
+
+cicd:
+  pipelines:
+    - id: pipeline-payment
+      name: "payment-service"
+      service: payment-service
+      stages:
+        - id: build
+          name: "Build"
+          type: build
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: succeeded
+          deployed_at_sec: -1500
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          tests:
+            - name: "Unit tests"
+              status: passed
+        - id: staging
+          name: "Staging"
+          type: deploy
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: succeeded
+          deployed_at_sec: -1400
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          tests:
+            - name: "Integration tests"
+              status: passed
+        - id: prod
+          name: "Prod"
+          type: deploy
+          current_version: v2.4.1
+          previous_version: v2.4.0
+          status: succeeded
+          deployed_at_sec: -1200
+          commit_message: "config: increase DB pool size for high-traffic preparation"
+          author: sara-chen
+          tests:
+            - name: "Smoke tests"
+              status: passed
+  deployments:
+    - service: payment-service
+      version: v2.4.1
+      deployed_at_sec: -1200
+      status: active
+      commit_message: "config: increase DB pool size for high-traffic preparation"
+      author: sara-chen
+    - service: payment-service
+      version: v2.4.0
+      deployed_at_sec: -86400
+      status: previous
+      commit_message: "feat: add idempotency key support for charge retries"
+      author: sara-chen
+
+KEY RULES for CI/CD:
+- deployed_at_sec is negative (before sim start). Use e.g. -1200 for "20 min ago".
+- The bad/recent deploy should be the current_version on all stages.
+- previous_version is the version the trainee can roll back to — make it the good one.
+- Include 2–3 deployments: active (bad), previous (good), optionally one older.
+- Commit messages are the key diagnostic clue — make them realistic and specific.
+- For red-herring scenarios, a recent deploy by a different author for an unrelated
+  change can mislead the trainee helpfully.
 
 ── LOG PATTERNS (auto-generated in Phase 5) ─────────────────
 Generate 3–6 entries that tell the story of the incident. Use real service

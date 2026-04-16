@@ -5,6 +5,10 @@ import React, { useEffect, useRef, useState } from "react";
 import type { RawScenarioConfig } from "../scenario/schema";
 import type { ScenarioValidationError } from "../scenario/lint";
 import { ThinkingDots } from "./ThinkingDots";
+import {
+  TopologySummaryTable,
+  type TopologySummaryRow,
+} from "./TopologySummaryTable";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -139,8 +143,9 @@ function OverviewCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
 }
 
 function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
-  const focal = draft.topology?.focal_service;
-  const pulsing = useChangePulse(JSON.stringify(draft.topology));
+  const topology = draft.topology;
+  const focal = topology?.focal_service;
+  const pulsing = useChangePulse(JSON.stringify(topology));
 
   if (!focal) {
     return (
@@ -154,7 +159,30 @@ function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
     );
   }
 
-  const chain = focal.components.map((c) => c.label ?? c.id).join(" → ");
+  const rows: TopologySummaryRow[] = [
+    {
+      name: focal.name,
+      role: "primary",
+      description: focal.description,
+      owner: focal.owner,
+    },
+    ...(topology?.upstream ?? []).map(
+      (n): TopologySummaryRow => ({
+        name: n.name,
+        role: "upstream",
+        description: n.description,
+        owner: n.owner,
+      }),
+    ),
+    ...(topology?.downstream ?? []).map(
+      (n): TopologySummaryRow => ({
+        name: n.name,
+        role: "downstream",
+        description: n.description,
+        owner: n.owner,
+      }),
+    ),
+  ];
 
   return (
     <Card
@@ -162,20 +190,7 @@ function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
       description="The focal service (where the incident occurs) plus any upstream callers and downstream dependencies."
       pulsing={pulsing}
     >
-      <span className="text-xs font-semibold text-sim-text">{focal.name}</span>
-      {chain && (
-        <span className="text-xs text-sim-text-muted font-mono">{chain}</span>
-      )}
-      {(draft.topology?.upstream ?? []).length > 0 && (
-        <span className="text-xs text-sim-text-faint">
-          Upstream: {draft.topology!.upstream.map((n) => n.name).join(", ")}
-        </span>
-      )}
-      {(draft.topology?.downstream ?? []).length > 0 && (
-        <span className="text-xs text-sim-text-faint">
-          Downstream: {draft.topology!.downstream.map((n) => n.name).join(", ")}
-        </span>
-      )}
+      <TopologySummaryTable rows={rows} />
     </Card>
   );
 }
@@ -666,7 +681,31 @@ function CICDCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
   const deployments = draft.cicd?.deployments ?? [];
   const pulsing = useChangePulse(JSON.stringify(draft.cicd));
 
-  if (pipelines.length === 0 && deployments.length === 0) return null;
+  const STAGE_STATUS_COLOURS: Record<string, string> = {
+    succeeded: "text-green-400",
+    failed: "text-red-400",
+    in_progress: "text-sim-accent",
+    blocked: "text-yellow-400",
+    not_started: "text-sim-text-faint",
+  };
+
+  const DEPLOY_STATUS_COLOURS: Record<string, string> = {
+    active: "text-green-400",
+    previous: "text-sim-text-faint",
+    rolled_back: "text-yellow-400",
+  };
+
+  if (pipelines.length === 0 && deployments.length === 0) {
+    return (
+      <Card
+        title="CI/CD"
+        description="Pipeline stages and deployment history shown in the CI/CD panel. The builder adds this automatically for deploy, rollback, and config-change scenarios."
+        pulsing={pulsing}
+      >
+        <Placeholder />
+      </Card>
+    );
+  }
 
   return (
     <Card
@@ -675,35 +714,72 @@ function CICDCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
       pulsing={pulsing}
     >
       {pipelines.length > 0 && (
-        <div className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-sim-text-muted">
-            Pipelines ({pipelines.length})
-          </span>
-          {pipelines.map((p) => (
-            <div key={p.id} className="flex items-center gap-2">
-              <span className="text-xs text-sim-text font-medium">
-                {p.name}
-              </span>
-              <span className="text-xs text-sim-text-faint">{p.service}</span>
-              <span className="text-xs text-sim-text-faint">
-                {p.stages.length} stage{p.stages.length !== 1 ? "s" : ""}
-              </span>
-            </div>
-          ))}
+        <div className="flex flex-col gap-3">
+          {pipelines.map((p) => {
+            // Find the prod/last deploy stage to surface the key commit
+            const prodStage =
+              [...p.stages].reverse().find((s) => s.type === "deploy") ??
+              p.stages[p.stages.length - 1];
+            return (
+              <div key={p.id} className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-sim-text font-medium">
+                    {p.name}
+                  </span>
+                  <span className="text-xs text-sim-text-faint">
+                    {p.service}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap pl-1">
+                  {p.stages.map((s) => (
+                    <span
+                      key={s.id}
+                      className={`text-xs font-mono ${STAGE_STATUS_COLOURS[s.status] ?? "text-sim-text-faint"}`}
+                      title={`${s.name}: ${s.current_version}`}
+                    >
+                      {s.name}
+                    </span>
+                  ))}
+                </div>
+                {prodStage && (
+                  <div
+                    className="text-xs text-sim-text-faint pl-1 line-clamp-1"
+                    title={prodStage.commit_message}
+                  >
+                    "{prodStage.commit_message}"
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       {deployments.length > 0 && (
-        <div className="flex flex-col gap-1 mt-1">
+        <div className="flex flex-col gap-1.5 mt-2">
           <span className="text-xs font-medium text-sim-text-muted">
             Deployments ({deployments.length})
           </span>
           {deployments.map((d, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <span className="text-xs text-sim-text-faint">{d.service}</span>
-              <span className="text-xs font-mono text-sim-text">
-                {d.version}
-              </span>
-              <span className="text-xs text-sim-text-faint">{d.status}</span>
+            <div key={i} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`text-xs font-semibold flex-shrink-0 ${DEPLOY_STATUS_COLOURS[d.status] ?? "text-sim-text-faint"}`}
+                >
+                  {d.status}
+                </span>
+                <span className="text-xs font-mono text-sim-text">
+                  {d.version}
+                </span>
+                <span className="text-xs text-sim-text-faint">{d.service}</span>
+              </div>
+              {d.commit_message && (
+                <div
+                  className="text-xs text-sim-text-faint pl-1 line-clamp-1"
+                  title={d.commit_message}
+                >
+                  "{d.commit_message}"
+                </div>
+              )}
             </div>
           ))}
         </div>

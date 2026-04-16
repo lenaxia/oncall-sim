@@ -48,10 +48,13 @@ describe("ScenarioSchema — valid fixture", () => {
     }
   });
 
-  it("email field is required — omitting it fails", () => {
+  it("email field is optional — omitting it succeeds with empty default", () => {
     const raw = loadFixture() as Record<string, unknown>;
     const result = ScenarioSchema.safeParse({ ...raw, email: undefined });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.email).toEqual([]);
+    }
   });
 
   it("ticketing field is required — omitting it fails", () => {
@@ -152,7 +155,7 @@ describe("ScenarioSchema — required field validation", () => {
     ["timeline"],
     ["topology"],
     ["engine"],
-    ["email"],
+    // email is optional (defaults to [])
     ["chat"],
     ["ticketing"],
     ["alarms"],

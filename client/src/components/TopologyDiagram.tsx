@@ -15,6 +15,10 @@ import type {
   ServiceComponent,
   ServiceNode,
 } from "../scenario/types";
+import {
+  TopologySummaryTable,
+  type TopologySummaryRow,
+} from "./TopologySummaryTable";
 
 // ── Component type metadata ───────────────────────────────────────────────────
 
@@ -604,72 +608,33 @@ export function TopologyDiagram({ topology }: { topology: TopologyConfig }) {
       </div>
 
       {/* Summary table */}
-      <div className="mt-6 border border-sim-border rounded overflow-hidden text-sm">
-        <table className="w-full">
-          <thead>
-            <tr className="bg-sim-surface border-b border-sim-border">
-              <th className="text-left px-3 py-2 text-sim-text-faint font-medium w-36">
-                Service
-              </th>
-              <th className="text-left px-3 py-2 text-sim-text-faint font-medium w-24">
-                Role
-              </th>
-              <th className="text-left px-3 py-2 text-sim-text-faint font-medium">
-                Description
-              </th>
-              <th className="text-left px-3 py-2 text-sim-text-faint font-medium w-28">
-                Owner
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr className="border-b border-sim-border bg-sim-surface-2">
-              <td className="px-3 py-2 font-mono text-sim-accent font-semibold">
-                {focalService.name}
-              </td>
-              <td className="px-3 py-2 text-sim-accent">Primary</td>
-              <td className="px-3 py-2 text-sim-text-muted">
-                {focalService.description}
-              </td>
-              <td className="px-3 py-2 font-mono text-sim-text-muted">
-                {focalService.owner ?? "—"}
-              </td>
-            </tr>
-            {upstream.map((node) => (
-              <tr key={node.name} className="border-b border-sim-border">
-                <td className="px-3 py-2 font-mono text-sim-text">
-                  {node.name}
-                </td>
-                <td className="px-3 py-2 text-[#38bdf8]">Upstream</td>
-                <td className="px-3 py-2 text-sim-text-muted">
-                  {node.description}
-                </td>
-                <td className="px-3 py-2 font-mono text-sim-text-muted">
-                  {node.owner ?? "—"}
-                </td>
-              </tr>
-            ))}
-            {downstream.map((node) => (
-              <tr
-                key={node.name}
-                className="border-b border-sim-border last:border-0"
-              >
-                <td className="px-3 py-2 font-mono text-sim-text">
-                  {node.name}
-                </td>
-                <td className="px-3 py-2">
-                  <span className="text-[#818cf8]">Downstream</span>
-                </td>
-                <td className="px-3 py-2 text-sim-text-muted">
-                  {node.description}
-                </td>
-                <td className="px-3 py-2 font-mono text-sim-text-muted">
-                  {node.owner ?? "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mt-6">
+        <TopologySummaryTable
+          rows={[
+            {
+              name: focalService.name,
+              role: "primary",
+              description: focalService.description,
+              owner: focalService.owner,
+            },
+            ...upstream.map(
+              (n): TopologySummaryRow => ({
+                name: n.name,
+                role: "upstream",
+                description: n.description,
+                owner: n.owner,
+              }),
+            ),
+            ...downstream.map(
+              (n): TopologySummaryRow => ({
+                name: n.name,
+                role: "downstream",
+                description: n.description,
+                owner: n.owner,
+              }),
+            ),
+          ]}
+        />
       </div>
     </div>
   );
