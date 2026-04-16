@@ -18,27 +18,11 @@ import type {
 import {
   TopologySummaryTable,
   type TopologySummaryRow,
+  COMPONENT_META,
 } from "./TopologySummaryTable";
 
 // ── Component type metadata ───────────────────────────────────────────────────
-
-const COMPONENT_META: Record<
-  ServiceComponent["type"],
-  { icon: string; label: string; color: string }
-> = {
-  load_balancer: { icon: "⚖", label: "ALB", color: "#4ade80" },
-  api_gateway: { icon: "⇌", label: "API GW", color: "#60a5fa" },
-  ecs_cluster: { icon: "▣", label: "ECS", color: "#818cf8" },
-  ec2_fleet: { icon: "□", label: "EC2", color: "#a78bfa" },
-  lambda: { icon: "λ", label: "Lambda", color: "#f472b6" },
-  kinesis_stream: { icon: "≋", label: "Kinesis", color: "#fb923c" },
-  sqs_queue: { icon: "▭", label: "SQS", color: "#fbbf24" },
-  dynamodb: { icon: "◈", label: "DynamoDB", color: "#34d399" },
-  rds: { icon: "▤", label: "RDS", color: "#f87171" },
-  elasticache: { icon: "⚡", label: "ElastiCache", color: "#fb923c" },
-  s3: { icon: "▦", label: "S3", color: "#60a5fa" },
-  scheduler: { icon: "◷", label: "Scheduler", color: "#94a3b8" },
-};
+// Defined in TopologySummaryTable.tsx and re-used here.
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 

@@ -7,6 +7,7 @@ import type { ScenarioValidationError } from "../scenario/lint";
 import { ThinkingDots } from "./ThinkingDots";
 import {
   TopologySummaryTable,
+  COMPONENT_META,
   type TopologySummaryRow,
 } from "./TopologySummaryTable";
 
@@ -191,6 +192,38 @@ function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
       pulsing={pulsing}
     >
       <TopologySummaryTable rows={rows} />
+
+      {/* Focal service component stack */}
+      {focal.components.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1">
+          <span className="text-xs font-medium text-sim-text-muted uppercase tracking-wide">
+            {focal.name} — components
+          </span>
+          <div className="flex flex-wrap gap-2 mt-1">
+            {focal.components.map((c) => {
+              const meta = COMPONENT_META[c.type] ?? {
+                icon: "□",
+                label: c.type,
+                color: "#94a3b8",
+              };
+              return (
+                <span
+                  key={c.id}
+                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-sim-border bg-sim-surface-2"
+                  style={{ color: meta.color }}
+                  title={c.label ?? c.id}
+                >
+                  <span>{meta.icon}</span>
+                  <span className="font-medium">{meta.label}</span>
+                  {c.label && c.label !== meta.label && (
+                    <span className="text-sim-text-faint">{c.label}</span>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

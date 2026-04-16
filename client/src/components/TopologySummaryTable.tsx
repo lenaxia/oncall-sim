@@ -2,10 +2,29 @@
  * TopologySummaryTable — shared table component rendering a service topology
  * as a flat list of rows (Primary / Upstream / Downstream).
  *
- * Accepts the raw snake_case shape directly so it works in both:
- *   - TopologyDiagram (wiki tab, live sim) — adapts camelCase TopologyConfig
- *   - ScenarioCanvas (builder) — passes raw YAML topology directly
+ * Also exports COMPONENT_META for consistent component type icons/colours
+ * across TopologyDiagram and ScenarioCanvas.
  */
+
+// ── Component type metadata ───────────────────────────────────────────────────
+
+export const COMPONENT_META: Record<
+  string,
+  { icon: string; label: string; color: string }
+> = {
+  load_balancer: { icon: "⚖", label: "ALB", color: "#4ade80" },
+  api_gateway: { icon: "⇌", label: "API GW", color: "#60a5fa" },
+  ecs_cluster: { icon: "▣", label: "ECS", color: "#818cf8" },
+  ec2_fleet: { icon: "□", label: "EC2", color: "#a78bfa" },
+  lambda: { icon: "λ", label: "Lambda", color: "#f472b6" },
+  kinesis_stream: { icon: "≋", label: "Kinesis", color: "#fb923c" },
+  sqs_queue: { icon: "▭", label: "SQS", color: "#fbbf24" },
+  dynamodb: { icon: "◈", label: "DynamoDB", color: "#34d399" },
+  rds: { icon: "▤", label: "RDS", color: "#f87171" },
+  elasticache: { icon: "⚡", label: "ElastiCache", color: "#fb923c" },
+  s3: { icon: "▦", label: "S3", color: "#60a5fa" },
+  scheduler: { icon: "◷", label: "Scheduler", color: "#94a3b8" },
+};
 
 export interface TopologySummaryRow {
   name: string;
