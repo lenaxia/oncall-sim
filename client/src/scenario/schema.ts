@@ -671,9 +671,16 @@ Every ServiceNode MUST have:
 Optional ServiceNode fields:
   traffic_profile: ${trafficProfiles.map((v) => `"${v}"`).join(" | ")}
   health: "healthy" | "degraded" | "flaky"
+    → BASELINE state at t=0. focal_service should always be "healthy".
+       The incident drives degradation dynamically — do NOT pre-set "degraded".
   correlation: "upstream_impact" | "exonerated" | "independent"
-  lag_seconds: number
-  impact_factor: number (0.0–1.0)
+    → Only set on upstream/downstream nodes, NEVER on focal_service.
+  lag_seconds: number   → propagation delay in seconds
+  impact_factor: number (0.0–1.0)   → how strongly this node is affected
+
+  Component utilization/connection_utilization/lambda_utilization baselines:
+    → Use NORMAL healthy values (0.2–0.5). Never author > 0.6 at baseline.
+       Saturation/spike incidents drive values from baseline up to magnitude.
 
 ── INCIDENT ──────────────────────────────────────────────────
 {

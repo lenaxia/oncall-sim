@@ -146,6 +146,34 @@ PHASE 1 — Core incident (required first)
          (focal_service with components + at least one incident)
   Default: upstream: [], downstream: [] unless user specifies
 
+  TOPOLOGY AUTHORING RULES — critical for correct simulation behaviour:
+
+  health / correlation — these describe the BASELINE state at simulation start,
+  before the incident occurs. Do NOT use them to describe the degraded state
+  the incident will cause.
+    - focal_service.health: ALWAYS "healthy" (the incident drives degradation dynamically)
+    - upstream nodes: "healthy" unless the scenario requires a pre-existing condition
+    - downstream nodes: "healthy" unless explicitly pre-degraded by design
+    - correlation: only set on upstream/downstream nodes, NEVER on focal_service
+      "upstream_impact"  → this node is affected BY the focal service degrading
+      "exonerated"       → this node is unaffected (good red herring)
+      "independent"      → unrelated, background noise
+      Omit correlation on focal_service entirely.
+
+  component baseline values — must reflect the NORMAL, PRE-INCIDENT operating
+  state. The incident overlay drives values up or down from this baseline.
+  Setting baselines too high means the dashboard will look alarming before the
+  incident even starts.
+    - utilization, connection_utilization, lambda_utilization: typical healthy
+      values are 0.2–0.5. Never author these above 0.6 unless the scenario
+      specifically requires a pre-stressed system.
+    - For connection pool incidents: connection_utilization should be ~0.3–0.4
+      at baseline. The saturation incident overlay will drive it to the
+      authored magnitude (e.g. 0.98) over the ramp duration.
+
+  lag_seconds / impact_factor — used by the engine to propagate incident effects
+  to related services. These are fine to set; they do NOT affect baseline state.
+
 PHASE 2 — Personas
   Suggest 2–3 roles that make sense for the scenario (e.g. for a DB incident:
   the DBA, the on-call manager, the service owner). Use ask_question if the

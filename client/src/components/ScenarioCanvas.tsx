@@ -193,32 +193,54 @@ function ServiceTopologyCard({ draft }: { draft: Partial<RawScenarioConfig> }) {
     >
       <TopologySummaryTable rows={rows} />
 
-      {/* Focal service component stack */}
+      {/* Focal service component pipeline — left-to-right with arrows */}
       {focal.components.length > 0 && (
         <div className="mt-3 flex flex-col gap-1">
           <span className="text-xs font-medium text-sim-text-muted uppercase tracking-wide">
-            {focal.name} — components
+            {focal.name} — architecture
           </span>
-          <div className="flex flex-wrap gap-2 mt-1">
-            {focal.components.map((c) => {
+          <div className="flex items-center flex-wrap gap-0 mt-1">
+            {focal.components.map((c, i) => {
               const meta = COMPONENT_META[c.type] ?? {
                 icon: "□",
                 label: c.type,
                 color: "#94a3b8",
               };
               return (
-                <span
-                  key={c.id}
-                  className="flex items-center gap-1 text-xs px-2 py-0.5 rounded border border-sim-border bg-sim-surface-2"
-                  style={{ color: meta.color }}
-                  title={c.label ?? c.id}
-                >
-                  <span>{meta.icon}</span>
-                  <span className="font-medium">{meta.label}</span>
-                  {c.label && c.label !== meta.label && (
-                    <span className="text-sim-text-faint">{c.label}</span>
+                <React.Fragment key={c.id}>
+                  {i > 0 && (
+                    <span className="text-sim-text-faint text-xs mx-1">→</span>
                   )}
-                </span>
+                  <div
+                    className="flex flex-col items-center gap-0.5 px-2 py-1 rounded border border-sim-border bg-sim-surface-2"
+                    title={c.label ?? c.id}
+                  >
+                    <span
+                      style={{ color: meta.color }}
+                      className="text-sm leading-none"
+                    >
+                      {meta.icon}
+                    </span>
+                    <span
+                      className="text-xs font-medium"
+                      style={{ color: meta.color }}
+                    >
+                      {meta.label}
+                    </span>
+                    {c.label && (
+                      <span
+                        className="text-xs text-sim-text-faint leading-none"
+                        style={{
+                          maxWidth: 72,
+                          textAlign: "center",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {c.label}
+                      </span>
+                    )}
+                  </div>
+                </React.Fragment>
               );
             })}
           </div>
