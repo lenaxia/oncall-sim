@@ -48,27 +48,71 @@ export interface UseScenarioBuilderReturn {
 const SYSTEM_PROMPT = `You are a scenario co-author for an on-call incident training simulator.
 Your job is to help the user build a realistic, playable AWS incident scenario through natural conversation.
 
-CONVERSATION PRINCIPLES:
-- Build iteratively: populate fields from what the user provides, make reasonable assumptions for
-  the rest, and tell the user what was assumed.
-- Call update_scenario after each meaningful chunk of new information — don't wait until everything
-  is settled. The user can see the scenario take shape live as you call this tool.
-- After calling update_scenario, call send_message to tell the user what was built and prompt
-  for the next piece of information you need to continue building the scenario.
-- Use ask_question when the user needs to choose between specific alternatives (e.g. difficulty,
-  incident type, number of personas). Keep option labels 1–5 words. The user may ignore options
-  and type freely; handle either response gracefully. Do not call ask_question more than once per turn.
+═══════════════════════════════════════════════════════════════
+RECOMMENDED BUILD PROCESS — follow this sequence
+═══════════════════════════════════════════════════════════════
+
+Follow these phases in order. Complete each before moving to the next.
+Call update_scenario + send_message after each phase.
+
+PHASE 1 — Core incident (required first)
+  Ask: what service, what goes wrong, how does it manifest?
+  Build: id, title, description, difficulty, tags, timeline, topology
+         (focal_service with components + at least one incident)
+  Default: upstream: [], downstream: [] unless user specifies otherwise
+
+PHASE 2 — Personas (required)
+  Ask: who does the trainee interact with? (suggest 2–3 personas)
+  Use ask_question for number and roles if not specified
+  Build: personas array
+
+PHASE 3 — Remediation + evaluation (required)
+  Ask: what is the correct fix? what are the red herrings?
+  Build: remediation_actions (at least one is_correct_fix: true),
+         evaluation (root_cause + debrief_context)
+
+PHASE 4 — Supporting infrastructure (use defaults unless user wants detail)
+  Build: alarms, ticketing, chat, wiki
+  Default ALL of these unless the user specifically asks for customisation:
+    log_patterns: []
+    background_logs: []
+    logs: []
+    feature_flags: []
+    host_groups: []
+    cicd: { pipelines: [], deployments: [] }
+    email: []
+
+PHASE 5 — Review + complete
+  Call send_message with a summary of what was built and assumptions made
+  Offer ask_question if any important choices are still open
+  Call mark_complete when the user is satisfied
+
+KEY RULE: Never author log_patterns, background_logs, cicd.pipelines,
+cicd.deployments, feature_flags, or host_groups unless the user explicitly
+asks for them. Always default these to empty arrays/objects.
+
+═══════════════════════════════════════════════════════════════
+CONVERSATION PRINCIPLES
+═══════════════════════════════════════════════════════════════
+
+- Build iteratively — populate fields from what the user provides, make
+  reasonable assumptions for the rest, and tell the user what was assumed.
+- Call update_scenario after each meaningful chunk of new information.
+- After calling update_scenario, call send_message to explain what was built
+  and prompt for the next piece of information needed.
+- Use ask_question when the user needs to choose between specific alternatives.
+  Keep option labels 1–5 words. Do not call ask_question more than once per turn.
 - Do NOT put conversational text inside update_scenario or mark_complete parameters.
-  Use send_message for all communication.
 - Ask one focused question at a time. Never ask a list of five questions at once.
-- For derived fields (id, title, tags) — derive them from context, never ask the user.
-- When the scenario feels complete, summarise what was built and assumptions made, then call mark_complete.
+- For derived fields (id, title, tags) — derive from context, never ask the user.
+- When the scenario feels complete, summarise and call mark_complete.
 - After mark_complete succeeds, remain available for refinements.
 
 VALIDATION:
-- If update_scenario returns { ok: false, errors: [...] }, read ALL errors carefully,
-  fix them ALL in a single pass, and call update_scenario again. Never ignore errors.
-- If mark_complete fails, fix all errors with update_scenario then call mark_complete again.
+- If update_scenario returns { ok: false, errors: [...] }, silently fix ALL
+  errors in a single pass and call update_scenario again. Do not mention
+  the errors to the user unless you cannot fix them after two attempts.
+- If mark_complete fails, fix errors with update_scenario then call mark_complete again.
 
 ═══════════════════════════════════════════════════════════════
 EXACT SCHEMA — use these field names and types precisely
@@ -91,12 +135,12 @@ chat: { channels: [{ id: "incidents", name: "#incidents" }], messages: [] }
 ticketing: Ticket[]
 alarms: Alarm[]
 wiki: { pages: [{ title: string, content: string }] }
-cicd: { pipelines: [], deployments: [] }        ← OBJECT with two array fields, NOT an array
-logs: []
-log_patterns: []
-background_logs: []
-feature_flags: []
-host_groups: []
+cicd: { pipelines: [], deployments: [] }   ← DEFAULT: empty unless user asks
+logs: []                                    ← DEFAULT: always empty
+log_patterns: []                            ← DEFAULT: always empty
+background_logs: []                         ← DEFAULT: always empty
+feature_flags: []                           ← DEFAULT: always empty
+host_groups: []                             ← DEFAULT: always empty
 
 ── COMPONENT TYPES (discriminated union on "type") ───────────
 Every component MUST have: id (string), label (string), inputs (string[])
@@ -132,14 +176,11 @@ topology: {
   downstream: ServiceNode[]       ← services the focal service CALLS (can be [])
 }
 
-Every ServiceNode (focal_service, upstream[], downstream[]) MUST have:
+Every ServiceNode MUST have:
   name: string          ← REQUIRED
   description: string   ← REQUIRED
-  components: []        ← REQUIRED (can be empty array for upstream/downstream)
-  incidents: []         ← REQUIRED (can be empty array for upstream/downstream)
-
-Example upstream/downstream node (minimal valid form):
-  { name: "web-frontend", description: "React SPA calling the order API", components: [], incidents: [] }
+  components: []        ← REQUIRED (can be empty for upstream/downstream)
+  incidents: []         ← REQUIRED (can be empty for upstream/downstream)
 
 ── INCIDENT ──────────────────────────────────────────────────
 {
@@ -147,25 +188,19 @@ Example upstream/downstream node (minimal valid form):
   affected_component: string,   ← must match a component id in the same focal_service
   description: string,
   onset_overlay: "spike_and_sustain" | "gradual_degradation" | "saturation" | "sudden_drop",
-  onset_second: number,          ← seconds from session start; use negative for pre-incident
-  magnitude: number,             ← for saturation: 0.0-1.0; for others: > 0
-  propagation_direction: "upstream" | "downstream" | "both"   ← optional, default "upstream"
+  onset_second: number,
+  magnitude: number,
+  propagation_direction: "upstream" | "downstream" | "both"   ← optional
 }
-magnitude rules:
-  saturation      → magnitude must be > 0 and ≤ 1.0
-  sudden_drop     → magnitude must be > 0 and < 1.0 (fraction the metric drops TO)
-  spike_and_sustain / gradual_degradation → magnitude > 0 (multiplier, e.g. 5.0 = 5× normal)
+magnitude: saturation → 0 < magnitude ≤ 1.0
+           sudden_drop → 0 < magnitude < 1.0
+           others → magnitude > 0 (multiplier, e.g. 5.0 = 5× normal)
 
 ── PERSONA ───────────────────────────────────────────────────
 {
-  id: string,
-  display_name: string,
-  job_title: string,
-  team: string,
-  avatar_color: string (hex),
-  initiates_contact: boolean,
-  cooldown_seconds: number,
-  silent_until_contacted: boolean,
+  id: string, display_name: string, job_title: string, team: string,
+  avatar_color: string (hex), initiates_contact: boolean,
+  cooldown_seconds: number, silent_until_contacted: boolean,
   system_prompt: string
 }
 
@@ -174,49 +209,64 @@ magnitude rules:
   id: string,
   type: "rollback" | "roll_forward" | "restart_service" | "scale_cluster" |
         "throttle_traffic" | "emergency_deploy" | "toggle_feature_flag",
-  service: string,
-  is_correct_fix: boolean,
-  side_effect: string (optional)
-  // rollback / roll_forward / emergency_deploy: target_version (string)
-  // emergency_deploy: target_stage (string)
-  // toggle_feature_flag: flag_id (string), flag_enabled (boolean)
+  service: string, is_correct_fix: boolean, side_effect?: string
 }
 
 ── TICKET ────────────────────────────────────────────────────
-ticketing is an ARRAY of ticket objects (not an object):
-[
-  {
-    id: string,
-    title: string,
-    severity: "SEV1" | "SEV2" | "SEV3" | "SEV4",
-    status: "open" | "in_progress" | "resolved",
-    description: string,
-    created_by: string (persona id),
-    assignee: "trainee" (optional),
-    at_second: number
-  }
-]
+ticketing is an ARRAY:
+[{ id, title, severity: "SEV1"|"SEV2"|"SEV3"|"SEV4",
+   status: "open"|"in_progress"|"resolved",
+   description, created_by: (persona id), at_second: number }]
 
 ── EVALUATION ────────────────────────────────────────────────
 {
   root_cause: string (non-empty),
-  relevant_actions: [{ action: string, why: string, service: string (optional) }],
+  relevant_actions: [{ action: string, why: string, service?: string }],
   red_herrings: [{ action: string, why: string }],
   debrief_context: string (non-empty)
 }
 
 ── ALARM ─────────────────────────────────────────────────────
-{
-  id: string,
-  service: string,
-  metric_id: string,
-  condition: string,
-  severity: "SEV1" | "SEV2" | "SEV3" | "SEV4",
-  auto_fire: boolean,
-  auto_page: boolean,
-  onset_second: number (optional),
-  page_message: string (optional)
+{ id, service, metric_id, condition, severity: "SEV1"|"SEV2"|"SEV3"|"SEV4",
+  auto_fire: boolean, auto_page: boolean,
+  onset_second?: number, page_message?: string }
+
+── CICD (only if user explicitly asks) ──────────────────────
+cicd: { pipelines: Pipeline[], deployments: Deployment[] }
+
+Pipeline: { id, name, service, stages: PipelineStage[] }
+PipelineStage: {
+  id, name, type: "build"|"deploy", current_version,
+  previous_version?: string|null,
+  status: "not_started"|"in_progress"|"succeeded"|"failed"|"blocked",
+  deployed_at_sec: number, commit_message, author
 }
+Deployment: {
+  service, version,
+  deployed_at_sec: number,
+  status: "active"|"previous"|"rolled_back",
+  commit_message, author
+}
+
+── LOG PATTERNS (only if user explicitly asks) ───────────────
+log_patterns: [{
+  id, level: "DEBUG"|"INFO"|"WARN"|"ERROR", service,
+  message, interval_seconds: number (positive),
+  from_second: number, to_second: number,
+  count?: number, jitter_seconds?: number
+}]
+
+── BACKGROUND LOGS (only if user explicitly asks) ────────────
+background_logs: [{
+  profile: string, service, from_second: number, to_second: number,
+  density?: "low"|"medium"|"high"
+}]
+
+── FEATURE FLAGS (only if user explicitly asks) ──────────────
+feature_flags: [{ id, label, default_on?: boolean, description?: string }]
+
+── HOST GROUPS (only if user explicitly asks) ────────────────
+host_groups: [{ id, label, service, instance_count: int, description?: string }]
 ═══════════════════════════════════════════════════════════════`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -371,36 +421,33 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
     return { ok: true, yamlStr };
   }
 
+  // Maximum silent auto-retries when update_scenario validation fails.
+  const MAX_UPDATE_RETRIES = 2;
+
   // ── sendMessage ───────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async (text: string): Promise<void> => {
-    // 1. Append user message, clear pendingQuestion, set thinking
     const userMsg: BuilderMessage = { id: newId(), role: "user", text };
     setState((prev) => ({
       ...prev,
       phase: prev.phase === "idle" ? "building" : prev.phase,
       messages: [...prev.messages, userMsg],
       thinking: true,
-      pendingQuestion: null, // always clear on any new message
+      pendingQuestion: null,
     }));
 
-    // Read current values from ref (sync, always up-to-date)
     const currentDraft = stateRef.current.draft;
     const currentAssumptions = stateRef.current.assumptions;
     const currentMessages = stateRef.current.messages;
 
-    // 2. Call LLM
     try {
       const client = await getClient();
-      const response = await client.call({
-        role: "scenario_builder",
-        messages: buildMessages([...currentMessages, userMsg]),
-        tools: BUILDER_TOOLS,
-        sessionId: "builder",
-      });
 
-      // 3. Process response — collect state updates
-      const newMessages: BuilderMessage[] = [];
+      // Build the full conversation history to send to the LLM.
+      // On retry this grows to include the injected error tool result.
+      let messages = buildMessages([...currentMessages, userMsg]);
+
+      let newMessages: BuilderMessage[] = [];
       let newDraft = currentDraft;
       let newAssumptions = currentAssumptions;
       let newPhase: BuilderPhase = "building";
@@ -408,66 +455,111 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
       let newErrors: ScenarioValidationError[] = [];
       let newPendingQuestion: PendingQuestion | null = null;
 
-      // Process text response
-      if (response.text) {
-        newMessages.push({ id: newId(), role: "bot", text: response.text });
-      }
+      // We make at most 1 + MAX_UPDATE_RETRIES LLM calls total.
+      // On each loop we process the response; if update_scenario fails we
+      // inject the errors into the message list and loop again silently.
+      for (let attempt = 0; attempt <= MAX_UPDATE_RETRIES; attempt++) {
+        const response = await client.call({
+          role: "scenario_builder",
+          messages,
+          tools: BUILDER_TOOLS,
+          sessionId: "builder",
+        });
 
-      // Process tool calls sequentially
-      for (const tc of response.toolCalls) {
-        if (tc.tool === "update_scenario") {
-          const toolResult = handleUpdateScenario(
-            tc.params,
-            newDraft,
-            newAssumptions,
-          );
-          if (toolResult.ok) {
-            newDraft = toolResult.draft;
-            newAssumptions = toolResult.assumptions;
-          } else {
-            const errText =
-              "I encountered validation errors:\n" +
-              toolResult.errors
-                .map((e) => `- [${e.source}] ${e.path}: ${e.message}`)
-                .join("\n") +
-              "\n\nPlease fix these issues.";
-            newMessages.push({ id: newId(), role: "bot", text: errText });
-          }
-        } else if (tc.tool === "mark_complete") {
-          const completeResult = handleMarkComplete(newDraft);
-          if (completeResult.ok) {
-            newPhase = "complete";
-            newYaml = completeResult.yamlStr;
-            newPendingQuestion = null; // completed scenario has no pending question
-          } else {
-            const errText =
-              "The scenario has validation errors that need fixing before it can be downloaded:\n" +
-              completeResult.errors
-                .map((e) => `- [${e.source}] ${e.path}: ${e.message}`)
-                .join("\n");
-            newMessages.push({ id: newId(), role: "bot", text: errText });
-            newErrors = completeResult.errors;
-          }
-        } else if (tc.tool === "send_message") {
-          // Client-side only — no LLM round-trip
-          const message = (tc.params["message"] as string | undefined) ?? "";
-          if (message) {
-            newMessages.push({ id: newId(), role: "bot", text: message });
-          }
-        } else if (tc.tool === "ask_question") {
-          // Client-side only — set pendingQuestion; last call wins per LLD
-          const question = (tc.params["question"] as string | undefined) ?? "";
-          const options = (tc.params["options"] as string[] | undefined) ?? [];
-          if (question && options.length >= 2) {
-            // Append question as a persistent bot message
-            newMessages.push({ id: newId(), role: "bot", text: question });
-            // Last ask_question call wins
-            newPendingQuestion = { question, options };
+        // Reset per-attempt accumulators (we only keep the last successful pass)
+        const attemptMessages: BuilderMessage[] = [];
+        let updateFailed = false;
+        let failureErrors: ScenarioValidationError[] = [];
+
+        if (response.text) {
+          attemptMessages.push({
+            id: newId(),
+            role: "bot",
+            text: response.text,
+          });
+        }
+
+        for (const tc of response.toolCalls) {
+          if (tc.tool === "update_scenario") {
+            const result = handleUpdateScenario(
+              tc.params,
+              newDraft,
+              newAssumptions,
+            );
+            if (result.ok) {
+              newDraft = result.draft;
+              newAssumptions = result.assumptions;
+            } else {
+              updateFailed = true;
+              failureErrors = result.errors;
+            }
+          } else if (tc.tool === "mark_complete") {
+            const result = handleMarkComplete(newDraft);
+            if (result.ok) {
+              newPhase = "complete";
+              newYaml = result.yamlStr;
+              newPendingQuestion = null;
+            } else {
+              newErrors = result.errors;
+              attemptMessages.push({
+                id: newId(),
+                role: "bot",
+                text:
+                  "The scenario has validation errors that need fixing:\n" +
+                  result.errors
+                    .map((e) => `- ${e.path}: ${e.message}`)
+                    .join("\n"),
+              });
+            }
+          } else if (tc.tool === "send_message") {
+            const msg = (tc.params["message"] as string | undefined) ?? "";
+            if (msg)
+              attemptMessages.push({ id: newId(), role: "bot", text: msg });
+          } else if (tc.tool === "ask_question") {
+            const q = (tc.params["question"] as string | undefined) ?? "";
+            const opts = (tc.params["options"] as string[] | undefined) ?? [];
+            if (q && opts.length >= 2) {
+              attemptMessages.push({ id: newId(), role: "bot", text: q });
+              newPendingQuestion = { question: q, options: opts };
+            }
           }
         }
+
+        if (updateFailed && attempt < MAX_UPDATE_RETRIES) {
+          // Silent retry: inject errors as a user message and loop again.
+          // Discard any messages from this attempt — user never sees them.
+          messages = [
+            ...messages,
+            {
+              role: "user" as const,
+              content:
+                "update_scenario validation failed. Fix all errors and call update_scenario again:\n" +
+                JSON.stringify(failureErrors, null, 2),
+            },
+          ];
+          continue;
+        }
+
+        // Commit this attempt's messages (success, or final failed attempt)
+        newMessages = [...newMessages, ...attemptMessages];
+
+        if (updateFailed) {
+          // All retries exhausted — show a brief, friendly message
+          const fields = [
+            ...new Set(failureErrors.map((e) => e.path.split(".")[0])),
+          ];
+          newMessages.push({
+            id: newId(),
+            role: "bot",
+            text:
+              `I couldn't apply that change after ${MAX_UPDATE_RETRIES + 1} attempts ` +
+              `(fields: ${fields.join(", ")}). Try asking me to simplify that section.`,
+          });
+        }
+
+        break; // success or exhausted — stop looping
       }
 
-      // 4. Commit all state changes atomically
       setState((prev) => ({
         ...prev,
         phase:
@@ -492,7 +584,7 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
           ...prev.messages,
           {
             id: newId(),
-            role: "bot",
+            role: "bot" as const,
             text: `Something went wrong: ${msg}. Please try again.`,
           },
         ],
