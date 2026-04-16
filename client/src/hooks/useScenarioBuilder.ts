@@ -28,6 +28,12 @@ export interface ScenarioBuilderState {
   validatedYaml: string | null;
   validationErrors: ScenarioValidationError[];
   thinking: boolean;
+  pendingQuestion: PendingQuestion | null;
+}
+
+export interface PendingQuestion {
+  question: string;
+  options: string[];
 }
 
 export interface UseScenarioBuilderReturn {
@@ -47,6 +53,13 @@ CONVERSATION PRINCIPLES:
   the rest, and tell the user what was assumed.
 - Call update_scenario after each meaningful chunk of new information — don't wait until everything
   is settled. The user can see the scenario take shape live as you call this tool.
+- After calling update_scenario, call send_message to tell the user what was built and prompt
+  for the next piece of information you need to continue building the scenario.
+- Use ask_question when the user needs to choose between specific alternatives (e.g. difficulty,
+  incident type, number of personas). Keep option labels 1–5 words. The user may ignore options
+  and type freely; handle either response gracefully. Do not call ask_question more than once per turn.
+- Do NOT put conversational text inside update_scenario or mark_complete parameters.
+  Use send_message for all communication.
 - Ask one focused question at a time. Never ask a list of five questions at once.
 - For derived fields (id, title, tags) — derive them from context, never ask the user.
 - When the scenario feels complete, summarise what was built and assumptions made, then call mark_complete.
@@ -228,6 +241,7 @@ function makeInitialState(): ScenarioBuilderState {
     validatedYaml: null,
     validationErrors: [],
     thinking: false,
+    pendingQuestion: null,
   };
 }
 
@@ -360,13 +374,14 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
   // ── sendMessage ───────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async (text: string): Promise<void> => {
-    // 1. Append user message and set thinking
+    // 1. Append user message, clear pendingQuestion, set thinking
     const userMsg: BuilderMessage = { id: newId(), role: "user", text };
     setState((prev) => ({
       ...prev,
       phase: prev.phase === "idle" ? "building" : prev.phase,
       messages: [...prev.messages, userMsg],
       thinking: true,
+      pendingQuestion: null, // always clear on any new message
     }));
 
     // Read current values from ref (sync, always up-to-date)
@@ -391,13 +406,14 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
       let newPhase: BuilderPhase = "building";
       let newYaml: string | null = null;
       let newErrors: ScenarioValidationError[] = [];
+      let newPendingQuestion: PendingQuestion | null = null;
 
       // Process text response
       if (response.text) {
         newMessages.push({ id: newId(), role: "bot", text: response.text });
       }
 
-      // Process tool calls
+      // Process tool calls sequentially
       for (const tc of response.toolCalls) {
         if (tc.tool === "update_scenario") {
           const toolResult = handleUpdateScenario(
@@ -409,7 +425,6 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
             newDraft = toolResult.draft;
             newAssumptions = toolResult.assumptions;
           } else {
-            // Feed error back as a user message (tool result)
             const errText =
               "I encountered validation errors:\n" +
               toolResult.errors
@@ -423,6 +438,7 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
           if (completeResult.ok) {
             newPhase = "complete";
             newYaml = completeResult.yamlStr;
+            newPendingQuestion = null; // completed scenario has no pending question
           } else {
             const errText =
               "The scenario has validation errors that need fixing before it can be downloaded:\n" +
@@ -431,6 +447,22 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
                 .join("\n");
             newMessages.push({ id: newId(), role: "bot", text: errText });
             newErrors = completeResult.errors;
+          }
+        } else if (tc.tool === "send_message") {
+          // Client-side only — no LLM round-trip
+          const message = (tc.params["message"] as string | undefined) ?? "";
+          if (message) {
+            newMessages.push({ id: newId(), role: "bot", text: message });
+          }
+        } else if (tc.tool === "ask_question") {
+          // Client-side only — set pendingQuestion; last call wins per LLD
+          const question = (tc.params["question"] as string | undefined) ?? "";
+          const options = (tc.params["options"] as string[] | undefined) ?? [];
+          if (question && options.length >= 2) {
+            // Append question as a persistent bot message
+            newMessages.push({ id: newId(), role: "bot", text: question });
+            // Last ask_question call wins
+            newPendingQuestion = { question, options };
           }
         }
       }
@@ -450,6 +482,7 @@ export function useScenarioBuilder(): UseScenarioBuilderReturn {
         validatedYaml: newYaml ?? prev.validatedYaml,
         validationErrors: newErrors,
         thinking: false,
+        pendingQuestion: newPendingQuestion,
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "An error occurred";

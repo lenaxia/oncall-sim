@@ -22,6 +22,11 @@ export function ScenarioBuilderScreen({ onBack }: ScenarioBuilderScreenProps) {
     onBack();
   }
 
+  // Clicking an option clears pendingQuestion (inside sendMessage) and sends the label
+  function handleOptionSelect(option: string) {
+    void sendMessage(option);
+  }
+
   return (
     <div className="h-full flex flex-col bg-sim-bg overflow-hidden">
       {/* Header */}
@@ -69,6 +74,8 @@ export function ScenarioBuilderScreen({ onBack }: ScenarioBuilderScreenProps) {
             messages={state.messages}
             thinking={state.thinking}
             onSend={sendMessage}
+            pendingQuestion={state.pendingQuestion}
+            onOptionSelect={handleOptionSelect}
           />
         </div>
       </div>

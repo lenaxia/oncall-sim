@@ -127,6 +127,24 @@ export class MockProvider implements LLMClient {
       if (match) return this._toBuilderResponse(match);
     }
 
+    // "ask_question" trigger fires when the user says "difficulty" or "question"
+    if (
+      content.toLowerCase().includes("difficulty") ||
+      content.toLowerCase().includes("question")
+    ) {
+      const match = responses.find((r) => r.trigger === "ask_question");
+      if (match) return this._toBuilderResponse(match);
+    }
+
+    // "send_message" trigger fires when the user says "message" or "tell"
+    if (
+      content.toLowerCase().includes("tell me") ||
+      content.toLowerCase().includes("send message")
+    ) {
+      const match = responses.find((r) => r.trigger === "send_message");
+      if (match) return this._toBuilderResponse(match);
+    }
+
     // "generic" trigger matches any first message
     const generic = responses.find((r) => r.trigger === "generic");
     if (generic) return this._toBuilderResponse(generic);

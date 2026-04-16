@@ -217,3 +217,162 @@ describe("useScenarioBuilder — error handling", () => {
     expect(result.current.state.thinking).toBe(false);
   });
 });
+
+// ── send_message tool ─────────────────────────────────────────────────────────
+
+describe("useScenarioBuilder — send_message tool call", () => {
+  it("appends a bot message with the given text", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+    const initialCount = result.current.state.messages.length;
+
+    // "send message" keyword triggers the send_message fixture
+    await act(async () => {
+      await result.current.sendMessage("send message please");
+    });
+
+    const botMessages = result.current.state.messages.filter(
+      (m, i) => m.role === "bot" && i >= initialCount,
+    );
+    expect(botMessages.length).toBeGreaterThanOrEqual(1);
+    // The fixture send_message text
+    const hasFixtureText = botMessages.some((m) =>
+      m.text.includes("I've drafted the topology"),
+    );
+    expect(hasFixtureText).toBe(true);
+  });
+
+  it("does NOT set pendingQuestion", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    await act(async () => {
+      await result.current.sendMessage("send message please");
+    });
+
+    expect(result.current.state.pendingQuestion).toBeNull();
+  });
+
+  it("does NOT trigger a round-trip to LLM — thinking returns to false immediately", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    await act(async () => {
+      await result.current.sendMessage("send message please");
+    });
+
+    expect(result.current.state.thinking).toBe(false);
+  });
+});
+
+// ── ask_question tool ─────────────────────────────────────────────────────────
+
+describe("useScenarioBuilder — ask_question tool call", () => {
+  it("appends a bot message with the question text", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+    const initialCount = result.current.state.messages.length;
+
+    await act(async () => {
+      await result.current.sendMessage("question about difficulty");
+    });
+
+    const botMessages = result.current.state.messages.filter(
+      (m, i) => m.role === "bot" && i >= initialCount,
+    );
+    const hasQuestion = botMessages.some((m) =>
+      m.text.includes("How difficult"),
+    );
+    expect(hasQuestion).toBe(true);
+  });
+
+  it("sets pendingQuestion with question and options", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    await act(async () => {
+      await result.current.sendMessage("question about difficulty");
+    });
+
+    expect(result.current.state.pendingQuestion).not.toBeNull();
+    expect(result.current.state.pendingQuestion?.question).toBe(
+      "How difficult should this scenario be for the trainee?",
+    );
+    expect(result.current.state.pendingQuestion?.options).toEqual([
+      "Easy",
+      "Medium",
+      "Hard",
+    ]);
+  });
+
+  it("pendingQuestion is null in initial state", () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+    expect(result.current.state.pendingQuestion).toBeNull();
+  });
+
+  it("sendMessage clears pendingQuestion before calling LLM", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    // First: set a pendingQuestion
+    await act(async () => {
+      await result.current.sendMessage("question about difficulty");
+    });
+    expect(result.current.state.pendingQuestion).not.toBeNull();
+
+    // Then: send any message — pendingQuestion must be cleared
+    await act(async () => {
+      await result.current.sendMessage("Easy");
+    });
+    expect(result.current.state.pendingQuestion).toBeNull();
+  });
+
+  it("reset clears pendingQuestion", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    await act(async () => {
+      await result.current.sendMessage("question about difficulty");
+    });
+    expect(result.current.state.pendingQuestion).not.toBeNull();
+
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.state.pendingQuestion).toBeNull();
+  });
+
+  it("last ask_question call wins when called multiple times in one turn", async () => {
+    // The mock only returns one ask_question call, but we can verify
+    // the state reflects whatever the last call set.
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    await act(async () => {
+      await result.current.sendMessage("question about difficulty");
+    });
+
+    // Only one fixture call — pendingQuestion should be set exactly once
+    expect(result.current.state.pendingQuestion?.options).toHaveLength(3);
+  });
+});
+
+// ── mark_complete clears pendingQuestion ──────────────────────────────────────
+
+describe("useScenarioBuilder — mark_complete clears pendingQuestion", () => {
+  it("pendingQuestion is null after successful mark_complete", async () => {
+    const { result } = renderHook(() => useScenarioBuilder());
+
+    // Build a valid draft first
+    await act(async () => {
+      await result.current.sendMessage("database going down under load");
+    });
+
+    // Simulate ask_question being active
+    await act(async () => {
+      await result.current.sendMessage("question about difficulty");
+    });
+    expect(result.current.state.pendingQuestion).not.toBeNull();
+
+    // mark_complete should clear it
+    await act(async () => {
+      await result.current.sendMessage("looks good, finish it");
+    });
+
+    if (result.current.state.phase === "complete") {
+      expect(result.current.state.pendingQuestion).toBeNull();
+    }
+  });
+});

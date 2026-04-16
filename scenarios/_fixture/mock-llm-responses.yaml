@@ -173,3 +173,18 @@ scenario_builder_responses:
     tool_calls:
       - tool: mark_complete
         params: {}
+
+  - trigger: "send_message"
+    text: ""
+    tool_calls:
+      - tool: send_message
+        params:
+          message: "I've drafted the topology and incident. What difficulty level should this scenario be?"
+
+  - trigger: "ask_question"
+    text: ""
+    tool_calls:
+      - tool: ask_question
+        params:
+          question: "How difficult should this scenario be for the trainee?"
+          options: ["Easy", "Medium", "Hard"]

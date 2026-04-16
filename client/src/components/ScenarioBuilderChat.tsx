@@ -4,7 +4,10 @@
 import React, { useRef, useEffect, useState } from "react";
 import { ThinkingDots } from "./ScenarioCanvas";
 import { Button } from "./Button";
-import type { BuilderMessage } from "../hooks/useScenarioBuilder";
+import type {
+  BuilderMessage,
+  PendingQuestion,
+} from "../hooks/useScenarioBuilder";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -12,6 +15,8 @@ interface ScenarioBuilderChatProps {
   messages: BuilderMessage[];
   thinking: boolean;
   onSend: (text: string) => void;
+  pendingQuestion?: PendingQuestion | null;
+  onOptionSelect?: (option: string) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -20,6 +25,8 @@ export function ScenarioBuilderChat({
   messages,
   thinking,
   onSend,
+  pendingQuestion = null,
+  onOptionSelect = () => {},
 }: ScenarioBuilderChatProps) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -80,6 +87,26 @@ export function ScenarioBuilderChat({
 
         <div ref={bottomRef} />
       </div>
+
+      {/* Option buttons — shown when LLM asks a question and not thinking */}
+      {pendingQuestion && !thinking && (
+        <div className="flex-shrink-0 border-t border-sim-border px-4 pt-3 pb-1 flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            {pendingQuestion.options.map((option) => (
+              <button
+                key={option}
+                onClick={() => onOptionSelect(option)}
+                className="text-xs px-3 py-1.5 rounded border border-sim-accent text-sim-accent hover:bg-sim-accent/10 transition-colors"
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-sim-text-faint">
+            Or type your own answer below
+          </span>
+        </div>
+      )}
 
       {/* Input area */}
       <div className="flex-shrink-0 border-t border-sim-border px-4 py-3 flex gap-2">

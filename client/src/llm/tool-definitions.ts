@@ -484,4 +484,51 @@ export const BUILDER_TOOLS: LLMToolDefinition[] = [
       properties: {},
     },
   },
+  {
+    name: "send_message",
+    description:
+      "Send a message to the user. Use this to: explain what you just built, " +
+      "tell the user what assumptions were made, or ask for the next piece of " +
+      "information you need to continue building the scenario. " +
+      "Call this after update_scenario to explain the patch and prompt the user. " +
+      "Do NOT put conversational text inside update_scenario or mark_complete parameters.",
+    parameters: {
+      type: "object",
+      required: ["message"],
+      properties: {
+        message: {
+          type: "string",
+          description: "The message to display to the user.",
+        },
+      },
+    },
+  },
+  {
+    name: "ask_question",
+    description:
+      "Ask the user a focused question with selectable options. " +
+      "Use when the user needs to choose between specific alternatives " +
+      "(e.g. difficulty level, incident type, number of personas). " +
+      "Keep option labels short — 1 to 5 words each. " +
+      "The user may ignore the options and type a free-form reply instead; " +
+      "handle either response gracefully. " +
+      "Do not call ask_question more than once per turn.",
+    parameters: {
+      type: "object",
+      required: ["question", "options"],
+      properties: {
+        question: {
+          type: "string",
+          description: "The question to ask.",
+        },
+        options: {
+          type: "array",
+          description: "2 to 5 short option labels (1–5 words each).",
+          items: { type: "string" },
+          minItems: 2,
+          maxItems: 5,
+        },
+      },
+    },
+  },
 ];

@@ -1,8 +1,8 @@
 # On-Call Training Simulator — LLM Implementation Guide
 
 **Version:** 1.4
-**Last Updated:** 2026-04-15
-**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.36), pipeline deployment progression complete, Phase 9 (debrief narrative) stub only, Phase 12 (scenario builder + upload, ScenarioValidator) complete (v1.0.38), builder schema/focus/CI fixes (v1.0.39)
+**Last Updated:** 2026-04-16
+**Project Status:** Phases 1–8 Complete, client-side engine migration complete (v1.0.36), pipeline deployment progression complete, Phase 9 (debrief narrative) stub only, Phase 12 (scenario builder + upload, ScenarioValidator) complete (v1.0.38), builder schema/focus/CI fixes (v1.0.39–1.0.40), builder send_message + ask_question tools (v1.0.41)
 
 ---
 
