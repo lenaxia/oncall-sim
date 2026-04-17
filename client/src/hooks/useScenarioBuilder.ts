@@ -160,19 +160,234 @@ PHASE 1 — Core incident (required first)
       "independent"      → unrelated, background noise
       Omit correlation on focal_service entirely.
 
-  component baseline values — must reflect the NORMAL, PRE-INCIDENT operating
-  state. The incident overlay drives values up or down from this baseline.
-  Setting baselines too high means the dashboard will look alarming before the
-  incident even starts.
-    - utilization, connection_utilization, lambda_utilization: typical healthy
-      values are 0.2–0.5. Never author these above 0.6 unless the scenario
-      specifically requires a pre-stressed system.
-    - For connection pool incidents: connection_utilization should be ~0.3–0.4
-      at baseline. The saturation incident overlay will drive it to the
-      authored magnitude (e.g. 0.98) over the ramp duration.
+  component baseline values — DESIGN PRINCIPLE: baselines represent normal,
+  healthy, steady-state operation on a typical day. ALL metric degradation is
+  driven exclusively by the incident overlay starting at onset_second. If the
+  dashboard looks alarming at t=0, the scenario is broken — the trainee has no
+  baseline to compare against and cannot tell when something changes.
+
+  How the chart decides green vs. red:
+    Capacity metrics (connection_pool_used, cpu_utilization, concurrent_executions,
+    write_capacity_used, read_capacity_used): alarm threshold = capacity × 0.85.
+    The chart stays BLUE (green) as long as the current value is below that threshold.
+    → utilization / connection_utilization / lambda_utilization must be < 0.85
+      to keep the chart blue at baseline.
+    → Keep these fields at 0.3–0.6 for a healthy-looking system with room to grow.
+      Values above 0.75 mean the system looks almost-at-threshold before the
+      incident starts, which confuses trainees.
+
+    Error/latency metrics: baselines are hardcoded by the engine (e.g. error_rate
+    baseline = 0.5%). These cannot be set by the author and are always in the green
+    at t=0. No action needed.
+
+  Practical defaults for a healthy pre-incident system:
+    - ecs_cluster / ec2_fleet utilization: 0.35–0.50 (35–50% CPU)
+    - rds connection_utilization: 0.25–0.45 (well below the 85% alarm threshold)
+    - rds utilization (CPU): 0.20–0.40
+    - lambda lambda_utilization: 0.30–0.50
+    - dynamodb write_utilization / read_utilization: 0.30–0.55
+    - elasticache utilization: 0.20–0.40
+
+  EXCEPTION — long-running / slow-burn scenarios:
+    Some scenarios intentionally start with a system already partially degraded
+    (e.g. a memory leak running for 3 days, a queue backing up since last night).
+    In these cases:
+    - Use gradual_degradation overlay with a negative onset_second (e.g. -10800
+      for "started 3 hours ago") so the degradation is visible in the pre-incident
+      history window
+    - Set the component baseline to a low healthy value; the overlay will have
+      already driven it partway toward saturation by t=0
+    - Make this explicit in the scenario description so the trainee understands
+      the context when they review pre-incident metrics
+
+  typical_rps — REQUIRED on focal_service when it has components. Used to
+  derive baselines for request_rate, throughput, and other traffic metrics.
+  Omit only if the focal service has no components at all.
+
+  incidents[] — only incidents on focal_service drive metric overlays. Incidents
+  on upstream or downstream nodes are silently ignored by the engine. Put ALL
+  incidents on focal_service.
+
+  propagation_direction — how the blast radius propagates:
+    "upstream"   → callers of the affected component feel the impact
+                   (default; use for: DB failure, connection exhaustion, CPU saturation)
+    "downstream" → dependencies of the affected component are flooded
+                   (use for: DDoS on ALB/gateway floods backend services)
+    "both"       → propagates in both directions
+                   (use for: cache stampede, thundering herd)
+  Default is "upstream" — omit this field unless the scenario specifically
+  requires downstream or bidirectional propagation.
+
+  magnitude semantics — depends on onset_overlay:
+    "saturation"         → fraction of capacity to saturate TO (0 < magnitude ≤ 1.0)
+                           e.g. magnitude: 0.95 means saturate to 95% of max_connections
+    "sudden_drop"        → fraction the metric drops TO (0 < magnitude < 1.0)
+                           e.g. magnitude: 0.1 means metric falls to 10% of baseline
+    "spike_and_sustain"  → multiplier passed to component-specific peak formula
+                           e.g. magnitude: 3.0 means ~3× spike on most metrics
+    "gradual_degradation" → same multiplier semantics as spike_and_sustain
 
   lag_seconds / impact_factor — used by the engine to propagate incident effects
   to related services. These are fine to set; they do NOT affect baseline state.
+
+  onset_overlay — what to actually author:
+  The engine overrides onset_overlay on a per-metric basis regardless of what you
+  write. What you author determines the PRIMARY incident shape; the engine maps
+  each metric to the most appropriate overlay for its type. Guidelines:
+
+    "saturation"          → connection pools, capacity limits, concurrency limits
+                            Use when a resource fills up gradually (RDS connections,
+                            Lambda concurrency, DynamoDB capacity)
+    "spike_and_sustain"   → CPU spikes, error rate jumps, latency degradation
+                            Use when a metric suddenly jumps and stays high
+    "gradual_degradation" → memory leaks, slow queue buildup, creeping degradation
+                            Use when a metric climbs slowly over minutes/hours
+    "sudden_drop"         → cache hit rate collapse, availability drop, cert expiry
+                            Use when a metric falls abruptly
+
+  The engine applies its own overlay logic per metric archetype regardless:
+    - RDS connection_pool_used is always saturation
+    - Lambda concurrent_executions is always saturation
+    - DynamoDB write/read capacity is always saturation
+    - DynamoDB write_throttles is always spike_and_sustain
+    - cert_expiry is sudden_drop only (any other value produces no effect)
+  So for those types, the onset_overlay value is primarily documentation.
+  For everything else — including cpu, error_rate, latency, memory, queue_depth,
+  cache_hit_rate, and throughput — the authored value IS respected.
+
+  ramp_duration_seconds — defaults to 30 seconds if omitted. Only set explicitly
+  when the scenario requires a specific ramp speed:
+    Fast incident (< 1 min): ramp_duration_seconds: 30 (default)
+    Gradual saturation (5–10 min): ramp_duration_seconds: 300–600
+    Slow leak (hours): ramp_duration_seconds: 3600+
+
+  end_second — omit for a sustained incident (never auto-recovers during the sim).
+  Set to a specific sim-clock second to make the incident self-resolve:
+    e.g. end_second: 900  → incident resolves 15 minutes in
+  After end_second, the metric series reverts toward baseline. Use this for
+  transient incidents where the correct fix is to wait for auto-recovery vs.
+  take an action.
+
+  Component type gotchas:
+    s3 and scheduler produce ZERO metrics — they cannot be the affected_component
+    of a meaningful incident. The incident will apply no overlay.
+    kinesis_stream.shard_count is parsed but has NO effect on any derived metric.
+    Throughput is derived from typical_rps, not shard count.
+
+  Archetypes that NEVER appear in the auto-generated ops dashboard:
+    memory_heap, conversion_rate, active_users, custom
+  These archetypes exist in the alarm system but no component type produces
+  them from the graph walk. Use a different signal or accept the trainee won't
+  see a time-series chart for them.
+
+  Archetypes available from specific component types:
+    availability        → ecs_cluster, ec2_fleet, lambda, rds
+    thread_count        → ecs_cluster
+    disk_usage          → ec2_fleet (set disk_utilization on the component;
+                          defaults to 0.4 / 40% if omitted)
+    disk_iops           → ec2_fleet (derived from typical_rps)
+    network_in_bytes    → ec2_fleet (derived from typical_rps)
+    network_out_bytes   → ec2_fleet (derived from typical_rps)
+
+═══════════════════════════════════════════════════════════════
+TIMING — all time values are absolute sim-clock seconds
+═══════════════════════════════════════════════════════════════
+
+Every time field in the scenario uses the same coordinate system:
+  t=0   = simulation start (the moment the trainee's session begins)
+  t<0   = pre-incident history window (visible as backlog, trainee cannot act)
+  t>0   = live simulation
+
+Fields that use this system:
+  incidents[].onset_second       chat.messages[].at_second
+  alarms[].onset_second          ticketing[].at_second
+  log_patterns[].from/to_second  email[].at_second
+  cicd.deployed_at_sec           cicd.stages[].deployed_at_sec
+  background_logs[].from/to_second
+
+COORDINATION RULE — always compute at_second values relative to onset_second:
+  If incident onset_second is 300 (5 minutes in) and you want a chat message
+  "2 minutes after the incident starts", set at_second: 480 (300 + 120).
+  If you want a "this is already on fire" alarm page right at onset, use
+  onset_second on the alarm equal to the incident's onset_second.
+
+PRE-INCIDENT HISTORY (negative at_second):
+  Use negative values to plant evidence for the trainee to find:
+  - Chat message at at_second: -600  → team notice 10 minutes ago
+  - Ticket at at_second: -1800       → opened 30 minutes before sim start
+  - CI/CD deploys at deployed_at_sec: -1200 → "bad deploy 20 min ago"
+  - CI/CD previous version at deployed_at_sec: -86400 → "last stable deploy 1 day ago"
+
+═══════════════════════════════════════════════════════════════
+ALARMS — authoring rules
+═══════════════════════════════════════════════════════════════
+
+  auto_fire: true (default)
+    The alarm fires automatically when the metric actually breaches threshold.
+    onset_second is IGNORED — do not set it. The alarm fires when the metric
+    series crosses the threshold, which is determined by the incident overlay.
+
+  auto_fire: false
+    The alarm fires as a scripted event at exactly onset_second. Use this when
+    you want the alarm to fire at a specific sim-clock moment regardless of
+    metric values (e.g. a narrative alarm, a manually-triggered alert).
+    Set onset_second explicitly to the sim-clock second you want it to fire.
+
+  auto_page: true + page_message
+    Automatically injects a PagerDuty-style page to the trainee (email + chat
+    in #incidents). This is how you create the "you've just been paged" moment.
+    Use on the primary SEV1 alarm. Set page_message to a terse, actionable alert.
+    auto_fire: true alarms with auto_page will page the trainee as soon as the
+    metric breaches — typically a few minutes after incident onset.
+
+  The engine also auto-generates alarms for metrics that don't have one.
+  Author explicit alarms for the metrics that matter most to the scenario;
+  the engine fills in the rest. Avoid duplicating what the engine will auto-generate.
+
+═══════════════════════════════════════════════════════════════
+LOG PATTERNS — authoring rules
+═══════════════════════════════════════════════════════════════
+
+  Message variable substitution — ONLY {n} is substituted at runtime.
+    {n} → the zero-based iteration counter as a string ("0", "1", "2" ...)
+    Do NOT use \${variable}, \${txn_id}, \${amount}, or any other template syntax.
+    Those appear literally in the log output and look broken.
+    Good: "Connection timeout acquiring pool slot (attempt {n})"
+    Bad:  "Payment failed: transaction_id=\${txn_id}, amount=\${amount}"
+
+  from_second / to_second — both are absolute sim-clock seconds (same coordinate
+  system as everything else). Use from_second < incident.onset_second for
+  "normal traffic" patterns, from_second ≈ onset_second for "degradation begins"
+  patterns, and from_second well after onset for sustained error patterns.
+
+  count — cap the total number of entries. Without it, entries generate
+  continuously until to_second. Use count to avoid flooding the log panel.
+
+  jitter_seconds — adds realism. For error logs during an incident, use 5–15s
+  jitter. For heartbeat/health logs, use 1–3s or omit.
+
+  seed — set an integer seed for deterministic jitter (same logs every run).
+  Omit to use random jitter (varies per session).
+
+═══════════════════════════════════════════════════════════════
+BACKGROUND LOGS — profile selection guide
+═══════════════════════════════════════════════════════════════
+
+  Exactly 4 profiles are available. Choose based on the service's role:
+
+  "java_web_service"  → Java/Spring service with HikariCP, JDBC, GC logs
+                        Use for: payment services, billing, any JVM service
+  "nodejs_api"        → Node.js REST API with Redis caching, event loop logs
+                        Use for: BFF layers, e-commerce APIs, checkout services
+  "python_worker"     → Celery/async worker with queue depth, task logs
+                        Use for: SQS consumers, batch processors, data pipelines
+  "sidecar_proxy"     → Envoy/service mesh sidecar with mTLS, circuit breaker
+                        Use for: any service with a service mesh sidecar
+
+  Generate one entry per service in the topology (focal + all upstream +
+  all downstream). from_second: 0, to_second: (duration_minutes × 60).
+  density: "high" for the focal service, "medium" for upstream,
+  "low" for downstream / background services.
 
 PHASE 2 — Personas
   Suggest 2–3 roles that make sense for the scenario (e.g. for a DB incident:
@@ -180,11 +395,24 @@ PHASE 2 — Personas
   user hasn't specified roles.
 
   PERSONA DEFAULTS — apply unless user says otherwise:
-  - silent_until_contacted: true
-  - initiates_contact: false
+  - silent_until_contacted: true   ← ALWAYS the default
+  - initiates_contact: false       ← ALWAYS the default
   - cooldown_seconds: 120
-  Only set initiates_contact: true if there is a clear realistic reason
-  (e.g. an on-call manager paging at incident start, an alert bot).
+
+  DESIGN PRINCIPLE — the trainee drives the sim, not the personas.
+  The scenario should feel like the trainee just got paged and is investigating.
+  Personas are subject-matter experts waiting to be consulted, not co-workers
+  who constantly ping the trainee. Over-eager personas make the sim feel like
+  the answer is being handed to the trainee.
+
+  Only set initiates_contact: true for personas with a specific, realistic
+  reason to reach out unprompted — e.g.:
+    - An on-call manager who pages the team at incident start
+    - An automated alert bot that notifies #incidents
+    - A service owner who notices their dashboard and speaks up first
+  At most 1 persona per scenario should have initiates_contact: true.
+  If no persona has a genuine reason to page first, leave all as false and
+  let the PagerDuty auto-page (auto_page: true alarm) be the opening event.
 
 PHASE 3 — Remediation + evaluation
   Ask: what is the correct fix? what are the red herrings?
@@ -252,19 +480,22 @@ no metric signal in the ops dashboard and makes the scenario untrainable.
 
 Choose based on component type and incident:
   rds / connection pool  → connection_pool_used
-  rds / query perf       → request_rate, error_rate
-  ecs_cluster            → cpu_utilization, error_rate, fault_rate
+  rds / query perf       → p50_latency_ms, p99_latency_ms, error_rate
+  rds / availability     → availability
+  ecs_cluster            → cpu_utilization, error_rate, fault_rate, memory_jvm, thread_count
+  ecs_cluster avail      → availability
+  ec2_fleet              → cpu_utilization, error_rate, disk_usage, disk_iops, network_in_bytes, network_out_bytes
+  ec2_fleet avail        → availability
   lambda                 → concurrent_executions, error_rate
-  elasticache            → cache_hit_rate
+  lambda avail           → availability
+  elasticache            → cache_hit_rate, cpu_utilization
   sqs_queue              → queue_depth, queue_age_ms
-  kinesis_stream         → queue_depth
+  kinesis_stream         → queue_depth, throughput_bytes
   dynamodb               → write_capacity_used, read_capacity_used, write_throttles
-  availability           → availability
-  jvm                    → memory_jvm, memory_heap, thread_count
-  network                → network_in_bytes, network_out_bytes, throughput_bytes
-  disk                   → disk_usage, disk_iops
-  tls / cert             → cert_expiry
-  business               → conversion_rate, active_users`;
+  load_balancer          → request_rate, error_rate, fault_rate, p95_latency_ms, cert_expiry
+  api_gateway            → request_rate, error_rate, fault_rate, p95_latency_ms, cert_expiry
+  tls / cert expiry      → cert_expiry (sudden_drop only)
+  business metrics       → conversion_rate, active_users (no auto-dashboard chart)`;
 
   return (
     SYSTEM_PROMPT_BASE + "\n" + buildSchemaReference() + "\n" + metricIdSection

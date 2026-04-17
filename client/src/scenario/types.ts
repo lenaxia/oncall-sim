@@ -77,6 +77,7 @@ export interface Ec2FleetComponent extends ServiceComponentBase {
   type: "ec2_fleet";
   instanceCount: number;
   utilization: number;
+  diskUtilization?: number; // fraction [0,1], optional — defaults to 0.4
 }
 export interface LambdaComponent extends ServiceComponentBase {
   type: "lambda";

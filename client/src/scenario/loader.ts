@@ -725,6 +725,7 @@ function transformComponent(c: RawComponent): ServiceComponent {
         type: "ec2_fleet",
         instanceCount: c.instance_count,
         utilization: c.utilization,
+        diskUtilization: c.disk_utilization,
       };
     case "lambda":
       return {

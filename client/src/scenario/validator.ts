@@ -180,6 +180,16 @@ export function validateCrossReferences(
     }
   }
 
+  for (let i = 0; i < scenario.evaluation.red_herrings.length; i++) {
+    const rh = scenario.evaluation.red_herrings[i];
+    if (!VALID_ACTION_TYPES.has(rh.action)) {
+      err(
+        `evaluation.red_herrings[${i}].action`,
+        `'${rh.action}' is not a valid ActionType and will never match at debrief. Valid: ${[...VALID_ACTION_TYPES].join(", ")}`,
+      );
+    }
+  }
+
   // ── New rules: component graph validation ─────────────────────────────────
 
   const allServiceNodes = [

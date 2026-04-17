@@ -315,6 +315,7 @@ export const ComponentSchema = z.discriminatedUnion("type", [
     type: z.literal("ec2_fleet"),
     instance_count: z.number().int().positive(),
     utilization: z.number().min(0).max(1),
+    disk_utilization: z.number().min(0).max(1).optional(),
   }),
   z.object({
     ...ComponentBaseSchema,
@@ -679,8 +680,10 @@ Optional ServiceNode fields:
   impact_factor: number (0.0–1.0)   → how strongly this node is affected
 
   Component utilization/connection_utilization/lambda_utilization baselines:
-    → Use NORMAL healthy values (0.2–0.5). Never author > 0.6 at baseline.
-       Saturation/spike incidents drive values from baseline up to magnitude.
+    → Capacity metrics alarm at capacity × 0.85. Keep utilization fields at
+       0.3–0.6 so the chart starts blue with headroom before the incident.
+       Values above 0.75 look nearly at-threshold before t=0 and confuse trainees.
+    → Error/latency baselines are hardcoded by the engine — not author-controlled.
 
 ── INCIDENT ──────────────────────────────────────────────────
 {
@@ -691,13 +694,21 @@ Optional ServiceNode fields:
   onset_second: number,
   magnitude: number,
   propagation_direction: ${propagationDirs.map((v) => `"${v}"`).join(" | ")}   ← optional, default "upstream"
-  ramp_duration_seconds?: number,
-  end_second?: number
+  ramp_duration_seconds?: number,   ← defaults to 30s if omitted
+  end_second?: number               ← omit for sustained (never recovers); set to sim-clock second for self-resolving
 }
 magnitude rules:
-  saturation  → 0 < magnitude ≤ 1.0
+  saturation  → 0 < magnitude ≤ 1.0  (fraction of capacity to saturate TO)
   sudden_drop → 0 < magnitude < 1.0  (fraction the metric drops TO)
-  others      → magnitude > 0 (multiplier, e.g. 5.0 = 5× normal)
+  others      → magnitude > 0 (multiplier passed to per-component peak formula)
+
+onset_overlay is respected for most metrics. The engine hardcodes the overlay
+only where the metric is physically constrained:
+  connection_pool_used, write/read_capacity_used, concurrent_executions → always saturation
+  write_throttles → always spike_and_sustain
+  cert_expiry → sudden_drop only (any other value = no effect)
+For all other metrics (cpu, error_rate, latency, memory, queue_depth,
+cache_hit_rate, throughput) the authored onset_overlay is used directly.
 
 ── PERSONA ───────────────────────────────────────────────────
 {
@@ -732,7 +743,7 @@ ticketing is an ARRAY:
 {
   root_cause: string (non-empty),
   relevant_actions: [{ action: ActionType, why: string, service?: string, remediation_action_id?: string }],
-  red_herrings: [{ action: string, why: string }],
+  red_herrings: [{ action: ActionType, why: string }],
   debrief_context: string (non-empty)
 }
 
@@ -751,7 +762,16 @@ Examples:
   "Restart the service"               → "restart_service"
   "Scale up the cluster"              → "scale_cluster"
 
-red_herrings[].action may be a free-form description (e.g. "Scale up ECS to reduce CPU").
+relevant_actions[].service — include when the action is service-specific:
+  Include:  trigger_rollback, restart_service, scale_cluster, view_metric,
+            view_deployment_history, view_pipeline, search_logs, toggle_feature_flag
+  Omit for: ack_page, mark_resolved, update_ticket, post_chat_message, reply_email
+  service must exactly match the service name in the topology (e.g. "payment-service")
+
+red_herrings[].action — MUST also be a valid ActionType (same list as above).
+  Free-form descriptions like "Scale up the RDS instance" will never match
+  anything in the audit log and the red herring will never be detected.
+  Use the closest ActionType: "Scale up the RDS instance" → "scale_cluster"
 
 ── ALARM ─────────────────────────────────────────────────────
 { id, service, metric_id, condition, severity: ${alarmSeverities.map((v) => `"${v}"`).join("|")},
@@ -759,6 +779,10 @@ red_herrings[].action may be a free-form description (e.g. "Scale up ECS to redu
   onset_second?: number, page_message?: string }
 
 metric_id must be a registered archetype ID (see METRIC IDs section below).
+auto_fire: true  → fires when metric breaches threshold. onset_second is IGNORED.
+auto_fire: false → fires as a scripted event at exactly onset_second (absolute sim-clock seconds).
+auto_page: true  → injects a PagerDuty page (email + #incidents chat) when the alarm fires.
+                   Requires page_message. Use on the primary SEV1 alarm only.
 
 ── CICD — build automatically for deploy/rollback/config-change scenarios ───
 cicd: { pipelines: Pipeline[], deployments: Deployment[] }
@@ -853,8 +877,19 @@ log_patterns: [{
   id, level: ${logLevels.map((v) => `"${v}"`).join("|")}, service,
   message, interval_seconds: number (positive),
   from_second: number, to_second: number,
-  count?: number, jitter_seconds?: number
+  count?: number, jitter_seconds?: number, seed?: number
 }]
+
+message substitution — ONLY {n} (no dollar sign) is replaced at runtime with
+the zero-based iteration counter. Do NOT use \${variable} or any other template
+syntax — those appear literally in the log output.
+  Good: "Connection timeout acquiring pool slot (attempt {n})"
+  Bad:  "Payment failed: transaction_id=\${txn_id}"
+
+from/to_second are absolute sim-clock seconds (same as onset_second).
+Use from_second < onset_second for normal-traffic patterns.
+Use from_second ≈ onset_second for warning/degradation patterns.
+Set count to cap total entries; without it entries generate until to_second.
 
 ── BACKGROUND LOGS (auto-generated in Phase 5) ───────────────
 Generate one entry per service in the topology. Choose the most appropriate
@@ -864,6 +899,12 @@ background_logs: [{
   service, from_second: number, to_second: number,
   density?: ${bgLogDensities.map((v) => `"${v}"`).join("|")}
 }]
+
+Profile selection:
+  "java_web_service" → JVM services (HikariCP, JDBC, GC logs)
+  "nodejs_api"       → Node.js REST APIs (Redis, event loop)
+  "python_worker"    → Celery/async workers, SQS consumers, batch processors
+  "sidecar_proxy"    → Envoy/service mesh sidecars
 
 ── FEATURE FLAGS (only if user explicitly asks) ──────────────
 feature_flags: [{ id, label, default_on?: boolean, description?: string }]

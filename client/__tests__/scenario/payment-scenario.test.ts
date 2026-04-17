@@ -134,6 +134,8 @@ describe("payment-db-pool-exhaustion — upstream incident propagation", () => {
   it("p95_latency_ms (ecs_cluster metric) now has incident overlay from upstream propagation", async () => {
     // Before: blast radius was only [postgres] — ecs metrics had no overlay.
     // After: blast radius is [postgres, ecs, alb] — ecs's p95 gets an overlay.
+    // The overlay type matches the incident's onset_overlay (saturation in this
+    // fixture), since the engine now respects the authored value for latency metrics.
     const result = await loadPayment();
     const p95 = result.opsDashboard.focalService.metrics.find(
       (m) => m.archetype === "p95_latency_ms",
@@ -141,7 +143,7 @@ describe("payment-db-pool-exhaustion — upstream incident propagation", () => {
     expect(p95).toBeDefined();
     expect(p95!.incidentResponses).toBeDefined();
     expect(p95!.incidentResponses!.length).toBeGreaterThan(0);
-    expect(p95!.incidentResponses![0].overlay).toBe("spike_and_sustain");
+    expect(p95!.incidentResponses![0].overlay).toBe("saturation");
   });
 
   it("error_rate (ecs_cluster metric) has incident overlay from upstream propagation", async () => {
