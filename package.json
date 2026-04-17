@@ -1,6 +1,6 @@
 {
   "name": "oncall-sim",
-  "version": "1.0.49",
+  "version": "1.0.54",
   "private": true,
   "workspaces": [
     "client"
